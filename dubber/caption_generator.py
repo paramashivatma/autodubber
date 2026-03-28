@@ -241,34 +241,62 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                         new_len = len(captions2.get(p, {}).get("caption", ""))
                         old_len = len(captions.get(p, {}).get("caption", ""))
                         if new_len > old_len:
-                            captions[p] = captions2[p]
-                            log("CAPTION", f"  [{p}] retry improved: {old_len} -> {new_len} chars")
                 except Exception as e:
-                    log("CAPTION", f"  Retry failed: {e}")
+                    log("CAPTION",f"Regeneration failed for {p}: {e}")
+        
+        # Additional validation for required tags and character limits
+        for p, data in captions.items():
+            caption = data.get("caption", "")
+            
+            # Check for required hashtags
+            if p in ["instagram", "facebook", "youtube", "threads", "bluesky", "tiktok"]:
+                if "#kailasa" not in caption.lower() or "#nithyananda" not in caption.lower():
+                    log("CAPTION",f"Missing required tags for {p} — regenerating...")
+                    try:
+                        new_captions = _call_mistral(vision_data, mistral_key)
+                        if new_captions.get(p) and new_captions[p].get("caption"):
+                            captions[p] = new_captions[p]
+                            log("CAPTION",f"Regenerated caption for {p}")
+                    except Exception as e:
+                        log("CAPTION",f"Regeneration failed for {p}: {e}")
+            
+            # Check Gujarati content for Gujarati platforms
+            if p in ["instagram", "facebook", "youtube", "threads", "bluesky"]:
+                if not _contains_gujarati(caption):
+                    log("CAPTION",f"No Gujarati characters in {p} caption — regenerating...")
+                    try:
+                        new_captions = _call_mistral(vision_data, mistral_key)
+                        if new_captions.get(p) and new_captions[p].get("caption"):
+                            captions[p] = new_captions[p]
+                            log("CAPTION",f"Regenerated caption for {p}")
+                    except Exception as e:
+                        log("CAPTION",f"Regeneration failed for {p}: {e}")
+            
+            # Check character limits
+            lim = PLATFORM_LIMITS.get(p, 2000)
+            if len(caption) > lim:
+                log("CAPTION",f"Caption too long for {p} ({len(caption)} > {lim}) — truncating...")
+                captions[p]["caption"] = caption[:lim-1] + "…"
+        
+        for p, data in captions.items():
+            lim = PLATFORM_LIMITS.get(p, 2000)
+            data["caption"] = _smart_trim(_extract_str(data.get("caption","")), lim)
+            if p == "youtube":
+                data["title"] = _smart_trim(_extract_str(data.get("title","")), 80)
+        
+        with open(os.path.join(output_dir,"captions.json"),"w",encoding="utf-8") as f:
+            json.dump(captions, f, ensure_ascii=False, indent=2)
+        for p, data in captions.items():
+            prefix = f"TITLE: {data['title']}\n\n" if p=="youtube" and data.get("title") else ""
+            with open(os.path.join(output_dir,f"caption_{p}.txt"),"w",encoding="utf-8") as f:
+                f.write(prefix + data.get("caption",""))
+        log("CAPTION","All captions saved.")
+        return captions
 
-            log("CAPTION", f"Done: {list(captions.keys())}")
-
-        except Exception as e:
-            log("CAPTION", f"Error: {e} — fallback.")
-            captions = _fallback_captions(vision_data)
-    else:
-        log("CAPTION", "No key — fallback.")
-        captions = _fallback_captions(vision_data)
-
-    for p, data in captions.items():
-        lim = PLATFORM_LIMITS.get(p, 2000)
-        data["caption"] = _smart_trim(_extract_str(data.get("caption","")), lim)
-        if p == "youtube":
-            data["title"] = _smart_trim(_extract_str(data.get("title","")), 80)
-
-    with open(os.path.join(output_dir,"captions.json"),"w",encoding="utf-8") as f:
-        json.dump(captions, f, ensure_ascii=False, indent=2)
-    for p, data in captions.items():
-        prefix = f"TITLE: {data['title']}\n\n" if p=="youtube" and data.get("title") else ""
-        with open(os.path.join(output_dir,f"caption_{p}.txt"),"w",encoding="utf-8") as f:
-            f.write(prefix + data.get("caption",""))
-    log("CAPTION","All captions saved.")
-    return captions
+def _contains_gujarati(text):
+    """Check if text contains Gujarati characters"""
+    gujarati_range = range(0x0A80, 0x0AFF + 1)
+    return any(ord(char) in gujarati_range for char in text)
 
 
 def _fallback_captions(vision_data):

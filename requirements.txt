@@ -7,3 +7,5 @@ demucs
 soundfile
 requests
 google-genai
+gspread
+google-auth
