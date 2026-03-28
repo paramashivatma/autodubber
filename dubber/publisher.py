@@ -1,4 +1,4 @@
-import os, json, time, requests
+import os, json, time, requests, asyncio
 from .utils import log, PLATFORM_ACCOUNTS, PLATFORM_LIMITS
 
 BASE_URL = "https://zernio.com/api/v1"
@@ -74,6 +74,82 @@ def _write_platform_lock(output_dir, platform, status, post_id=None):
     with open(_lock_path(output_dir), "w") as f:
         json.dump(lock, f, indent=2)
     log("PUBLISH", f"  Lock [{platform}] = {status}")
+
+
+async def _post_to_single_platform(api_key, platform, captions, media_items, 
+                               publish_now, scheduled_for, output_dir, 
+                               progress_cb, done_count, total_count, teaser_public_urls):
+    """Async function to post to a single platform"""
+    try:
+        entry = _build_entry(platform, captions, teaser_public_urls)
+        if not entry:
+            result = {"error": "no account ID configured"}
+            if progress_cb:
+                progress_cb(done_count + 1, total_count, platform, "error")
+            return platform, result
+
+        payload = {
+            "content":    "",           # customContent per platform overrides this
+            "mediaItems": media_items,
+            "platforms":  [entry],
+        }
+        if publish_now:
+            payload["publishNow"] = True
+        elif scheduled_for:
+            payload["scheduledFor"] = scheduled_for
+
+        # notify UI: this platform is now being posted
+        if progress_cb:
+            progress_cb(done_count + 1, total_count, platform, "posting")
+
+        log("PUBLISH", f"  [{done_count+1}/{total_count}] Posting to {platform} ...")
+
+        # Run the blocking request in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        r = await loop.run_in_executor(
+            None, 
+            lambda: requests.post(
+                f"{BASE_URL}/posts",
+                headers=_json_headers(api_key),
+                json=payload,
+                timeout=POST_TIMEOUT,
+            )
+        )
+        
+        log("PUBLISH", f"  -> HTTP {r.status_code}  body: {r.text[:200]}")
+
+        if r.ok:
+            result = r.json()
+            post_id = (result.get("post") or {}).get("_id") or result.get("_id", "?")
+            _write_platform_lock(output_dir, platform, "ok", post_id=post_id)
+            log("PUBLISH", f"  {platform} OK -> id={post_id}")
+            if progress_cb:
+                progress_cb(done_count + 1, total_count, platform, "ok")
+            return platform, result
+        else:
+            err = f"HTTP {r.status_code}: {r.text[:200]}"
+            result = {"error": err}
+            log("PUBLISH", f"  {platform} FAILED: {err}")
+            if progress_cb:
+                progress_cb(done_count + 1, total_count, platform, "error")
+            return platform, result
+
+    except requests.exceptions.ReadTimeout:
+        # Timeout after GCS upload succeeded.
+        # Post very likely went through — lock it to prevent retry double-post.
+        log("PUBLISH", f"  {platform} TIMED OUT — locking as unconfirmed. Verify on Zernio.")
+        result = {"error": "timeout-unconfirmed"}
+        _write_platform_lock(output_dir, platform, "timeout-unconfirmed")
+        if progress_cb:
+            progress_cb(done_count + 1, total_count, platform, "timeout")
+        return platform, result
+
+    except Exception as e:
+        log("PUBLISH", f"  {platform} exception: {e}")
+        result = {"error": str(e)}
+        if progress_cb:
+            progress_cb(done_count + 1, total_count, platform, "error")
+        return platform, result
 
 def _platforms_already_done(output_dir, platforms):
     """
@@ -187,6 +263,62 @@ def _build_entry(platform, captions, teaser_public_urls=None):
 
 # ─────────────────────────── main publish ───────────────────────
 
+async def _publish_to_platforms_async(api_key, video_path, captions, platforms, pending, already_done,
+                                   scheduled_for=None, publish_now=True,
+                                   teaser_path=None, teaser_paths=None,
+                                   teaser_captions=None, image_paths=None,
+                                   output_dir="workspace",
+                                   progress_cb=None):
+    """Async version of publish_to_platforms for parallel execution"""
+    
+    # ── upload primary video once (shared across all platforms) ──
+    primary_url = upload_media(api_key, video_path)
+    media_items = [{"url": primary_url, "type": _media_type(video_path)}]
+
+    # ── upload extra images ──
+    for img in (image_paths or []):
+        if img and os.path.exists(img):
+            try:
+                url = upload_media(api_key, img)
+                media_items.append({"url": url, "type": "image"})
+            except Exception as e:
+                log("PUBLISH", f"  Extra image upload failed: {e}")
+
+    # ── upload per-platform teasers ──
+    teaser_public_urls = {}
+    if teaser_paths:
+        for p, t_path in teaser_paths.items():
+            if t_path and os.path.exists(t_path):
+                try:
+                    teaser_public_urls[p] = upload_media(api_key, t_path)
+                except Exception as e:
+                    log("PUBLISH", f"  Teaser upload failed for {p}: {e}")
+
+    # Create async tasks for all platforms
+    tasks = []
+    for i, platform in enumerate(pending):
+        task = _post_to_single_platform(
+            api_key, platform, captions, media_items,
+            publish_now, scheduled_for, output_dir,
+            progress_cb, len(already_done) + i, len(platforms), teaser_public_urls
+        )
+        tasks.append(task)
+
+    # Wait for all platforms to complete concurrently
+    results_list = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Convert results list back to dict format
+    results = {}
+    for result in results_list:
+        if isinstance(result, Exception):
+            log("PUBLISH", f"  Unexpected error: {result}")
+            continue
+        platform, platform_result = result
+        results[platform] = platform_result
+
+    return results
+
+
 def publish_to_platforms(api_key, video_path, captions, platforms,
                           scheduled_for=None, publish_now=True,
                           teaser_path=None, teaser_paths=None,
@@ -194,7 +326,7 @@ def publish_to_platforms(api_key, video_path, captions, platforms,
                           output_dir="workspace",
                           progress_cb=None):
     """
-    Posts to each platform one at a time.
+    Posts to all platforms in parallel using asyncio.
 
     progress_cb(done, total, platform, status)
         done     = number completed so far
@@ -224,100 +356,9 @@ def publish_to_platforms(api_key, video_path, captions, platforms,
         log("PUBLISH", "All platforms already published — nothing to do.")
         return {"skipped": True, "reason": "all_already_published"}
 
-    # ── upload primary video once (shared across all platforms) ──
-    primary_url = upload_media(api_key, video_path)
-    media_items = [{"url": primary_url, "type": _media_type(video_path)}]
-
-    # ── upload extra images ──
-    for img in (image_paths or []):
-        if img and os.path.exists(img):
-            try:
-                url = upload_media(api_key, img)
-                media_items.append({"url": url, "type": "image"})
-            except Exception as e:
-                log("PUBLISH", f"  Extra image upload failed: {e}")
-
-    # ── upload per-platform teasers ──
-    teaser_public_urls = {}
-    if teaser_paths:
-        for p, t_path in teaser_paths.items():
-            if t_path and os.path.exists(t_path):
-                try:
-                    teaser_public_urls[p] = upload_media(api_key, t_path)
-                except Exception as e:
-                    log("PUBLISH", f"  Teaser upload failed for {p}: {e}")
-
-    results = {}
-    total   = len(platforms)        # includes already_done for accurate % in UI
-    done    = len(already_done)
-
-    # ── post one platform at a time ──
-    for platform in pending:
-        entry = _build_entry(platform, captions, teaser_public_urls)
-        if not entry:
-            results[platform] = {"error": "no account ID configured"}
-            done += 1
-            if progress_cb:
-                progress_cb(done, total, platform, "error")
-            continue
-
-        payload = {
-            "content":    "",           # customContent per platform overrides this
-            "mediaItems": media_items,
-            "platforms":  [entry],
-        }
-        if publish_now:
-            payload["publishNow"] = True
-        elif scheduled_for:
-            payload["scheduledFor"] = scheduled_for
-
-        # notify UI: this platform is now being posted
-        if progress_cb:
-            progress_cb(done, total, platform, "posting")
-
-        log("PUBLISH", f"  [{done+1}/{total}] Posting to {platform} ...")
-
-        try:
-            r = requests.post(
-                f"{BASE_URL}/posts",
-                headers=_json_headers(api_key),
-                json=payload,
-                timeout=POST_TIMEOUT,
-            )
-            log("PUBLISH", f"  -> HTTP {r.status_code}  body: {r.text[:200]}")
-
-            if r.ok:
-                result  = r.json()
-                post_id = (result.get("post") or {}).get("_id") or result.get("_id", "?")
-                results[platform] = result
-                _write_platform_lock(output_dir, platform, "ok", post_id=post_id)
-                log("PUBLISH", f"  {platform} OK -> id={post_id}")
-                done += 1
-                if progress_cb:
-                    progress_cb(done, total, platform, "ok")
-            else:
-                err = f"HTTP {r.status_code}: {r.text[:200]}"
-                results[platform] = {"error": err}
-                log("PUBLISH", f"  {platform} FAILED: {err}")
-                done += 1
-                if progress_cb:
-                    progress_cb(done, total, platform, "error")
-
-        except requests.exceptions.ReadTimeout:
-            # Timeout after GCS upload succeeded.
-            # Post very likely went through — lock it to prevent retry double-post.
-            log("PUBLISH", f"  {platform} TIMED OUT — locking as unconfirmed. Verify on Zernio.")
-            results[platform] = {"error": "timeout-unconfirmed"}
-            _write_platform_lock(output_dir, platform, "timeout-unconfirmed")
-            done += 1
-            if progress_cb:
-                progress_cb(done, total, platform, "timeout")
-
-        except Exception as e:
-            log("PUBLISH", f"  {platform} exception: {e}")
-            results[platform] = {"error": str(e)}
-            done += 1
-            if progress_cb:
-                progress_cb(done, total, platform, "error")
-
-    return results
+    # Run async version and return results
+    return asyncio.run(_publish_to_platforms_async(
+        api_key, video_path, captions, platforms, pending, already_done,
+        scheduled_for, publish_now, teaser_path, teaser_paths,
+        teaser_captions, image_paths, output_dir, progress_cb
+    ))
