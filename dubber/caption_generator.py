@@ -45,15 +45,18 @@ THREADS (max 350 chars including hashtags):
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - MINIMUM 200 chars. MAXIMUM 350 chars. Count carefully.
 
-TWITTER (max 240 chars, NO hashtags):
+TWITTER (max 260 chars including hashtags):
 - Hook + one follow-up sentence. Both COMPLETE sentences. No cutoff.
-- No hashtags. Must end with period or question mark.
-- MINIMUM 180 chars. MAXIMUM 240 chars. Count carefully.
+- End with: #KAILASA #Nithyananda (no other hashtags)
+- Must end with punctuation before hashtags.
+- MINIMUM 180 chars. MAXIMUM 260 chars. Count carefully.
 
-TIKTOK (max 160 chars, NO hashtags):
+TIKTOK (max 180 chars including hashtags):
 - ONE complete punchy sentence directly from transcript. Not a fragment.
-- No hashtags. Must end with punctuation.
-- MINIMUM 80 chars. MAXIMUM 160 chars. Count carefully.
+- Generate 2-3 relevant hashtags based on video content before the fixed tags.
+- End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
+- Must end with punctuation before hashtags.
+- MINIMUM 80 chars. MAXIMUM 180 chars. Count carefully.
 
 BLUESKY (max 260 chars including hashtags):
 - Hook sentence + one follow-up. Both complete.
@@ -72,12 +75,13 @@ YOUTUBE (max 4500 chars):
 === CRITICAL RULES ===
 1. Every caption must be a COMPLETE thought — no mid-sentence cutoffs.
 2. Instagram and Facebook MUST have different hooks and different bullet content.
-3. TikTok and Twitter must end with proper punctuation — period, !, or ?
+3. All platforms with hashtags must end with proper punctuation before hashtags.
 4. RESPECT BOTH minimum AND maximum character limits on all platforms.
 5. Zero English. Zero URLs.
-6. Generate 2-3 relevant hashtags based on video content for platforms that allow hashtags.
-7. Hashtags must be relevant to the video content and written in Gujarati.
-8. Total caption including generated hashtags and fixed tags must stay within platform limits.
+6. Generate 2-3 relevant hashtags based on video content for platforms that allow them (Instagram, Facebook, TikTok, YouTube, Threads, Bluesky).
+7. Twitter only uses fixed tags: #KAILASA #Nithyananda (no AI-generated hashtags).
+8. Hashtags must be relevant to the video content and written in Gujarati.
+9. Total caption including generated hashtags and fixed tags must stay within platform limits.
 
 === OUTPUT ===
 Valid JSON only. No markdown fences. Exactly 7 keys: instagram, facebook, tiktok, twitter, youtube, threads, bluesky
