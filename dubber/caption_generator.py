@@ -28,19 +28,21 @@ TRANSCRIPT_BLOCK_HERE
 INSTAGRAM (max 1800 chars):
 - Hook: one punchy line quoting or paraphrasing directly from transcript. Creates tension or open loop.
 - 4 bullet points (•), each referencing a SPECIFIC idea from transcript. Full sentences.
-- Blank line between hook, bullets, and hashtags.
-- End with: #KAILASA #Nithyananda #સનાતનધર્મ #આધ્યાત્મ
+- Generate 2-3 relevant hashtags based on video content before the fixed tags.
+- End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 
 FACEBOOK (max 1800 chars):
 - MUST be DIFFERENT from Instagram. Different hook angle, different bullet framing.
 - Write as if speaking directly to a devotee seeking peace.
 - 4 bullet points (•), each a DIFFERENT specific point from transcript than used in Instagram.
-- End with: #KAILASA #Nithyananda #સનાતનધર્મ #આધ્યાત્મ
+- Generate 2-3 relevant hashtags based on video content before the fixed tags.
+- End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 
 THREADS (max 350 chars including hashtags):
 - Hook line from transcript.
 - 2 complete sentences expanding on transcript content.
-- End with: #KAILASA #Nithyananda #સનાતનધર્મ
+- Generate 2-3 relevant hashtags based on video content before the fixed tags.
+- End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - MINIMUM 200 chars. MAXIMUM 350 chars. Count carefully.
 
 TWITTER (max 240 chars, NO hashtags):
@@ -55,14 +57,16 @@ TIKTOK (max 160 chars, NO hashtags):
 
 BLUESKY (max 260 chars including hashtags):
 - Hook sentence + one follow-up. Both complete.
-- End with: #KAILASA #આધ્યાત્મ
+- Generate 2-3 relevant hashtags based on video content before the fixed tags.
+- End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - MINIMUM 180 chars. MAXIMUM 260 chars. Count carefully.
 
 YOUTUBE (max 4500 chars):
 - Hook line from transcript.
 - 5 bullet points (•), each a specific insight from transcript. Full sentences.
 - Blank line between sections.
-- End with: #KAILASA #Nithyananda #સનાતનધર્મ #આધ્યાત્મ
+- Generate 2-3 relevant hashtags based on video content before the fixed tags.
+- End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 - Also provide a "title" field: max 75 chars, punchy Gujarati title from transcript.
 
 === CRITICAL RULES ===
@@ -71,6 +75,9 @@ YOUTUBE (max 4500 chars):
 3. TikTok and Twitter must end with proper punctuation — period, !, or ?
 4. RESPECT BOTH minimum AND maximum character limits on all platforms.
 5. Zero English. Zero URLs.
+6. Generate 2-3 relevant hashtags based on video content for platforms that allow hashtags.
+7. Hashtags must be relevant to the video content and written in Gujarati.
+8. Total caption including generated hashtags and fixed tags must stay within platform limits.
 
 === OUTPUT ===
 Valid JSON only. No markdown fences. Exactly 7 keys: instagram, facebook, tiktok, twitter, youtube, threads, bluesky
