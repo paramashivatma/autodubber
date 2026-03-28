@@ -137,7 +137,8 @@ def validate_accounts(api_key):
         if not r.ok:
             log("PUBLISH", f"  Account validation skipped: {r.status_code}")
             return
-        accounts = r.json() if isinstance(r.json(), list) else r.json().get("accounts", [])
+        response_data = r.json()
+        accounts = response_data if isinstance(response_data, list) else response_data.get("accounts", [])
         live_ids = {a.get("_id") or a.get("id") for a in accounts}
         for platform, acc_id in PLATFORM_ACCOUNTS.items():
             if acc_id not in live_ids:
