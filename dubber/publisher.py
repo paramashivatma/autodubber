@@ -158,9 +158,13 @@ def _build_entry(platform, captions, teaser_public_urls=None):
         return None
 
     pdata          = captions.get(platform, {})
+    log("PUBLISH", f"  [{platform}] Raw pdata: {pdata}")
+    log("PUBLISH", f"  [{platform}] Captions keys: {list(captions.keys())}")
+    
     custom_content = _trim(
         pdata.get("caption", "") if isinstance(pdata, dict) else pdata, platform
     )
+    log("PUBLISH", f"  [{platform}] Extracted caption: '{custom_content[:100]}...'")
 
     entry = {
         "platform":      platform,
@@ -208,6 +212,10 @@ def publish_to_platforms(api_key, video_path, captions, platforms,
         raise RuntimeError("No platforms selected.")
     if not video_path or not os.path.exists(video_path):
         raise RuntimeError(f"Primary media not found: {video_path}")
+
+    log("PUBLISH", f"  Incoming captions keys: {list(captions.keys())}")
+    log("PUBLISH", f"  Sample caption data: {captions.get(platforms[0], {})}")
+    log("PUBLISH", f"  Platforms to publish: {platforms}")
 
     validate_accounts(api_key)
 
