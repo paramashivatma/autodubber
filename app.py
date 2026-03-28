@@ -479,9 +479,6 @@ class App(tk.Tk):
 
         def _publish():
             try:
-                log("DEBUG", f"Approved captions keys: {list(approved.keys())}")
-                log("DEBUG", f"Sample approved caption: {approved.get(selected_platforms[0], {})}")
-                
                 teaser_caps = {p:{"caption":approved.get(p,{}).get("caption","")[:180]}
                                for p in selected_platforms}
                 results = publish_to_platforms(
