@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / secrets
+.env
+
+# Workspace (generated files, not source code)
+workspace/
+
+# Output video
+output.mp4
+
+# VS Code / Windsurf
+.vscode/
+.windsurf/
