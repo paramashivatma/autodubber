@@ -3,9 +3,9 @@ import gspread
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import Request
 from dotenv import load_dotenv
-from .utils import log
-from .fetcher import fetch_shorts_urls
-from . import (
+from dubber.utils import log
+from dubber.fetcher import fetch_shorts_urls
+from dubber import (
     transcribe_audio, merge_short_segments, translate_segments,
     generate_tts_audio, build_dubbed_video,
     extract_vision, generate_all_captions,

@@ -241,10 +241,18 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                         new_len = len(captions2.get(p, {}).get("caption", ""))
                         old_len = len(captions.get(p, {}).get("caption", ""))
                         if new_len > old_len:
+                            captions[p] = captions2.get(p, {})
                 except Exception as e:
                     log("CAPTION",f"Regeneration failed for {p}: {e}")
         
-        # Additional validation for required tags and character limits
+        except Exception as e:
+            log("CAPTION", f"Error: {e} — fallback.")
+            captions = _fallback_captions(vision_data)
+    else:
+        log("CAPTION", "No key — fallback.")
+        captions = _fallback_captions(vision_data)
+
+    # Additional validation for required tags and character limits
         for p, data in captions.items():
             caption = data.get("caption", "")
             

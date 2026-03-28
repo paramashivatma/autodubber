@@ -2,8 +2,8 @@ import os, json, time, sys
 import gspread
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
-from .utils import log
-from .publish_to_platforms import publish_to_platforms
+from dubber.utils import log
+from dubber.publisher import publish_to_platforms
 
 # Load environment
 load_dotenv()
