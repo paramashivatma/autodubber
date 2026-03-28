@@ -3,7 +3,13 @@ from .utils import log, PLATFORM_ACCOUNTS, PLATFORM_LIMITS
 
 BASE_URL = "https://zernio.com/api/v1"
 
-POST_TIMEOUT = 480  # 8 minutes per platform
+POST_TIMEOUT = 480  # 8 minutes per platform (default)
+
+# Platform-specific timeouts (in seconds)
+PLATFORM_TIMEOUTS = {
+    "bluesky": 600,  # 10 minutes for Bluesky (slower API)
+    # Other platforms use default POST_TIMEOUT (480s)
+}
 
 
 # ─────────────────────────── helpers ────────────────────────────
@@ -102,7 +108,9 @@ async def _post_to_single_platform(api_key, platform, captions, media_items,
         if progress_cb:
             progress_cb(done_count + 1, total_count, platform, "posting")
 
-        log("PUBLISH", f"  [{done_count+1}/{total_count}] Posting to {platform} ...")
+        # Get platform-specific timeout
+        platform_timeout = PLATFORM_TIMEOUTS.get(platform, POST_TIMEOUT)
+        log("PUBLISH", f"  [{done_count+1}/{total_count}] Posting to {platform} (timeout: {platform_timeout}s) ...")
 
         # Run the blocking request in thread pool to avoid blocking event loop
         loop = asyncio.get_event_loop()
@@ -112,7 +120,7 @@ async def _post_to_single_platform(api_key, platform, captions, media_items,
                 f"{BASE_URL}/posts",
                 headers=_json_headers(api_key),
                 json=payload,
-                timeout=POST_TIMEOUT,
+                timeout=platform_timeout,
             )
         )
         
