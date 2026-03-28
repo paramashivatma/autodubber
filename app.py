@@ -481,6 +481,11 @@ class App(tk.Tk):
             try:
                 teaser_caps = {p:{"caption":approved.get(p,{}).get("caption","")[:180]}
                                for p in selected_platforms}
+                
+                # Create thread-safe progress callback
+                def _thread_safe_progress(done, total, platform, status):
+                    self.after(0, lambda: self._update_progress(done, total, platform, status))
+                
                 results = publish_to_platforms(
                     api_key         = zernio_key,
                     video_path      = video_path,
@@ -492,6 +497,7 @@ class App(tk.Tk):
                     teaser_captions = teaser_caps if teaser_path else None,
                     image_paths     = image_paths or [],
                     output_dir      = WORKSPACE,
+                    progress_cb     = _thread_safe_progress,
                 )
                 ok  = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
                 msg = f"Published {ok} post(s)." if ok else "All posts failed — check log."
@@ -513,6 +519,19 @@ class App(tk.Tk):
                 else:
                     self._pub_log_write(f'OK   {k}: id={v.get("_id","?") if isinstance(v,dict) else "ok"}')
         (messagebox.showinfo if success else messagebox.showerror)("Result", msg)
+
+    def _update_progress(self, done, total, platform, status):
+        """Thread-safe progress update for publishing"""
+        if status == "posting":
+            self.status_var.set(f"Posting to {platform} ...")
+        elif status == "ok":
+            self.status_var.set(f"✓ {platform} published")
+        elif status == "error":
+            self.status_var.set(f"✗ {platform} failed")
+        elif status == "timeout":
+            self.status_var.set(f"⏱ {platform} timed out")
+        elif status == "skipped":
+            self.status_var.set(f"⊘ {platform} skipped")
 
 
 if __name__ == "__main__":
