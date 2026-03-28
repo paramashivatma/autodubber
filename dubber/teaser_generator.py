@@ -1,15 +1,5 @@
 import os, subprocess, json, tempfile
-from .utils import log
-
-PLATFORM_SPECS = {
-    "instagram": {"min": 15, "max": 29,  "strategy": "hook_moment",    "label": "Instagram Reels"},
-    "tiktok":    {"min":  7, "max": 15,  "strategy": "fastest_moment", "label": "TikTok"},
-    "youtube":   {"min": 20, "max": 59,  "strategy": "peak_moment",    "label": "YouTube Shorts"},
-    "facebook":  {"min": 15, "max": 44,  "strategy": "emotional_hook", "label": "Facebook"},
-    "twitter":   {"min":  7, "max": 14,  "strategy": "fastest_moment", "label": "Twitter/X"},
-    "threads":   {"min": 15, "max": 30,  "strategy": "hook_moment",    "label": "Threads"},
-    "bluesky":   {"min": 10, "max": 20,  "strategy": "hook_moment",    "label": "Bluesky"},
-}
+from .utils import log, PLATFORM_SPECS
 
 
 def _score_segments(segments, strategy):

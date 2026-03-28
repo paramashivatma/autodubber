@@ -1,22 +1,7 @@
 import os, json, time, requests
-from .utils import log
+from .utils import log, PLATFORM_ACCOUNTS, PLATFORM_LIMITS
 
 BASE_URL = "https://zernio.com/api/v1"
-
-PLATFORM_ACCOUNTS = {
-    "instagram": "69a1f238dc8cab9432ab26d2",
-    "threads":   "69a33549dc8cab9432ad4e6b",
-    "facebook":  "69a2f595dc8cab9432acd000",
-    "bluesky":   "699df2e18ab8ae478b417ca5",
-    "youtube":   "699df35d8ab8ae478b417d7a",
-    "twitter":   "69a97969dc8cab9432ba5005",
-    "tiktok":    "69a34ee1dc8cab9432ad86d1",
-}
-
-PLATFORM_LIMITS = {
-    "instagram":2000,"facebook":2000,"threads":380,
-    "bluesky":280,"twitter":260,"tiktok":180,"youtube":5000,
-}
 
 POST_TIMEOUT = 480  # 8 minutes per platform
 

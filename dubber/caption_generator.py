@@ -1,20 +1,9 @@
 import os, json, time
 import httpx
 from dotenv import load_dotenv
-from .utils import log
+from .utils import log, PLATFORM_LIMITS, SHORT_MINIMUMS, REQUIRED_PLATFORMS
 
 load_dotenv()
-
-PLATFORM_LIMITS = {
-    "instagram": 2000, "facebook": 2000, "threads": 380,
-    "bluesky": 280, "twitter": 260, "tiktok": 180, "youtube": 5000,
-}
-
-SHORT_MINIMUMS = {
-    "tiktok": 80, "twitter": 180, "threads": 200, "bluesky": 180
-}
-
-REQUIRED_PLATFORMS = {"instagram","facebook","tiktok","twitter","youtube","threads","bluesky"}
 
 TAGS4  = "#KAILASA #Nithyananda #સનાતનધર્મ #આધ્યાત્મ"
 TAGS3  = "#KAILASA #Nithyananda #સનાતનધર્મ"

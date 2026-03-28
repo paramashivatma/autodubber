@@ -1,9 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
-
-PLATFORMS     = ["instagram","facebook","youtube","threads","twitter","tiktok","bluesky"]
-PLATFORM_LIMITS = {"instagram":2000,"facebook":2000,"threads":380,
-                   "bluesky":280,"twitter":260,"tiktok":180,"youtube":5000}
+from dubber.utils import PLATFORMS, PLATFORM_LIMITS
 
 class ReviewDialog(tk.Toplevel):
     def __init__(self, parent, captions):

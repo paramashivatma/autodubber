@@ -7,6 +7,7 @@ from dubber import (
     extract_vision, generate_all_captions,
     generate_teaser, generate_teasers, publish_to_platforms, log,
 )
+from dubber.utils import PLATFORMS
 from dubber.downloader    import is_url, download_video
 from dubber.bgm_separator import separate_background
 from review_dialog        import ReviewDialog
@@ -32,7 +33,6 @@ LANGUAGES = {
     "English":"en","Hindi":"hi","Gujarati":"gu",
     "Tamil":"ta","Telugu":"te","Kannada":"kn","Malayalam":"ml","Bengali":"bn",
 }
-PLATFORMS = ["instagram","threads","facebook","bluesky","youtube","twitter","tiktok"]
 
 def _load_env():
     env = {}
