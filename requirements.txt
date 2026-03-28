@@ -1,0 +1,9 @@
+faster-whisper
+edge-tts
+pydub
+deep-translator
+yt-dlp
+demucs
+soundfile
+requests
+google-genai
