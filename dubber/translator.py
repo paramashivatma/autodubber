@@ -110,12 +110,37 @@ Texts to translate:
             response = model.generate_content(prompt)
             result = response.text.strip()
             if result:
-                return _parse_batch_response(result, len(texts))
+                translations = _parse_batch_response(result, len(texts))
+                if translations is not None:
+                    return translations
+                else:
+                    # Count mismatch - trigger fallback to per-segment translation
+                    return None
         except Exception as e:
             log("TRANSLATE", f"  Gemini batch attempt {attempt} failed: {e}")
             time.sleep(3 * attempt)
 
     raise RuntimeError("Gemini batch translation failed after 3 attempts.")
+
+
+def _translate_segments_per_segment(texts, source_hint, target_language):
+    """Fallback: translate texts one by one (original behavior)"""
+    log("TRANSLATE", f"  Falling back to per-segment translation for {len(texts)} texts...")
+    
+    translations = []
+    for i, text in enumerate(texts):
+        try:
+            if target_language == "gu":
+                translated = _translate_to_gujarati(text, source_hint)
+            else:
+                translated = _translate_generic(text, target_language)
+        except Exception as e:
+            log("TRANSLATE", f"  ERROR on text {i+1}: {e} — using source text")
+            translated = text
+        
+        translations.append(translated)
+    
+    return translations
 
 
 def _parse_batch_response(response, expected_count):
@@ -139,11 +164,13 @@ def _parse_batch_response(response, expected_count):
         else:
             translations.append(line)
     
-    # Ensure we have the expected number of translations
-    while len(translations) < expected_count:
-        translations.append("")  # Empty string for missing translations
+    # Validate count - if mismatch, return None to trigger fallback
+    if len(translations) != expected_count:
+        log("TRANSLATE", f"  COUNT MISMATCH: expected {expected_count}, got {len(translations)}")
+        log("TRANSLATE", f"  Gemini may have dropped/merged segments - falling back to per-segment translation")
+        return None
     
-    return translations[:expected_count]
+    return translations
 
 
 def _translate_to_gujarati(text, source_hint="auto"):
@@ -179,6 +206,10 @@ def _translate_to_gujarati_batch(texts, source_hint="auto"):
     """Batch translate multiple texts to Gujarati"""
     try:
         translations = _gemini_translate_batch(texts, source_hint, "gu")
+        if translations is None:
+            # Count mismatch - fall back to per-segment translation
+            return _translate_segments_per_segment(texts, source_hint, "gu")
+            
         # Validate Gujarati output for each translation
         validated_translations = []
         for translation in translations:
@@ -213,22 +244,8 @@ def _translate_to_gujarati_batch(texts, source_hint="auto"):
             return translations
             
     except Exception as e:
-        log("TRANSLATE", f"  Gemini batch failed: {e} — falling back to individual Google Translate ...")
-        # Fallback to individual Google Translate for all texts
-        fallback_translations = []
-        for text in texts:
-            try:
-                from deep_translator import GoogleTranslator
-                if source_hint != "en":
-                    english = GoogleTranslator(source="auto", target="en").translate(text)
-                    result2 = GoogleTranslator(source="en", target="gu").translate(english)
-                else:
-                    result2 = GoogleTranslator(source="en", target="gu").translate(text)
-                fallback_translations.append(result2)
-            except Exception as e:
-                log("TRANSLATE", f"  Individual fallback failed: {e}")
-                fallback_translations.append(text)
-        return fallback_translations
+        log("TRANSLATE", f"  Gemini batch failed: {e} — falling back to per-segment translation")
+        return _translate_segments_per_segment(texts, source_hint, "gu")
 
 
 def _translate_generic(text, target_language):
@@ -243,20 +260,14 @@ def _translate_generic(text, target_language):
 def _translate_generic_batch(texts, target_language):
     """Batch translate multiple texts to generic language"""
     try:
-        return _gemini_translate_batch(texts, "auto", target_language)
+        translations = _gemini_translate_batch(texts, "auto", target_language)
+        if translations is None:
+            # Count mismatch - fall back to per-segment translation
+            return _translate_segments_per_segment(texts, "auto", target_language)
+        return translations
     except Exception as e:
-        log("TRANSLATE", f"  Gemini batch failed for {target_language}: {e} — using Google Translate")
-        # Fallback to individual Google Translate for all texts
-        fallback_translations = []
-        for text in texts:
-            try:
-                from deep_translator import GoogleTranslator
-                result = GoogleTranslator(source="auto", target=target_language).translate(text)
-                fallback_translations.append(result)
-            except Exception as e:
-                log("TRANSLATE", f"  Individual fallback failed: {e}")
-                fallback_translations.append(text)
-        return fallback_translations
+        log("TRANSLATE", f"  Gemini batch failed for {target_language}: {e} — falling back to per-segment translation")
+        return _translate_segments_per_segment(texts, "auto", target_language)
 
 
 def translate_segments(segments, target_language="gu", output_dir="workspace"):
