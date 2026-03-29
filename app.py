@@ -6,6 +6,7 @@ from dubber import (
     generate_tts_audio, build_dubbed_video,
     extract_vision, generate_all_captions,
     generate_teaser, generate_teasers, publish_to_platforms, log,
+    quick_update_from_publish_result,
 )
 from dubber.utils import PLATFORMS
 from dubber.downloader    import is_url, download_video
@@ -501,6 +502,45 @@ class App(tk.Tk):
                 )
                 ok  = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
                 msg = f"Published {ok} post(s)." if ok else "All posts failed — check log."
+                
+                # Log to Google Sheet after successful publish
+                if ok > 0:
+                    try:
+                        # Extract video metadata from pipeline context
+                        video_title = os.path.basename(video_path)
+                        # Get duration from workspace/final video if available
+                        duration = ""
+                        import subprocess
+                        try:
+                            result = subprocess.run(
+                                ['ffprobe', '-v', 'error', '-show_entries', 
+                                 'format=duration', '-of', 
+                                 'default=noprint_wrappers=1:nokey=1', video_path],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            if result.returncode == 0:
+                                secs = float(result.stdout.strip())
+                                mins, secs = divmod(int(secs), 60)
+                                duration = f"{mins:02d}:{secs:02d}"
+                        except:
+                            pass
+                        
+                        # Get languages from app state if available, else detect from path/context
+                        source_lang = getattr(self, '_source_lang', '')
+                        target_lang = getattr(self, '_target_lang', '')
+                        
+                        # Call sheet logger
+                        sheet_success, sheet_msg = quick_update_from_publish_result(
+                            video_title=video_title,
+                            publish_results=results,
+                            duration=duration,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                        log("SHEET", f"Sheet update: {sheet_msg}")
+                    except Exception as e:
+                        log("SHEET", f"Sheet update failed: {e}")
+                
                 done_cb(success=bool(ok), msg=msg, pub_results=results)
             except Exception as e:
                 import traceback; traceback.print_exc()
