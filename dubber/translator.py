@@ -36,7 +36,7 @@ def _gemini_translate(text, source_hint="auto", target_language="gu"):
         raise RuntimeError("No Gemini API key found.")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-pro")
 
     lang_names = {
         "gu": "Gujarati", "hi": "Hindi", "ta": "Tamil",
