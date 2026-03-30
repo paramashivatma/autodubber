@@ -1,6 +1,8 @@
 import os, shutil, threading, tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
+import json
+import os
 from dubber import (
     transcribe_audio, merge_short_segments, translate_segments,
     generate_tts_audio, build_dubbed_video,
@@ -252,37 +254,51 @@ class App(tk.Tk):
         tk.Button(self.t_pub, text="Clear", command=lambda: self.pub_teaser_var.set("")).grid(row=8,column=2,pady=0)
 
         self.t_media = tk.Frame(self.nb, padx=14, pady=10)
-        self.nb.add(self.t_media, text="  Media  ")
+        self.nb.add(self.t_media, text="  Flyer/Image  ")
 
-        tk.Label(self.t_media, text="Teaser Clip", font=("Helvetica",10,"bold")).grid(row=0,column=0,columnspan=3,sticky="w",**pad)
-        self.auto_teaser_var = tk.BooleanVar(value=True)
-        tk.Radiobutton(self.t_media, text="Auto-generate from dubbed video (6-10s hook)",
-                       variable=self.auto_teaser_var, value=True,
-                       command=self._toggle_teaser).grid(row=1,column=0,columnspan=3,sticky="w",**pad)
-        tk.Radiobutton(self.t_media, text="Manual teaser file:",
-                       variable=self.auto_teaser_var, value=False,
-                       command=self._toggle_teaser).grid(row=2,column=0,sticky="w",**pad)
-        self.manual_teaser_var = tk.StringVar()
-        self.manual_teaser_entry = tk.Entry(self.t_media, textvariable=self.manual_teaser_var,
-                                            width=34, state="disabled")
-        self.manual_teaser_entry.grid(row=2,column=1,**pad)
-        self.manual_teaser_btn = tk.Button(self.t_media, text="Browse", state="disabled",
-                                            command=self._browse_teaser)
-        self.manual_teaser_btn.grid(row=2,column=2,**pad)
-        tk.Button(self.t_media, text="No teaser",
-                  command=lambda:[self.auto_teaser_var.set(False),
-                                  self.manual_teaser_var.set(""),
-                                  self._toggle_teaser()]
-                  ).grid(row=3,column=0,sticky="w",padx=10,pady=2)
+        tk.Label(self.t_media, text="Flyer/Image Processing", 
+                 font=("Helvetica",12,"bold")).grid(row=0,column=0,columnspan=3,sticky="w",**pad)
+        tk.Label(self.t_media, text="Upload flyers/posters to extract text and generate Gujarati content",
+                 fg="#666", font=("Helvetica",9)).grid(row=1,column=0,columnspan=3,sticky="w",padx=10,pady=2)
 
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=2,column=0,columnspan=3,sticky="ew",pady=8)
+        
+        # Flyer/Image Upload Section
+        tk.Label(self.t_media, text="Select Flyer/Image:", font=("Helvetica",10,"bold")).grid(row=3,column=0,sticky="w",**pad)
+        self.flyer_var = tk.StringVar()
+        tk.Entry(self.t_media, textvariable=self.flyer_var, width=42).grid(row=3,column=1,**pad)
+        tk.Button(self.t_media, text="Browse", command=self._browse_flyer).grid(row=3,column=2,**pad)
+        
+        # Processing Options
         ttk.Separator(self.t_media,orient="horizontal").grid(row=4,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_media, text="Extra Images (attach alongside video)",
-                 font=("Helvetica",10,"bold")).grid(row=5,column=0,columnspan=3,sticky="w",**pad)
-        bf = tk.Frame(self.t_media); bf.grid(row=6,column=0,columnspan=3,sticky="w",padx=10)
-        tk.Button(bf,text="+ Add Images",command=self._add_images).pack(side="left",padx=4)
-        tk.Button(bf,text="Clear All",command=self._clear_images).pack(side="left",padx=4)
-        self.dub_image_listbox = tk.Listbox(self.t_media,width=52,height=4,font=("Helvetica",8))
-        self.dub_image_listbox.grid(row=7,column=0,columnspan=3,padx=10,pady=4)
+        tk.Label(self.t_media, text="Processing Options:", font=("Helvetica",10,"bold")).grid(row=5,column=0,sticky="w",**pad)
+        
+        self.extract_text_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(self.t_media, text="Extract text from flyer/image",
+                       variable=self.extract_text_var).grid(row=6,column=0,columnspan=3,sticky="w",padx=10)
+        
+        self.generate_captions_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(self.t_media, text="Generate Gujarati captions",
+                       variable=self.generate_captions_var).grid(row=7,column=0,columnspan=3,sticky="w",padx=10)
+        
+        self.generate_teaser_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(self.t_media, text="Create teaser content",
+                       variable=self.generate_teaser_var).grid(row=8,column=0,columnspan=3,sticky="w",padx=10)
+        
+        # Action Buttons
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=9,column=0,columnspan=3,sticky="ew",pady=8)
+        bf = tk.Frame(self.t_media); bf.grid(row=10,column=0,columnspan=3,sticky="w",padx=10)
+        tk.Button(bf,text="Process Flyer",command=self._process_flyer,bg="#00e5ff",fg="white").pack(side="left",padx=4)
+        tk.Button(bf,text="Clear",command=self._clear_flyer).pack(side="left",padx=4)
+        
+        # Results Display
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=11,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_media, text="Results:", font=("Helvetica",10,"bold")).grid(row=12,column=0,sticky="w",**pad)
+        self.flyer_results = tk.Text(self.t_media, width=60, height=8, font=("Helvetica",9))
+        self.flyer_results.grid(row=13,column=0,columnspan=3,padx=10,pady=4)
+        
+        # Store flyer path
+        self.flyer_path = ""
 
         self.t_api = tk.Frame(self.nb, padx=14, pady=10)
         self.nb.add(self.t_api, text="  AI & Publish  ")
@@ -382,15 +398,134 @@ class App(tk.Tk):
         for p in paths:
             if p not in self._image_paths:
                 self._image_paths.append(p)
-                self.image_listbox.insert(tk.END, os.path.basename(p))
-                try: self.dub_image_listbox.insert(tk.END, os.path.basename(p))
-                except: pass
+                # Add to Publish Only tab listbox
+                if hasattr(self, 'image_listbox'):
+                    self.image_listbox.insert(tk.END, os.path.basename(p))
+                # Add to Media tab listbox (if it exists)
+                if hasattr(self, 'dub_image_listbox'):
+                    self.dub_image_listbox.insert(tk.END, os.path.basename(p))
 
     def _clear_images(self):
         self._image_paths.clear()
-        self.image_listbox.delete(0, tk.END)
-        try: self.dub_image_listbox.delete(0, tk.END)
-        except: pass
+        # Clear Publish Only tab listbox
+        if hasattr(self, 'image_listbox'):
+            self.image_listbox.delete(0, tk.END)
+        # Clear Media tab listbox (if it exists)
+        if hasattr(self, 'dub_image_listbox'):
+            self.dub_image_listbox.delete(0, tk.END)
+
+
+    def _browse_flyer(self):
+        """Browse for flyer/image file"""
+        from tkinter import filedialog
+        p = filedialog.askopenfilename(
+            filetypes=[
+                ("Images","*.jpg *.jpeg *.png *.gif *.webp *.bmp *.tiff"),
+                ("PDF","*.pdf"),
+                ("All","*.*")
+            ]
+        )
+        if p:
+            self.flyer_var.set(p)
+            self.flyer_path = p
+    
+    def _clear_flyer(self):
+        """Clear flyer selection and results"""
+        self.flyer_var.set("")
+        self.flyer_path = ""
+        self.flyer_results.delete(1.0, tk.END)
+    
+    def _process_flyer(self):
+        """Process flyer to extract text and generate content"""
+        if not self.flyer_path:
+            messagebox.showerror("Error", "Please select a flyer/image file first")
+            return
+        
+        if not os.path.exists(self.flyer_path):
+            messagebox.showerror("Error", "File not found")
+            return
+        
+        try:
+            self.flyer_results.delete(1.0, tk.END)
+            self.flyer_results.insert(tk.END, "🔄 Processing flyer...\n\n")
+            
+            # Get API keys
+            gemini_key = self.gemini_vision_key_var.get().strip()
+            
+            extracted_text = ""
+            captions = {}
+            teaser = {}
+            
+            # Extract text from image
+            if self.extract_text_var.get():
+                self.flyer_results.insert(tk.END, "📝 Extracting text from image...\n")
+                try:
+                    from dubber.image_processor import extract_text_from_image
+                    extracted_text = extract_text_from_image(self.flyer_path, gemini_key)
+                    self.flyer_results.insert(tk.END, f"✅ Extracted {len(extracted_text)} characters\n")
+                    self.flyer_results.insert(tk.END, f"Text: {extracted_text[:200]}{'...' if len(extracted_text) > 200 else ''}\n\n")
+                except Exception as e:
+                    self.flyer_results.insert(tk.END, f"❌ Text extraction failed: {str(e)}\n\n")
+            
+            # Generate Gujarati captions
+            if self.generate_captions_var.get() and extracted_text:
+                self.flyer_results.insert(tk.END, "🎨 Generating Gujarati captions...\n")
+                try:
+                    from dubber.image_processor import generate_gujarati_captions
+                    captions = generate_gujarati_captions(extracted_text, gemini_key)
+                    if isinstance(captions, dict) and "error" not in captions:
+                        self.flyer_results.insert(tk.END, "✅ Generated captions for all platforms\n")
+                        for platform, caption in captions.items():
+                            self.flyer_results.insert(tk.END, f"  {platform.title()}: {caption[:100]}{'...' if len(caption) > 100 else ''}\n")
+                    else:
+                        self.flyer_results.insert(tk.END, f"❌ Caption generation failed: {captions}\n")
+                    self.flyer_results.insert(tk.END, "\n")
+                except Exception as e:
+                    self.flyer_results.insert(tk.END, f"❌ Caption generation failed: {str(e)}\n\n")
+            
+            # Generate teaser content
+            if self.generate_teaser_var.get() and extracted_text:
+                self.flyer_results.insert(tk.END, "🎬 Creating teaser content...\n")
+                try:
+                    from dubber.image_processor import generate_teaser_content
+                    teaser = generate_teaser_content(extracted_text, captions, gemini_key)
+                    if isinstance(teaser, dict) and "error" not in teaser:
+                        self.flyer_results.insert(tk.END, "✅ Generated teaser content\n")
+                        for key, value in teaser.items():
+                            self.flyer_results.insert(tk.END, f"  {key.replace('_', ' ').title()}: {value}\n")
+                    else:
+                        self.flyer_results.insert(tk.END, f"❌ Teaser generation failed: {teaser}\n")
+                    self.flyer_results.insert(tk.END, "\n")
+                except Exception as e:
+                    self.flyer_results.insert(tk.END, f"❌ Teaser generation failed: {str(e)}\n\n")
+            
+            self.flyer_results.insert(tk.END, "🎉 Processing complete!\n")
+            
+            # Save results to workspace
+            if extracted_text or captions or teaser:
+                workspace_dir = "workspace"
+                os.makedirs(workspace_dir, exist_ok=True)
+                
+                # Save extracted text
+                if extracted_text:
+                    with open(os.path.join(workspace_dir, "flyer_text.txt"), "w", encoding="utf-8") as f:
+                        f.write(extracted_text)
+                
+                # Save captions
+                if captions and isinstance(captions, dict):
+                    with open(os.path.join(workspace_dir, "flyer_captions.json"), "w", encoding="utf-8") as f:
+                        json.dump(captions, f, ensure_ascii=False, indent=2)
+                
+                # Save teaser
+                if teaser and isinstance(teaser, dict):
+                    with open(os.path.join(workspace_dir, "flyer_teaser.json"), "w", encoding="utf-8") as f:
+                        json.dump(teaser, f, ensure_ascii=False, indent=2)
+                
+                self.flyer_results.insert(tk.END, f"💾 Results saved to {workspace_dir}/ folder\n")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to process flyer: {str(e)}")
+            self.flyer_results.insert(tk.END, f"❌ Error: {str(e)}\n")
 
     def _save_keys(self):
         to_save = {}
