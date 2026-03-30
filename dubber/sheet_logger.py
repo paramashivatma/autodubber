@@ -52,13 +52,13 @@ def _parse_logs_for_data(log_buffer: List[str]) -> Dict:
     if download_match:
         data["title"] = os.path.basename(download_match.group(1).strip())
     else:
-        # Try to find from workspace/output.mp4 context
-        output_match = re.search(r'output\.mp4|workspace[\\/]([^\s\]]+\.mp4)', log_text)
+        # Try to find from workspace/source.mp4 or output.mp4
+        output_match = re.search(r'(?:source|output)\.mp4|workspace[\\/]([^\s\]]+\.mp4)', log_text)
         if output_match:
-            data["title"] = output_match.group(1) if output_match.group(1) else "output.mp4"
+            data["title"] = output_match.group(1) if output_match.group(1) else "source.mp4"
     
     # Extract source language from TRANSCRIBE
-    lang_match = re.search(r'Lang detected:\s*(\w{2})', log_text)
+    lang_match = re.search(r'Language detected:\s*(\w{2})', log_text, re.IGNORECASE)
     if lang_match:
         data["source_lang"] = lang_match.group(1)
     
