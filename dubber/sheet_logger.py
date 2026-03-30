@@ -200,12 +200,13 @@ def update_video_tracker(
         # Find existing row by title
         all_values = worksheet.get_all_values()
         row_index = None
+        first_empty_row = None
         
         for i, row in enumerate(all_values[1:], start=2):  # Skip header
             if row and len(row) > 0:
-                # Partial match on filename
+                # Exact match on filename (not partial)
                 existing_title = row[0] if len(row) > 0 else ""
-                if data["title"] in existing_title or existing_title in data["title"]:
+                if existing_title == data["title"]:  # Exact match only
                     row_index = i
                     # Increment attempts if updating
                     try:
@@ -214,6 +215,16 @@ def update_video_tracker(
                     except (ValueError, IndexError):
                         data["attempts"] = 1
                     break
+                # Track first empty row (no title in column A)
+                if not existing_title and first_empty_row is None:
+                    first_empty_row = i
+        
+        # If no exact match found, use first empty row or append
+        if row_index is None:
+            if first_empty_row:
+                row_index = first_empty_row
+                log("SHEET", f"Using empty row {row_index}")
+            # else: will append new row at end
         
         # Prepare row data (columns A-J)
         platforms_str = _format_platforms_list(data["platforms"])
@@ -327,10 +338,10 @@ def quick_update_from_publish_result(
         first_empty_row = None
         
         for i, row in enumerate(all_values[1:], start=2):  # Skip header
-            # Check if this row matches our video title (for updates)
+            # Check if this row matches our video title (exact match only)
             if row and len(row) > 0:
                 existing_title = row[0] if len(row) > 0 else ""
-                if existing_title and (video_title in existing_title or existing_title in video_title):
+                if existing_title == video_title:  # Exact match only
                     row_index = i
                     try:
                         current = int(row[2]) if len(row) > 2 and row[2] else 0
