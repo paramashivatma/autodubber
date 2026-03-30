@@ -12,6 +12,51 @@ NON_GUJARATI_SCRIPTS = [
     (0x0D00, 0x0D7F),  # Malayalam
 ]
 
+# Translation cache
+_cache_file = "translation_cache.json"
+_translation_cache = {}
+
+def _load_cache():
+    """Load translation cache from file."""
+    global _translation_cache
+    if os.path.exists(_cache_file):
+        try:
+            with open(_cache_file, "r", encoding="utf-8") as f:
+                _translation_cache = json.load(f)
+            log("TRANSLATE", f"[CACHE] Loaded {len(_translation_cache)} entries")
+        except Exception as e:
+            log("TRANSLATE", f"[CACHE] Load failed: {e}")
+            _translation_cache = {}
+    else:
+        _translation_cache = {}
+
+def _save_cache():
+    """Save translation cache to file."""
+    try:
+        with open(_cache_file, "w", encoding="utf-8") as f:
+            json.dump(_translation_cache, f, ensure_ascii=False, indent=2)
+        log("TRANSLATE", f"[CACHE] Saved {len(_translation_cache)} entries")
+    except Exception as e:
+        log("TRANSLATE", f"[CACHE] Save failed: {e}")
+
+def _normalize_key(text):
+    """Normalize text for cache key."""
+    return text.strip().lower()
+
+def _get_cached(text):
+    """Get cached translation if exists."""
+    key = _normalize_key(text)
+    return _translation_cache.get(key)
+
+def _set_cached(text, translation):
+    """Cache translation if text is short enough."""
+    if len(text) < 300:
+        key = _normalize_key(text)
+        _translation_cache[key] = translation
+
+# Load cache on module import
+_load_cache()
+
 
 def _is_gujarati_script(text):
     if not text: return False
@@ -36,7 +81,7 @@ def _gemini_translate(text, source_hint="auto", target_language="gu"):
         raise RuntimeError("No Gemini API key found.")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-pro")
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     lang_names = {
         "gu": "Gujarati", "hi": "Hindi", "ta": "Tamil",
@@ -58,7 +103,13 @@ Text to translate:
 
     for attempt in range(1, 4):
         try:
-            response = model.generate_content(prompt)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    temperature=0.3,
+                    top_p=0.8,
+                )
+            )
             result = response.text.strip()
             if result:
                 return result
@@ -174,9 +225,16 @@ def _parse_batch_response(response, expected_count):
 
 
 def _translate_to_gujarati(text, source_hint="auto"):
+    # Check cache first
+    cached = _get_cached(text)
+    if cached:
+        log("TRANSLATE", "[CACHE_HIT] Using cached translation")
+        return cached
+    
     try:
         result = _gemini_translate(text, source_hint, "gu")
         if result and _is_gujarati_script(result) and not _has_foreign_script(result):
+            _set_cached(text, result)
             return result
         log("TRANSLATE", "  Gemini output not clean Gujarati — falling back to Google Translate ...")
     except Exception as e:
@@ -186,6 +244,7 @@ def _translate_to_gujarati(text, source_hint="auto"):
 
     result = GoogleTranslator(source="auto", target="gu").translate(text)
     if result and _is_gujarati_script(result) and not _has_foreign_script(result):
+        _set_cached(text, result)
         return result
 
     if source_hint != "en":
@@ -194,11 +253,13 @@ def _translate_to_gujarati(text, source_hint="auto"):
             english = GoogleTranslator(source="auto", target="en").translate(text)
             result2 = GoogleTranslator(source="en", target="gu").translate(english)
             if result2 and _is_gujarati_script(result2) and not _has_foreign_script(result2):
+                _set_cached(text, result2)
                 return result2
         except Exception as e:
             log("TRANSLATE", f"  Pivot error: {e}")
 
     log("TRANSLATE", "  WARNING: Could not get clean Gujarati — using best available result")
+    _set_cached(text, result or text)
     return result or text
 
 
@@ -249,12 +310,22 @@ def _translate_to_gujarati_batch(texts, source_hint="auto"):
 
 
 def _translate_generic(text, target_language):
+    # Check cache first
+    cached = _get_cached(text)
+    if cached:
+        log("TRANSLATE", "[CACHE_HIT] Using cached translation")
+        return cached
+    
     try:
-        return _gemini_translate(text, "auto", target_language)
+        result = _gemini_translate(text, "auto", target_language)
+        _set_cached(text, result)
+        return result
     except Exception as e:
         log("TRANSLATE", f"  Gemini failed for {target_language}: {e} — using Google Translate")
         from deep_translator import GoogleTranslator
-        return GoogleTranslator(source="auto", target=target_language).translate(text)
+        result = GoogleTranslator(source="auto", target=target_language).translate(text)
+        _set_cached(text, result)
+        return result
 
 
 def _translate_generic_batch(texts, target_language):
@@ -315,4 +386,8 @@ def translate_segments(segments, target_language="gu", output_dir="workspace"):
 
     with open(os.path.join(output_dir, "translation_log.json"), "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
+    
+    # Save translation cache
+    _save_cache()
+    
     return results

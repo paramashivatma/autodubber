@@ -10,6 +10,7 @@ from dubber import (
     generate_tts_audio, build_dubbed_video,
     extract_vision, generate_all_captions,
     generate_teaser, generate_teasers, publish_to_platforms,
+    quick_update_from_publish_result,
 )
 
 # Load environment
@@ -254,13 +255,67 @@ def main():
                 try:
                     # Run dubbing pipeline
                     def status_cb(msg): _log(f"VIDEO {processed_count} — {msg}", log_file)
-                    def caption_ready_cb(**kwargs): pass  # Auto-publish mode
+                    def caption_ready_cb(captions, teaser_path, teaser_paths, video_path, zernio_key, selected_platforms, publish_now, scheduled_for, image_paths, done_cb, **kwargs):
+                        # Auto-publish mode - trigger publish if publish_now is True
+                        if publish_now and zernio_key:
+                            try:
+                                _log(f"VIDEO {processed_count} — Auto-publishing to {len(selected_platforms)} platforms", log_file)
+                                # Import here to avoid circular imports
+                                from dubber import publish_to_platforms
+                                import threading
+                                
+                                def _auto_publish():
+                                    try:
+                                        results = {}
+                                        for platform in selected_platforms:
+                                            cap = captions.get(platform, {}).get("caption", "")
+                                            pub_results = publish_to_platforms(
+                                                video_path=video_path,
+                                                teaser_path=teaser_path,
+                                                captions_by_platform={platform: {"caption": cap}},
+                                                zernio_key=zernio_key,
+                                                selected_platforms=[platform],
+                                                scheduled_for=scheduled_for,
+                                                progress_cb=lambda p, s: _log(f"VIDEO {processed_count} — {platform}: {s}", log_file)
+                                            )
+                                            results.update(pub_results)
+                                        
+                                        # Call done_cb with publish results
+                                        done_cb(success=True, msg="Auto-publish completed", pub_results=results)
+                                    except Exception as e:
+                                        _log(f"VIDEO {processed_count} — Auto-publish failed: {e}", log_file)
+                                        done_cb(success=False, msg=f"Auto-publish failed: {e}", pub_results={})
+                                
+                                # Run publish in background thread
+                                threading.Thread(target=_auto_publish, daemon=True).start()
+                            except Exception as e:
+                                _log(f"VIDEO {processed_count} — Failed to start auto-publish: {e}", log_file)
+                                done_cb(success=False, msg=f"Failed to start auto-publish: {e}", pub_results={})
+                        else:
+                            # No auto-publish, just mark as done
+                            done_cb(success=True, msg="Dubbing completed (no auto-publish)", pub_results={})
+                    
                     def done_cb(success, msg, pub_results=None):
                         nonlocal success_count, failed_count
                         if success:
                             success_count += 1
                             worksheet.update_cell(processed_count + 1, 2, "done")
-                            worksheet.update_cell(processed_count + 1, 5, f"Published {time.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+                            worksheet.update_cell(processed_count + 1, 5, f"Completed {time.strftime('%Y-%m-%dT%H:%M:%SZ')}")
+                            
+                            # Update sheet with publish results if available
+                            if pub_results:
+                                try:
+                                    from dubber.sheet_logger import quick_update_from_publish_result
+                                    sheet_success, sheet_msg = quick_update_from_publish_result(
+                                        video_title=os.path.basename(output_file) if output_file else url,
+                                        publish_results=pub_results,
+                                        duration="",
+                                        source_lang=DUB_SOURCE_LANG,
+                                        target_lang=DUB_TARGET_LANG,
+                                    )
+                                    _log(f"VIDEO {processed_count} — Sheet updated: {sheet_msg}", log_file)
+                                except Exception as e:
+                                    _log(f"VIDEO {processed_count} — Sheet update failed: {e}", log_file)
                         else:
                             failed_count += 1
                             worksheet.update_cell(processed_count + 1, 2, "failed")

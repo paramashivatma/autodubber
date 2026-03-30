@@ -34,6 +34,7 @@ def _call_gemini(api_key, prompt, max_retries=6):
                 config  = types.GenerateContentConfig(
                     response_mime_type = "application/json",
                     temperature        = 0.3,
+                    top_p              = 0.8,
                     max_output_tokens  = 1024,
                 ),
             )
@@ -85,10 +86,13 @@ def extract_vision(segments, api_key, output_dir="workspace"):
 
 
 def _fallback_extract(segments):
-    text = " ".join((s.get("translated") or s.get("text","")).strip() for s in segments).strip()
-    sentences = [s.strip() for s in re.split(r"[.!?]", text) if len(s.strip()) > 20]
-    main_topic = sentences[0][:80] if sentences else text[:80]
-    core       = sentences[1] if len(sentences) > 1 else (sentences[0] if sentences else text[:200])
-    prov       = max(sentences, key=len) if sentences else text[:200]
-    return {"main_topic": main_topic, "core_conflict": core, "provocative_angle": prov,
-            "festival": None, "location": None, "date": None, "theme": "teaching"}
+    """Minimal fallback when Gemini fails — returns empty structure."""
+    return {
+        "main_topic": "",
+        "core_conflict": "",
+        "provocative_angle": "",
+        "theme": "teaching",
+        "festival": None,
+        "location": None,
+        "date": None
+    }

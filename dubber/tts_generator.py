@@ -19,22 +19,29 @@ def generate_tts_audio(segments, voice="gu-IN-NiranjanNeural", output_dir="works
     os.makedirs(clips_dir, exist_ok=True)
     log("TTS", f"Voice: {voice}  |  {len(segments)} segments")
     results = []
+    skipped = []
     for idx, seg in enumerate(segments):
         seg_id = seg["id"]
         text   = (seg.get("translated") or seg.get("text","")).strip() or "..."
         clip   = os.path.join(clips_dir, f"clip_{seg_id:04d}.wav")
         log("TTS", f"[{idx+1}/{len(segments)}] seg#{seg_id}: {text[:70]}")
-        for attempt in range(1, 4):
+        success = False
+        for attempt in range(1, 3):  # 2 attempts max
             try:
                 _run_async(_synthesize(text, voice, clip))
+                success = True
                 break
             except Exception as e:
                 log("TTS", f"  Attempt {attempt} failed: {e}")
-                if attempt < 3:
+                if attempt < 2:
                     time.sleep(3)
-                else:
-                    raise RuntimeError(f"TTS failed after 3 attempts: {e}")
+        if not success:
+            log("TTS", f"  [SKIP] seg#{seg_id} — TTS failed after retries")
+            skipped.append(seg_id)
+            continue
         dur_ms = len(AudioSegment.from_file(clip))
         results.append({**seg, "audio_path": clip, "audio_dur_ms": dur_ms})
         log("TTS", f"  -> {dur_ms}ms")
+    if skipped:
+        log("TTS", f"[WARNING] Skipped {len(skipped)} segments: {skipped}")
     return results

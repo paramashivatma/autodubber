@@ -321,19 +321,33 @@ def quick_update_from_publish_result(
             ]
             worksheet.append_row(headers)
         
-        # Find or append
+        # Find existing row by title, or find first empty row, or append
         all_values = worksheet.get_all_values()
         row_index = None
+        first_empty_row = None
         
-        for i, row in enumerate(all_values[1:], start=2):
-            if row and video_title in (row[0] if len(row) > 0 else ""):
-                row_index = i
-                try:
-                    current = int(row[2]) if len(row) > 2 and row[2] else 0
-                    data["attempts"] = current + 1
-                except:
-                    pass
-                break
+        for i, row in enumerate(all_values[1:], start=2):  # Skip header
+            # Check if this row matches our video title (for updates)
+            if row and len(row) > 0:
+                existing_title = row[0] if len(row) > 0 else ""
+                if existing_title and (video_title in existing_title or existing_title in video_title):
+                    row_index = i
+                    try:
+                        current = int(row[2]) if len(row) > 2 and row[2] else 0
+                        data["attempts"] = current + 1
+                    except:
+                        pass
+                    break
+                # Track first empty row (no title in column A)
+                if not existing_title and first_empty_row is None:
+                    first_empty_row = i
+        
+        # If no match found, use first empty row or append
+        if row_index is None:
+            if first_empty_row:
+                row_index = first_empty_row
+                log("SHEET", f"Using empty row {row_index}")
+            # else: will append new row at end
         
         platforms_str = _format_platforms_list(data["platforms"])
         post_ids_str = _format_post_ids(data["post_ids"])

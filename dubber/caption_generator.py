@@ -149,7 +149,7 @@ def _is_gujarati(text):
     return sum(1 for c in text if "\u0a80" <= c <= "\u0aff") / len(text) > 0.6
 
 
-def _call_mistral(api_key, prompt, max_retries=6):
+def _call_mistral(api_key, prompt, max_retries=3):
     """Use OpenRouter with Llama 3.3 70B instead of Mistral."""
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -161,52 +161,107 @@ def _call_mistral(api_key, prompt, max_retries=6):
     payload = {
         "model": "meta-llama/llama-3.3-70b-instruct:free",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
+        "temperature": 0.3,
+        "top_p": 0.8,
         "max_tokens": 8192,
     }
     for attempt in range(1, max_retries + 1):
         try:
             r = httpx.post(url, headers=headers, json=payload, timeout=120)
             if r.status_code == 429:
-                wait = 20 * attempt
-                log("CAPTION", f"  429 — waiting {wait}s (attempt {attempt}/{max_retries}) ...")
+                wait = 2 ** attempt  # exponential backoff: 2s, 4s, 8s
+                log("CAPTION", f"[RETRY] 429 — waiting {wait}s (attempt {attempt}/{max_retries})")
                 time.sleep(wait)
                 continue
             r.raise_for_status()
             response_json = r.json()
             usage = response_json.get("usage", {})
-            log("CAPTION", f"Tokens  in:{usage.get('prompt_tokens','?')}  out:{usage.get('completion_tokens','?')}  total:{usage.get('total_tokens','?')}")
+            log("CAPTION", f"[SUCCESS] Tokens in:{usage.get('prompt_tokens','?')} out:{usage.get('completion_tokens','?')}")
             return response_json["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            if attempt == max_retries: raise
-            time.sleep(10 * attempt)
+            log("CAPTION", f"[FAIL] attempt {attempt}: {e}")
+            if attempt == max_retries:
+                raise
+            wait = 2 ** attempt
+            log("CAPTION", f"[RETRY] waiting {wait}s before retry...")
+            time.sleep(wait)
     raise RuntimeError(f"OpenRouter failed after {max_retries} retries.")
 
 
 def _parse_raw(raw):
-    """Parse JSON from LLM response, handling markdown fences and extraction."""
+    """Parse JSON from LLM response with repair layer and retries."""
     import re
     
-    # Extract JSON from markdown code fences
-    if "```" in raw:
-        # Find JSON content between code fences
-        pattern = r"```(?:json)?\s*(.*?)```"
-        matches = re.findall(pattern, raw, re.DOTALL)
-        if matches:
-            raw = matches[-1].strip()
+    def _try_parse(text):
+        """Try to parse JSON with various repair strategies."""
+        # Strategy 1: Extract from markdown code fences
+        if "```" in text:
+            pattern = r"```(?:json)?\s*(.*?)```"
+            matches = re.findall(pattern, text, re.DOTALL)
+            if matches:
+                text = matches[-1].strip()
+        
+        # Strategy 2: Find JSON object pattern
+        try:
+            json_match = re.search(r"\{.*\}", text, re.DOTALL)
+            if json_match:
+                text = json_match.group(0)
+            return _normalize(json.loads(text.strip()))
+        except json.JSONDecodeError:
+            return None
     
-    # Try to find JSON object directly
-    try:
-        # Look for JSON object pattern
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if json_match:
-            raw = json_match.group(0)
-        return _normalize(json.loads(raw.strip()))
-    except json.JSONDecodeError as e:
-        log("CAPTION", f"  JSON parse error: {e}")
-        log("CAPTION", f"  Raw response preview: {raw[:200]}...")
-        # Return empty dict to trigger fallback
-        return {}
+    # Try parsing original
+    result = _try_parse(raw)
+    if result:
+        return result
+    
+    # Try repairing common issues
+    log("CAPTION", "[JSON_REPAIR] Initial parse failed, attempting repair...")
+    
+    # Repair: Fix trailing commas
+    repaired = re.sub(r',(\s*[}\]])', r'\1', raw)
+    result = _try_parse(repaired)
+    if result:
+        log("CAPTION", "[JSON_REPAIR] Fixed trailing commas")
+        return result
+    
+    # Repair: Fix unescaped quotes in strings (basic)
+    repaired = re.sub(r'("[^"]*)(?<!\\)"([^"]*")', r'\1\\"\2', raw)
+    result = _try_parse(repaired)
+    if result:
+        log("CAPTION", "[JSON_REPAIR] Fixed unescaped quotes")
+        return result
+    
+    log("CAPTION", "[FAIL] JSON repair failed — returning empty dict")
+    return {}
+
+
+def _strict_validate(captions):
+    """Strict validation: ensure all 7 platforms exist, non-empty, within limits."""
+    required = {"youtube", "instagram", "tiktok", "facebook", "twitter", "threads", "bluesky"}
+    
+    # Check all platforms present
+    missing = required - set(captions.keys())
+    if missing:
+        log("CAPTION", f"[VALIDATION_FAIL] Missing platforms: {missing}")
+        return False, f"missing:{missing}"
+    
+    # Check non-empty and within limits
+    for p in required:
+        data = captions.get(p, {})
+        caption = data.get("caption", "").strip()
+        
+        if not caption:
+            log("CAPTION", f"[VALIDATION_FAIL] Empty caption for {p}")
+            return False, f"empty:{p}"
+        
+        limit = PLATFORM_LIMITS.get(p, 2000)
+        if len(caption) > limit:
+            log("CAPTION", f"[VALIDATION_FAIL] Caption too long for {p}: {len(caption)} > {limit}")
+            return False, f"too_long:{p}"
+    
+    log("CAPTION", "[VALIDATION_PASS] All 7 platforms valid")
+    return True, "ok"
 
 
 def generate_all_captions(vision_data, api_key=None, output_dir="workspace", segments=None):
