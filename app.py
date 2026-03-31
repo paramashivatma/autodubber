@@ -242,7 +242,7 @@ class App(tk.Tk):
                      width=32, state="readonly").grid(row=1,column=1,columnspan=2,**pad)
 
         tk.Label(self.t_dub, text="Whisper model:").grid(row=2,column=0,sticky="w",**pad)
-        self.model_var = tk.StringVar(value="large")
+        self.model_var = tk.StringVar(value="medium")
         ttk.Combobox(self.t_dub, textvariable=self.model_var, values=WHISPER_MODELS,
                      width=12, state="readonly").grid(row=2,column=1,sticky="w",**pad)
 
