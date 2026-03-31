@@ -160,7 +160,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Video Dubber v24  |  Dub / Publish")
-        self.resizable(False, False)
+        self.resizable(True, False)  # Allow horizontal resizing but not vertical
+        self.geometry("750x600")  # Set appropriate initial size
         self._env         = _load_env()
         self._image_paths = []
         self._build_ui()
@@ -361,48 +362,9 @@ class App(tk.Tk):
     def _toggle_bgm(self):
         self.bgm_scale.config(state="normal" if self.bgm_var.get() else "disabled")
 
-    def _toggle_teaser(self):
-        manual = not self.auto_teaser_var.get()
-        st = "normal" if manual else "disabled"
-        self.manual_teaser_entry.config(state=st)
-        self.manual_teaser_btn.config(state=st)
-
-    def _toggle_schedule(self):
-        self.schedule_entry.config(state="normal" if not self.publish_now_var.get() else "disabled")
-
     def _browse_video(self):
         p = filedialog.askopenfilename(filetypes=[("Video","*.mp4 *.mov *.mkv *.avi *.webm"),("All","*.*")])
         if p: self.video_var.set(p)
-
-    def _browse_teaser(self):
-        p = filedialog.askopenfilename(filetypes=[("Video","*.mp4 *.mov *.mkv *.avi *.webm"),("All","*.*")])
-        if p: self.manual_teaser_var.set(p)
-
-    def _browse_pub_teaser(self):
-        p = filedialog.askopenfilename(filetypes=[("Video","*.mp4 *.mov *.mkv *.avi *.webm"),("All","*.*")])
-        if p: self.pub_teaser_var.set(p)
-
-    def _add_images(self):
-        paths = filedialog.askopenfilenames(filetypes=[("Images","*.jpg *.jpeg *.png *.gif *.webp"),("All","*.*")])
-        for p in paths:
-            if p not in self._image_paths:
-                self._image_paths.append(p)
-                # Add to Publish Only tab listbox
-                if hasattr(self, 'image_listbox'):
-                    self.image_listbox.insert(tk.END, os.path.basename(p))
-                # Add to Media tab listbox (if it exists)
-                if hasattr(self, 'dub_image_listbox'):
-                    self.dub_image_listbox.insert(tk.END, os.path.basename(p))
-
-    def _clear_images(self):
-        self._image_paths.clear()
-        # Clear Publish Only tab listbox
-        if hasattr(self, 'image_listbox'):
-            self.image_listbox.delete(0, tk.END)
-        # Clear Media tab listbox (if it exists)
-        if hasattr(self, 'dub_image_listbox'):
-            self.dub_image_listbox.delete(0, tk.END)
-
 
     def _browse_flyer(self):
         """Browse for flyer/image file"""
@@ -719,7 +681,8 @@ class App(tk.Tk):
         self.progress.start(12); self.status_var.set("Starting dub pipeline ...")
         
         selected = [p for p,v in self._plat_vars.items() if v.get()]
-        sched = self.schedule_var.get().strip() if not self.dub_publish_now_var.get() else None
+        # No scheduling implemented yet - always publish immediately
+        sched = None
         gemini_vision = self.gemini_vision_key_var.get().strip()
         mistral = self.mistral_key_var.get().strip()
         zernio = self.zernio_key_var.get().strip()
@@ -729,11 +692,15 @@ class App(tk.Tk):
         if zernio:        to_save["ZERNIO_API_KEY"]     = zernio
         if to_save:       _save_env(to_save)
         
-        manual_teaser = self.manual_teaser_var.get().strip() if not self.auto_teaser_var.get() else ""
+        # No manual teaser needed for dub pipeline - use auto generation
+        manual_teaser = ""
         
         # Create custom status callback for dub results
         def dub_status_callback(message):
             self.after(0, lambda: self._update_dub_results(message))
+        
+        # Test callback immediately
+        dub_status_callback("🔄 Initializing dub pipeline...")
         
         threading.Thread(target=run_dub_pipeline, args=(
             video, VOICES[self.voice_var.get()], self.model_var.get(),
@@ -741,7 +708,7 @@ class App(tk.Tk):
             self.bgm_var.get(), self.bgm_vol_var.get(),
             gemini_vision, mistral, zernio, selected,
             self.dub_publish_now_var.get(), sched,
-            self.auto_teaser_var.get(), manual_teaser,
+            True, manual_teaser,  # auto_teaser=True, manual_teaser=""
             list(self._image_paths),
             dub_status_callback, self._caption_ready_cb, self._done_cb,
         ), daemon=True).start()
@@ -759,6 +726,9 @@ class App(tk.Tk):
             self.run_btn.config(state="normal")
             self.status_var.set("Publishing cancelled."); return
         approved = dlg.result
+        
+        # Publishing has started, update dialog progress
+        dlg.update_progress("Starting publishing process...")
         self.progress.start(12); self.status_var.set("Publishing ...")
 
         def _publish():
@@ -766,9 +736,15 @@ class App(tk.Tk):
                 teaser_caps = {p:{"caption":approved.get(p,{}).get("caption","")[:180]}
                                for p in selected_platforms}
                 
+                # Track progress
+                total = len(selected_platforms)
+                completed = 0
+                
                 # Create thread-safe progress callback
                 def _thread_safe_progress(done, total, platform, status):
-                    self.after(0, lambda: self._update_progress(done, total, platform, status))
+                    completed = done
+                    self.after(0, lambda: dlg.update_progress(
+                        f"Publishing to {platform}...", platform, status))
                 
                 results = publish_to_platforms(
                     api_key         = zernio_key,
@@ -786,47 +762,13 @@ class App(tk.Tk):
                 ok  = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
                 msg = f"Published {ok} post(s)." if ok else "All posts failed — check log."
                 
-                # Log to Google Sheet after successful publish
-                if ok > 0:
-                    try:
-                        # Extract video metadata from pipeline context
-                        video_title = os.path.basename(video_path)
-                        # Get duration from workspace/final video if available
-                        duration = ""
-                        import subprocess
-                        try:
-                            result = subprocess.run(
-                                ['ffprobe', '-v', 'error', '-show_entries', 
-                                 'format=duration', '-of', 
-                                 'default=noprint_wrappers=1:nokey=1', video_path],
-                                capture_output=True, text=True, timeout=10
-                            )
-                            if result.returncode == 0:
-                                secs = float(result.stdout.strip())
-                                mins, secs = divmod(int(secs), 60)
-                                duration = f"{mins:02d}:{secs:02d}"
-                        except:
-                            pass
-                        
-                        # Get languages from app state if available, else detect from path/context
-                        source_lang = getattr(self, '_source_lang', '')
-                        target_lang = getattr(self, '_target_lang', '')
-                        
-                        # Call sheet logger
-                        sheet_success, sheet_msg = quick_update_from_publish_result(
-                            video_title=video_title,
-                            publish_results=results,
-                            duration=duration,
-                            source_lang=source_lang,
-                            target_lang=target_lang,
-                        )
-                        log("SHEET", f"Sheet update: {sheet_msg}")
-                    except Exception as e:
-                        log("SHEET", f"Sheet update failed: {e}")
-                
+                # Update dialog with final result
+                self.after(0, lambda: dlg.publishing_complete(success=bool(ok), message=msg))
                 done_cb(success=bool(ok), msg=msg, pub_results=results)
             except Exception as e:
-                done_cb(success=False, msg=str(e), pub_results={})
+                error_msg = str(e)
+                self.after(0, lambda: dlg.publishing_complete(success=False, message=error_msg))
+                done_cb(success=False, msg=error_msg, pub_results={})
         
         threading.Thread(target=_publish, daemon=True).start()
 

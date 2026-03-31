@@ -11,6 +11,7 @@ class ReviewDialog(tk.Toplevel):
         self.result    = None
         self._captions = captions
         self._widgets  = {}
+        self._publishing = False
         self._build(captions)
         self.geometry("820x660")
         self.wait_window()
@@ -50,15 +51,39 @@ class ReviewDialog(tk.Toplevel):
                 l.config(text=f"{n}/{lim}", fg="#c00" if n>lim else "#888")
             cap_box.bind("<KeyRelease>", _upd); _upd()
 
+        # Progress/Results area (hidden initially)
+        self._progress_frame = tk.Frame(self)
+        self._progress_frame.pack(fill="x", padx=8, pady=(0,8))
+        self._progress_frame.pack_forget()  # Hide initially
+        
+        tk.Label(self._progress_frame, text="Publishing Progress:", 
+                 font=("Helvetica",10,"bold"), fg="#2e7d32").pack(anchor="w")
+        
+        self._progress_text = tk.Text(self._progress_frame, height=6, wrap="word", 
+                                      font=("Helvetica",9), bg="#f5f5f5")
+        self._progress_text.pack(fill="x", pady=(4,0))
+        
+        # Status label
+        self._status_lbl = tk.Label(self, text="Edit captions above, then click 'Approve & Publish'", 
+                                    fg="#555", font=("Helvetica",9))
+        self._status_lbl.pack(padx=8, pady=(0,4))
+
         btn = tk.Frame(self); btn.pack(fill="x", padx=8, pady=8)
-        tk.Button(btn, text="Approve & Publish", width=20,
+        self._approve_btn = tk.Button(btn, text="Approve & Publish", width=20,
                   bg="#2e7d32", fg="white", font=("Helvetica",10,"bold"),
-                  command=self._approve).pack(side="left", padx=6)
-        tk.Button(btn, text="Cancel", width=12,
+                  command=self._approve)
+        self._approve_btn.pack(side="left", padx=6)
+        
+        self._cancel_btn = tk.Button(btn, text="Cancel", width=12,
                   bg="#c62828", fg="white", font=("Helvetica",10,"bold"),
-                  command=self.destroy).pack(side="left", padx=6)
-        tk.Label(btn, text="Edit any caption above, then approve.",
-                 fg="#555", font=("Helvetica",8)).pack(side="left", padx=8)
+                  command=self._cancel)
+        self._cancel_btn.pack(side="left", padx=6)
+        
+        self._close_btn = tk.Button(btn, text="Close", width=12,
+                  bg="#666", fg="white", font=("Helvetica",10,"bold"),
+                  command=self.destroy)
+        self._close_btn.pack(side="left", padx=6)
+        self._close_btn.pack_forget()  # Hide initially
 
     def _approve(self):
         result = {}
@@ -70,4 +95,71 @@ class ReviewDialog(tk.Toplevel):
                 data["title"] = self._widgets["youtube_title"].get("1.0",tk.END).strip()
             result[p] = data
         self.result = result
-        self.destroy()
+        
+        # Switch to publishing mode
+        self._publishing = True
+        self._progress_frame.pack(fill="x", padx=8, pady=(0,8))
+        self._status_lbl.config(text="Publishing in progress...", fg="#2e7d32")
+        self._approve_btn.config(state="disabled")
+        self._cancel_btn.config(text="Cancel Publish", command=self._cancel)
+        
+        # Notify parent that approval is ready
+        self._progress_text.insert(tk.END, "✅ Captions approved. Starting publishing...\n")
+        self._progress_text.see(tk.END)
+
+    def update_progress(self, message, platform=None, status=None):
+        """Update the progress display with publishing status"""
+        if not self._publishing:
+            return
+            
+        if platform and status:
+            if status == "started":
+                self._progress_text.insert(tk.END, f"🔄 Publishing to {platform}...\n")
+            elif status == "success":
+                self._progress_text.insert(tk.END, f"✅ Published to {platform}\n")
+            elif status == "error":
+                self._progress_text.insert(tk.END, f"❌ Failed on {platform}: {message}\n")
+            else:
+                self._progress_text.insert(tk.END, f"{message}\n")
+        else:
+            self._progress_text.insert(tk.END, f"{message}\n")
+            
+        self._progress_text.see(tk.END)
+        self.update_idletasks()
+
+    def publishing_complete(self, success=True, message=""):
+        """Call when publishing is complete"""
+        self._publishing = False
+        
+        if success:
+            self._status_lbl.config(text=f"✅ {message}", fg="#2e7d32")
+            self._progress_text.insert(tk.END, f"\n🎉 {message}\n")
+        else:
+            self._status_lbl.config(text=f"❌ {message}", fg="#c62828")
+            self._progress_text.insert(tk.END, f"\n❌ {message}\n")
+            
+        self._progress_text.see(tk.END)
+        self._approve_btn.pack_forget()
+        self._cancel_btn.pack_forget()
+        self._close_btn.pack(side="left", padx=6)
+        
+    def _cancel(self):
+        if self._publishing:
+            # Cancel publishing
+            self._publishing = False
+            self.result = None  # Signal cancellation
+            self._status_lbl.config(text="Publishing cancelled.", fg="#c62828")
+            self._progress_text.insert(tk.END, "\n❌ Publishing cancelled by user.\n")
+            self._progress_text.see(tk.END)
+            
+            self._approve_btn.pack_forget()
+            self._cancel_btn.pack_forget()
+            self._close_btn.pack(side="left", padx=6)
+        else:
+            # Normal cancel (before approval)
+            self.result = None
+            self.destroy()
+
+    def is_publishing(self):
+        """Check if currently in publishing mode"""
+        return self._publishing
