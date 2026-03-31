@@ -687,10 +687,10 @@ class App(tk.Tk):
                 sheet_success, sheet_msg = quick_update_from_publish_result(
                     video_title=formatted_title,
                     publish_results=results,
-                    duration="",  # No duration for images
+                    duration="N/A",  # N/A for images
                     source_lang="",  # Not applicable for flyers
                     target_lang="gujarati",  # Flyers are always Gujarati
-                    content_format="image",  # Image publishing
+                    content_format="images",  # Images publishing
                 )
                 print(f"[SHEET] Flyer publish: {sheet_msg}")
                 
