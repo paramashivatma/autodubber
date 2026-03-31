@@ -160,16 +160,14 @@ def _is_gujarati(text):
 
 
 def _call_mistral(api_key, prompt, max_retries=3):
-    """Use OpenRouter with Llama 3.3 70B instead of Mistral."""
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    """Use actual Mistral API instead of OpenRouter."""
+    url = "https://api.mistral.ai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://dubber.local",
-        "X-Title": "KAILASA Dubber",
     }
     payload = {
-        "model": "meta-llama/llama-3.3-70b-instruct:free",
+        "model": "mistral-large-latest",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "top_p": 0.8,
@@ -195,7 +193,7 @@ def _call_mistral(api_key, prompt, max_retries=3):
             wait = 2 ** attempt
             log("CAPTION", f"[RETRY] waiting {wait}s before retry...")
             time.sleep(wait)
-    raise RuntimeError(f"OpenRouter failed after {max_retries} retries.")
+    raise RuntimeError(f"Mistral API failed after {max_retries} retries.")
 
 
 def _parse_raw(raw):
