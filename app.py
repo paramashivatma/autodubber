@@ -324,35 +324,31 @@ class App(tk.Tk):
         tk.Checkbutton(self.t_media, text="Create teaser content",
                        variable=self.generate_teaser_var).grid(row=8,column=0,columnspan=3,sticky="w",padx=10)
         
-        self.auto_cleanup_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(self.t_media, text="Auto-cleanup files after 30 seconds",
-                       variable=self.auto_cleanup_var).grid(row=9,column=0,columnspan=3,sticky="w",padx=10)
-        
         # Action Buttons
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
-        bf = tk.Frame(self.t_media); bf.grid(row=11,column=0,columnspan=3,sticky="w",padx=10)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=9,column=0,columnspan=3,sticky="ew",pady=8)
+        bf = tk.Frame(self.t_media); bf.grid(row=10,column=0,columnspan=3,sticky="w",padx=10)
         tk.Button(bf,text="Clear",command=self._clear_flyer).pack(side="left",padx=4)
         
         # Results Display
-        tk.Label(self.t_media, text="Results:", font=("Helvetica",10,"bold")).grid(row=12,column=0,sticky="w",**pad)
+        tk.Label(self.t_media, text="Results:", font=("Helvetica",10,"bold")).grid(row=11,column=0,sticky="w",**pad)
         self.flyer_results = tk.Text(self.t_media, width=60, height=8, font=("Helvetica",9))
-        self.flyer_results.grid(row=13,column=0,columnspan=3,padx=10,pady=4)
+        self.flyer_results.grid(row=12,column=0,columnspan=3,padx=10,pady=4)
         
         # Platform Selection for Flyer/Image tab
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=14,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_media, text="Platforms to Publish:", font=("Helvetica",10,"bold")).grid(row=15,column=0,sticky="w",**pad)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=13,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_media, text="Platforms to Publish:", font=("Helvetica",10,"bold")).grid(row=14,column=0,sticky="w",**pad)
         self._flyer_plat_vars = {}
-        pf = tk.Frame(self.t_media); pf.grid(row=15,column=1,columnspan=2,sticky="w")
+        pf = tk.Frame(self.t_media); pf.grid(row=14,column=1,columnspan=2,sticky="w")
         for i,p in enumerate(PLATFORMS):
             if p not in ["youtube", "tiktok"]:  # Exclude video-only platforms for image publishing
                 v = tk.BooleanVar(value=True); self._flyer_plat_vars[p] = v
                 tk.Checkbutton(pf,text=p.capitalize(),variable=v).grid(row=i//3,column=i%3,sticky="w",padx=4)
         
         # Publish Options
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=16,column=0,columnspan=3,sticky="ew",pady=8)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=15,column=0,columnspan=3,sticky="ew",pady=8)
         self.flyer_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(self.t_media, text="Publish immediately",
-                       variable=self.flyer_publish_now_var, value=True).grid(row=17,column=0,columnspan=2,sticky="w",**pad)
+                       variable=self.flyer_publish_now_var, value=True).grid(row=16,column=0,columnspan=2,sticky="w",**pad)
         
         # Store flyer path
         self.flyer_path = ""
