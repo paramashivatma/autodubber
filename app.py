@@ -766,8 +766,30 @@ class App(tk.Tk):
                 if ok > 0:
                     try:
                         from dubber.sheet_logger import quick_update_from_publish_result
-                        # Get video metadata
-                        video_title = os.path.basename(video_path)
+                        
+                        # Try to get original video title from download logs or URL
+                        video_title = ""
+                        video_url = self.video_var.get().strip()
+                        
+                        # Extract title from YouTube URL if available
+                        if "youtube.com" in video_url or "youtu.be" in video_url:
+                            # Try to get title from yt-dlp info if available
+                            try:
+                                import yt_dlp
+                                with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+                                    info = ydl.extract_info(video_url, download=False)
+                                    video_title = info.get('title', '')
+                            except:
+                                # Fallback: extract from URL or use basename
+                                pass
+                        
+                        # If still no title, use basename but clean it up
+                        if not video_title:
+                            video_title = os.path.basename(video_path)
+                            # Remove common temp names
+                            if video_title in ['source.mp4', 'output.mp4', 'final.mp4']:
+                                video_title = video_url.split('/')[-1].split('?')[0] if video_url else video_title
+                        
                         # Get duration from video
                         duration = ""
                         import subprocess
