@@ -285,10 +285,15 @@ class App(tk.Tk):
         tk.Checkbutton(self.t_media, text="Create teaser content",
                        variable=self.generate_teaser_var).grid(row=8,column=0,columnspan=3,sticky="w",padx=10)
         
+        self.auto_cleanup_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(self.t_media, text="Auto-cleanup files after 30 seconds",
+                       variable=self.auto_cleanup_var).grid(row=9,column=0,columnspan=3,sticky="w",padx=10)
+        
         # Action Buttons
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=9,column=0,columnspan=3,sticky="ew",pady=8)
-        bf = tk.Frame(self.t_media); bf.grid(row=10,column=0,columnspan=3,sticky="w",padx=10)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
+        bf = tk.Frame(self.t_media); bf.grid(row=11,column=0,columnspan=3,sticky="w",padx=10)
         tk.Button(bf,text="Process Flyer",command=self._process_flyer,bg="#00e5ff",fg="white").pack(side="left",padx=4)
+        tk.Button(bf,text="Publish Generated",command=self._publish_flyer_content,bg="#4CAF50",fg="white").pack(side="left",padx=4)
         tk.Button(bf,text="Clear",command=self._clear_flyer).pack(side="left",padx=4)
         
         # Results Display
@@ -348,6 +353,10 @@ class App(tk.Tk):
                                  bg="#2e7d32", fg="white",
                                  font=("Helvetica",11,"bold"), command=self._run)
         self.run_btn.pack(side="left", padx=6)
+        self.cleanup_btn = tk.Button(bot, text="🧹 Clean", width=12,
+                                     bg="#ff6b35", fg="white",
+                                     font=("Helvetica",10,"bold"), command=self._manual_cleanup)
+        self.cleanup_btn.pack(side="left", padx=2)
         self.status_var = tk.StringVar(value="Ready.")
         tk.Label(bot, textvariable=self.status_var, fg="#555", wraplength=340).pack(side="left", padx=10)
         self.progress = ttk.Progressbar(self, mode="indeterminate", length=480)
@@ -522,10 +531,137 @@ class App(tk.Tk):
                         json.dump(teaser, f, ensure_ascii=False, indent=2)
                 
                 self.flyer_results.insert(tk.END, f"💾 Results saved to {workspace_dir}/ folder\n")
+                
+                # Auto-cleanup after 30 seconds if enabled
+                if hasattr(self, 'auto_cleanup_var') and self.auto_cleanup_var.get():
+                    self.flyer_results.insert(tk.END, f"⏰ Auto-cleanup in 30 seconds...\n")
+                    self.after(30000, lambda: self._delayed_cleanup(workspace_dir))
+                else:
+                    self.flyer_results.insert(tk.END, f"💡 Files will remain - use '🧹 Clean' button when ready\n")
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to process flyer: {str(e)}")
             self.flyer_results.insert(tk.END, f"❌ Error: {str(e)}\n")
+
+
+    def _publish_flyer_content(self):
+        """Publish the generated flyer content"""
+        try:
+            # Check if captions exist
+            captions_file = os.path.join("workspace", "flyer_captions.json")
+            if not os.path.exists(captions_file):
+                messagebox.showerror("No Content", "Please process the flyer first to generate captions!")
+                return
+            
+            # Load captions
+            with open(captions_file, "r", encoding="utf-8") as f:
+                captions = json.load(f)
+            
+            # Check if flyer image exists
+            if not self.flyer_path or not os.path.exists(self.flyer_path):
+                messagebox.showerror("No Image", "Please select a flyer image first!")
+                return
+            
+            # Get selected platforms
+            selected = [p for p,v in self._plat_vars.items() if v.get()]
+            if not selected:
+                messagebox.showwarning("No Platforms", "Please select at least one platform to publish!")
+                return
+            
+            # Get API keys
+            zernio_key = self.zernio_key_var.get().strip()
+            if not zernio_key:
+                messagebox.showerror("No API Key", "Please enter Zernio API key in AI & Publish tab!")
+                return
+            
+            # Show confirmation dialog
+            result = messagebox.askyesno("Confirm Publish", 
+                f"Publish flyer to {len(selected)} platform(s):\n{', '.join(selected)}\n\nImage: {os.path.basename(self.flyer_path)}")
+            if not result:
+                return
+            
+            # Start publishing
+            self.status_var.set("Publishing flyer...")
+            self.progress.start(12)
+            
+            def _publish_thread():
+                try:
+                    # Prepare captions for publishing
+                    publish_captions = {}
+                    for platform in selected:
+                        if platform in captions:
+                            publish_captions[platform] = {
+                                "caption": captions[platform]
+                            }
+                        else:
+                            publish_captions[platform] = {
+                                "caption": f"Check out this content from KAILASA! #KAILASA #Nithyananda"
+                            }
+                    
+                    # Publish to platforms
+                    results = publish_to_platforms(
+                        api_key=zernio_key,
+                        video_path=self.flyer_path,  # Use flyer as primary content
+                        captions=publish_captions,
+                        platforms=selected,
+                        publish_now=True,
+                        image_paths=[self.flyer_path],  # Publish as image
+                        output_dir="workspace",
+                        progress_cb=lambda done, total, platform, status: self.after(0, 
+                            lambda: self._update_progress(done, total, platform, status))
+                    )
+                    
+                    # Count successful publishes
+                    successful = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
+                    
+                    self.after(0, lambda: self._flyer_publish_done(successful, len(selected), results))
+                    
+                except Exception as e:
+                    self.after(0, lambda: self._flyer_publish_done(0, 1, {"error": str(e)}))
+            
+            threading.Thread(target=_publish_thread, daemon=True).start()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to publish: {str(e)}")
+
+    def _flyer_publish_done(self, successful, total, results):
+        """Handle flyer publishing completion"""
+        self.progress.stop()
+        
+        if successful > 0:
+            self.status_var.set(f"Published to {successful}/{total} platforms!")
+            messagebox.showinfo("Success", f"Successfully published to {successful} platform(s)!")
+        else:
+            self.status_var.set("Publishing failed")
+            messagebox.showerror("Failed", "Publishing failed. Check API keys and try again.")
+        
+        # Log results
+        for platform, result in results.items():
+            if isinstance(result, dict) and "error" in result:
+                self._pub_log_write(f'FAIL {platform}: {result["error"]}')
+            else:
+                self._pub_log_write(f'OK   {platform}: {result.get("_id", "success")}')
+
+    def _delayed_cleanup(self, workspace_dir):
+        """Delayed cleanup after timer expires"""
+        try:
+            from dubber.workspace_cleaner import cleanup_flyer_files
+            cleanup_flyer_files(workspace_dir)
+            self.flyer_results.insert(tk.END, f"🧹 Auto-cleanup completed\n")
+        except Exception as e:
+            self.flyer_results.insert(tk.END, f"⚠️ Auto-cleanup failed: {str(e)}\n")
+
+    def _manual_cleanup(self):
+        """Manual workspace cleanup"""
+        try:
+            from dubber.workspace_cleaner import full_cleanup
+            self.status_var.set("Cleaning workspace...")
+            full_cleanup("workspace")
+            self.status_var.set("Workspace cleaned successfully!")
+            messagebox.showinfo("Cleanup", "Workspace has been cleaned up!")
+        except Exception as e:
+            self.status_var.set(f"Cleanup failed: {str(e)}")
+            messagebox.showerror("Cleanup Failed", f"Failed to clean workspace: {str(e)}")
 
     def _save_keys(self):
         to_save = {}
@@ -694,6 +830,14 @@ class App(tk.Tk):
                 else:
                     self._pub_log_write(f'OK   {k}: id={v.get("_id","?") if isinstance(v,dict) else "ok"}')
         (messagebox.showinfo if success else messagebox.showerror)("Result", msg)
+        
+        # Clean up workspace after pipeline completion
+        try:
+            from dubber.workspace_cleaner import cleanup_temp_files
+            cleanup_temp_files("workspace")
+            self.status_var.set(f"{msg} (workspace cleaned)")
+        except Exception as e:
+            self.status_var.set(f"{msg} (cleanup failed: {str(e)})")
 
     def _update_progress(self, done, total, platform, status):
         """Thread-safe progress update for publishing"""

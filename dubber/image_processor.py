@@ -10,6 +10,18 @@ from .utils import log
 def extract_text_from_image(image_path, api_key=None):
     """Extract text from image using OCR"""
     try:
+        # Add Tesseract to PATH for Windows
+        import sys
+        if sys.platform == "win32":
+            tesseract_path = r"C:\Program Files\Tesseract-OCR"
+            if tesseract_path not in sys.path:
+                sys.path.append(tesseract_path)
+            # Also add to environment PATH
+            import os
+            current_path = os.environ.get('PATH', '')
+            if tesseract_path not in current_path:
+                os.environ['PATH'] = current_path + os.pathsep + tesseract_path
+        
         # Try multiple OCR approaches
         extracted_text = ""
         
@@ -179,6 +191,18 @@ def generate_gujarati_captions(extracted_text, api_key=None):
         
     except Exception as e:
         log("CAPTIONS", f"Failed to generate captions: {e}")
+        
+        # Check if it's a quota issue and provide fallback
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            log("CAPTIONS", "API quota exceeded - providing fallback captions")
+            return {
+                "instagram": f"તમારા આધ્યાત્મિક માર્ગદર્શક હવે તમારી સાથે! ✨\n\n{extracted_text[:100]}...\n\n#KAILASA #Nithyananda",
+                "facebook": f"પરમ પૂજનીય ભગવાન શ્રી નિત્યાનંદ પરમશિવમની કૃપા હવે ઉપલબ્ધ છે!\n\n{extracted_text[:100]}...",
+                "twitter": f"આધ્યાત્મિક માર્ગદર્શન ઉપલબ્ધ! {extracted_text[:50]}... #KAILASA #Nithyananda",
+                "threads": f"તમારા આધ્યાત્મિક સફરની શરૂઆત!\n\n{extracted_text[:100]}...",
+                "bluesky": f"દિવ્ય માર્ગદર્શન મેળવો - {extracted_text[:50]}... #KAILASA"
+            }
+        
         return {"error": f"Caption generation failed: {str(e)}"}
 
 def generate_teaser_content(extracted_text, captions, api_key=None):
@@ -236,4 +260,16 @@ def generate_teaser_content(extracted_text, captions, api_key=None):
         
     except Exception as e:
         log("TEASER", f"Failed to generate teaser: {e}")
+        
+        # Check if it's a quota issue and provide fallback
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            log("TEASER", "API quota exceeded - providing fallback teaser")
+            return {
+                "hook": "તમારું આધ્યાત્મિક માર્ગદર્શક હવે તમારી આંગળીના ટેરવે! 📲",
+                "main_content": f"પરમ પૂજનીય ભગવાન શ્રી નિત્યાનંદ પરમશિવમ દ્વારા દિવ્ય માર્ગદર્શનનો અનુભવ કરો. {extracted_text[:100]}...",
+                "call_to_action": "આજે જ ડાઉનલોડ કરો અને આધ્યાત્મિક યાત્રા શરૂ કરો! ✨",
+                "hashtags": "#KAILASA #Nithyananda #SpiritualCompanion #DivineGuidance",
+                "duration_estimate": "15-20 seconds"
+            }
+        
         return {"error": f"Teaser generation failed: {str(e)}"}
