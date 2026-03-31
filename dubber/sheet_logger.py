@@ -14,7 +14,23 @@ except ImportError:
     GSHEET_AVAILABLE = False
     print("[SHEET] Warning: gspread not installed. Run: pip install gspread")
 
-from .utils import log
+from .utils import log, PLATFORM_LIMITS, SHORT_MINIMUMS, REQUIRED_PLATFORMS
+
+# Language code to full name mapping
+LANGUAGE_CODES_TO_NAMES = {
+    "en": "English",
+    "hi": "Hindi", 
+    "gu": "Gujarati",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "kn": "Kannada",
+    "ml": "Malayalam",
+    "bn": "Bengali"
+}
+
+def _get_full_language_name(lang_code: str) -> str:
+    """Convert language code to full language name."""
+    return LANGUAGE_CODES_TO_NAMES.get(lang_code, lang_code)
 
 # Google Sheet config
 SHEET_NAME = "AutoDubQueue"
@@ -36,7 +52,7 @@ def _parse_logs_for_data(log_buffer: List[str]) -> Dict:
         "title": "",
         "status": "Published ✅",
         "attempts": 1,
-        "youtube_url": "",
+        "format": "",
         "duration": "",
         "source_lang": "",
         "target_lang": "",
@@ -81,7 +97,8 @@ def _parse_logs_for_data(log_buffer: List[str]) -> Dict:
     if yt_match:
         yt_id = yt_match.group(1)
         data["post_ids"]["youtube"] = yt_id
-        data["youtube_url"] = f"https://youtube.com/shorts/{yt_id}"
+        # Set format to video since we have YouTube content
+        data["format"] = "video"
     
     # Extract all platform post IDs from PUBLISH OK lines
     publish_pattern = r'(\w+)\s+(?:OK|Fetched)\s*-?\s*(?:id[:\s]+)?(\w+)'
@@ -187,11 +204,21 @@ def update_video_tracker(
         # Get or create "Video Tracker" worksheet
         try:
             worksheet = spreadsheet.worksheet(SHEET_NAME)
+            # Check if headers need updating (old "YouTube URL" -> new "Format")
+            existing_headers = worksheet.row_values(1)
+            if len(existing_headers) >= 4 and existing_headers[3] == "YouTube URL":
+                # Update headers to new format
+                new_headers = [
+                    "Video Title", "Status", "Attempts", "Format", "Duration",
+                    "Source Lang", "Target Lang", "Platforms", "Post IDs", "Timestamp"
+                ]
+                worksheet.update("A1:J1", [new_headers])
+                log("SHEET", "Updated headers from 'YouTube URL' to 'Format'")
         except gspread.exceptions.WorksheetNotFound:
             # Create worksheet with headers
             worksheet = spreadsheet.add_worksheet(SHEET_NAME, rows=1000, cols=10)
             headers = [
-                "Video Title", "Status", "Attempts", "YouTube URL", "Duration",
+                "Video Title", "Status", "Attempts", "Format", "Duration",
                 "Source Lang", "Target Lang", "Platforms", "Post IDs", "Timestamp"
             ]
             worksheet.append_row(headers)
@@ -234,10 +261,10 @@ def update_video_tracker(
             data["title"],
             data["status"],
             data["attempts"],
-            data["youtube_url"],
+            data["format"],
             data["duration"],
-            data["source_lang"],
-            data["target_lang"],
+            _get_full_language_name(data["source_lang"]),
+            _get_full_language_name(data["target_lang"]),
             platforms_str,
             post_ids_str,
             data["timestamp"]
@@ -267,6 +294,7 @@ def quick_update_from_publish_result(
     duration: str = "",
     source_lang: str = "",
     target_lang: str = "",
+    content_format: str = "video",  # "video" or "image"
     sheet_id: Optional[str] = None
 ) -> Tuple[bool, str]:
     """
@@ -278,6 +306,7 @@ def quick_update_from_publish_result(
         duration: Video duration string
         source_lang: Source language code
         target_lang: Target language code
+        content_format: Content type - "video" or "image"
         sheet_id: Optional sheet ID
     """
     if not GSHEET_AVAILABLE:
@@ -301,7 +330,7 @@ def quick_update_from_publish_result(
             "title": video_title,
             "status": "Published ✅",
             "attempts": 1,
-            "youtube_url": "",
+            "format": content_format,  # "video" or "image"
             "duration": duration,
             "source_lang": source_lang,
             "target_lang": target_lang,
@@ -310,12 +339,7 @@ def quick_update_from_publish_result(
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         
-        # Get YouTube URL specifically
-        if "youtube" in publish_results:
-            yt_data = publish_results["youtube"]
-            data["youtube_url"] = yt_data.get("url", "")
-            if not data["youtube_url"] and yt_data.get("post_id"):
-                data["youtube_url"] = f"https://youtube.com/shorts/{yt_data['post_id']}"
+        # Format will be set by the calling function based on content type
         
         # Connect and update
         creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
@@ -324,10 +348,20 @@ def quick_update_from_publish_result(
         
         try:
             worksheet = spreadsheet.worksheet(SHEET_NAME)
+            # Check if headers need updating (old "YouTube URL" -> new "Format")
+            existing_headers = worksheet.row_values(1)
+            if len(existing_headers) >= 4 and existing_headers[3] == "YouTube URL":
+                # Update headers to new format
+                new_headers = [
+                    "Video Title", "Status", "Attempts", "Format", "Duration",
+                    "Source Lang", "Target Lang", "Platforms", "Post IDs", "Timestamp"
+                ]
+                worksheet.update("A1:J1", [new_headers])
+                log("SHEET", "Updated headers from 'YouTube URL' to 'Format'")
         except gspread.exceptions.WorksheetNotFound:
             worksheet = spreadsheet.add_worksheet(SHEET_NAME, rows=1000, cols=10)
             headers = [
-                "Video Title", "Status", "Attempts", "YouTube URL", "Duration",
+                "Video Title", "Status", "Attempts", "Format", "Duration",
                 "Source Lang", "Target Lang", "Platforms", "Post IDs", "Timestamp"
             ]
             worksheet.append_row(headers)
@@ -365,8 +399,8 @@ def quick_update_from_publish_result(
         
         row_data = [
             data["title"], data["status"], data["attempts"],
-            data["youtube_url"], data["duration"], data["source_lang"],
-            data["target_lang"], platforms_str, post_ids_str, data["timestamp"]
+            data["format"], data["duration"], _get_full_language_name(data["source_lang"]),
+            _get_full_language_name(data["target_lang"]), platforms_str, post_ids_str, data["timestamp"]
         ]
         
         if row_index:

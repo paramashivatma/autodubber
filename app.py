@@ -541,12 +541,9 @@ class App(tk.Tk):
                 messagebox.showerror("No Image", "Please select a flyer image first!")
                 return
             
-            # Get selected platforms (filter out video-only platforms for images)
-            all_selected = [p for p,v in self._plat_vars.items() if v.get()]
-            print(f"DEBUG: All selected platforms: {all_selected}")
-            # Remove YouTube and TikTok for image publishing
-            selected = [p for p in all_selected if p not in ["youtube", "tiktok"]]
-            print(f"DEBUG: Filtered platforms for images: {selected}")
+            # Get selected platforms from flyer tab (already excludes video-only platforms)
+            selected = [p for p,v in self._flyer_plat_vars.items() if v.get()]
+            print(f"DEBUG: Selected flyer platforms: {selected}")
             
             if not selected:
                 messagebox.showwarning("No Platforms", 
@@ -591,7 +588,7 @@ class App(tk.Tk):
                         video_path=self.flyer_path,  # Required for validation
                         captions=publish_captions,
                         platforms=selected,
-                        publish_now=True,
+                        publish_now=self.flyer_publish_now_var.get(),
                         image_paths=[],  # Don't add extra images to avoid duplicates
                         output_dir="workspace",
                         progress_cb=lambda done, total, platform, status: self.after(0, 
@@ -647,6 +644,59 @@ class App(tk.Tk):
         if successful > 0:
             self.status_var.set(f"Published to {successful}/{total} platforms!")
             messagebox.showinfo("Success", f"Successfully published to {successful} platform(s)!")
+            
+            # Log to Google Sheet after successful flyer publish
+            try:
+                from dubber.sheet_logger import quick_update_from_publish_result
+                
+                # Get flyer title for sheet
+                formatted_title = ""
+                try:
+                    # Use flyer filename as title
+                    flyer_title = os.path.basename(self.flyer_path)
+                    # Remove extension
+                    title_without_ext = os.path.splitext(flyer_title)[0]
+                    
+                    # Try to get Gujarati title from flyer captions
+                    captions_file = os.path.join("workspace", "flyer_captions.json")
+                    if os.path.exists(captions_file):
+                        with open(captions_file, "r", encoding="utf-8") as f:
+                            captions = json.load(f)
+                        
+                        # Get Gujarati title from any platform (YouTube might have title)
+                        gujarati_title = ""
+                        for platform, data in captions.items():
+                            if isinstance(data, dict) and data.get("title"):
+                                gujarati_title = data["title"]
+                                break
+                        
+                        if gujarati_title:
+                            # Format as "Gujarati (English)"
+                            formatted_title = f"{gujarati_title} ({title_without_ext})"
+                            print(f"[SHEET] Using formatted flyer title: {formatted_title}")
+                        else:
+                            formatted_title = title_without_ext
+                    else:
+                        formatted_title = title_without_ext
+                        
+                except Exception as e:
+                    print(f"[SHEET] Error getting flyer title: {e}")
+                    formatted_title = os.path.basename(self.flyer_path)
+                
+                # Call sheet logger for image publishing
+                sheet_success, sheet_msg = quick_update_from_publish_result(
+                    video_title=formatted_title,
+                    publish_results=results,
+                    duration="",  # No duration for images
+                    source_lang="",  # Not applicable for flyers
+                    target_lang="gujarati",  # Flyers are always Gujarati
+                    content_format="image",  # Image publishing
+                )
+                print(f"[SHEET] Flyer publish: {sheet_msg}")
+                
+            except Exception as e:
+                print(f"[SHEET] Flyer sheet update failed: {e}")
+                
         else:
             self.status_var.set("Publishing failed")
             messagebox.showerror("Failed", "Publishing failed. Check API keys and try again.")
@@ -795,28 +845,74 @@ class App(tk.Tk):
                     try:
                         from dubber.sheet_logger import quick_update_from_publish_result
                         
-                        # Try to get original video title from download logs or URL
-                        video_title = ""
-                        video_url = self.video_var.get().strip()
+                        # Get the generated Gujarati title from captions
+                        formatted_title = ""
+                        english_title = ""  # Initialize english_title
+                        try:
+                            captions_file = os.path.join("workspace", "captions.json")
+                            if os.path.exists(captions_file):
+                                with open(captions_file, "r", encoding="utf-8") as f:
+                                    captions = json.load(f)
+                                
+                                # Get Gujarati title from YouTube captions
+                                gujarati_title = captions.get("youtube", {}).get("title", "")
+                                if gujarati_title:
+                                    # Get English translation of original title
+                                    video_url = self.video_var.get().strip()
+                                    
+                                    # Try to get English title from YouTube first
+                                    if "youtube.com" in video_url or "youtu.be" in video_url:
+                                        try:
+                                            import yt_dlp
+                                            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+                                                info = ydl.extract_info(video_url, download=False)
+                                                english_title = info.get('title', '')
+                                        except:
+                                            pass
+                                    
+                                    # Fallback: use basename if no YouTube title
+                                    if not english_title:
+                                        english_title = os.path.basename(video_path)
+                                        # Clean up common temp names
+                                        if english_title in ['source.mp4', 'output.mp4', 'final.mp4']:
+                                            english_title = video_url.split('/')[-1].split('?')[0] if video_url else english_title
+                                    
+                                    # Format as "Gujarati (English)"
+                                    formatted_title = f"{gujarati_title} ({english_title})"
+                                    print(f"[SHEET] Using formatted title: {formatted_title}")
+                                else:
+                                    formatted_title = ""
+                            else:
+                                formatted_title = ""
+                        except Exception as e:
+                            print(f"[SHEET] Error getting captions: {e}")
+                            formatted_title = ""
                         
-                        # Extract title from YouTube URL if available
-                        if "youtube.com" in video_url or "youtu.be" in video_url:
-                            # Try to get title from yt-dlp info if available
-                            try:
-                                import yt_dlp
-                                with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                                    info = ydl.extract_info(video_url, download=False)
-                                    video_title = info.get('title', '')
-                            except:
-                                # Fallback: extract from URL or use basename
-                                pass
-                        
-                        # If still no title, use basename but clean it up
-                        if not video_title:
-                            video_title = os.path.basename(video_path)
-                            # Remove common temp names
-                            if video_title in ['source.mp4', 'output.mp4', 'final.mp4']:
-                                video_title = video_url.split('/')[-1].split('?')[0] if video_url else video_title
+                        # Try to get original video title from download logs or URL if no formatted title
+                        if not formatted_title:
+                            video_url = self.video_var.get().strip()
+                            video_title = ""
+                            
+                            # Extract title from YouTube URL if available
+                            if "youtube.com" in video_url or "youtu.be" in video_url:
+                                # Try to get title from yt-dlp info if available
+                                try:
+                                    import yt_dlp
+                                    with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+                                        info = ydl.extract_info(video_url, download=False)
+                                        video_title = info.get('title', '')
+                                except:
+                                    # Fallback: extract from URL or use basename
+                                    pass
+                            
+                            # If still no title, use basename but clean it up
+                            if not video_title:
+                                video_title = os.path.basename(video_path)
+                                # Remove common temp names
+                                if video_title in ['source.mp4', 'output.mp4', 'final.mp4']:
+                                    video_title = video_url.split('/')[-1].split('?')[0] if video_url else video_title
+                            
+                            formatted_title = video_title
                         
                         # Get duration from video
                         duration = ""
@@ -839,13 +935,14 @@ class App(tk.Tk):
                         source_lang = self.src_lang_var.get()
                         target_lang = self.tgt_lang_var.get()
                         
-                        # Call sheet logger
+                        # Call sheet logger with formatted title and format
                         sheet_success, sheet_msg = quick_update_from_publish_result(
-                            video_title=video_title,
+                            video_title=formatted_title,
                             publish_results=results,
                             duration=duration,
                             source_lang=source_lang,
                             target_lang=target_lang,
+                            content_format="video",  # Video dubbing
                         )
                         print(f"[SHEET] {sheet_msg}")
                     except Exception as e:
