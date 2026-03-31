@@ -159,15 +159,70 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v24  |  Dub / Publish")
-        self.resizable(True, False)  # Allow horizontal resizing but not vertical
-        self.geometry("750x600")  # Set appropriate initial size
+        self.title("Video Dubber v24")
+        self.geometry("600x500")  # More compact
+        self.resizable(False, False)
         self._env         = _load_env()
         self._image_paths = []
         self._build_ui()
 
     def _build_ui(self):
         pad = {"padx":10,"pady":4}
+
+        # Bottom buttons frame - create first but pack after notebook
+        bot = tk.Frame(self, padx=15, pady=8, relief="groove", bd=1)
+        
+        # Left side: Clean button
+        self.cleanup_btn = tk.Button(bot, text="🧹 Clean", width=10,
+                                     bg="#dc3545", fg="white",
+                                     font=("Helvetica",9,"bold"), 
+                                     command=self._manual_cleanup,
+                                     relief="raised", bd=1)
+        self.cleanup_btn.pack(side="left", padx=5, pady=4)
+        
+        # Center: Process Flyer and Publish Generated buttons
+        center_frame = tk.Frame(bot)
+        center_frame.pack(side="left", expand=True, fill="x", padx=10)
+        
+        self.process_flyer_btn = tk.Button(center_frame, text="Process Flyer", command=self._process_flyer, 
+                                           bg="#007bff", fg="white", width=12,
+                                           font=("Helvetica",9,"bold"),
+                                           relief="raised", bd=1)
+        self.process_flyer_btn.pack(side="left", padx=3, pady=4)
+        
+        self.publish_flyer_btn = tk.Button(center_frame, text="Publish Generated", command=self._publish_flyer_content, 
+                                           bg="#28a745", fg="white", width=14,
+                                           font=("Helvetica",9,"bold"),
+                                           relief="raised", bd=1)
+        self.publish_flyer_btn.pack(side="left", padx=3, pady=4)
+        
+        # Right side: Run Pipeline button (only for Dub tab functionality)
+        self.run_btn = tk.Button(bot, text="Run Full Pipeline", width=14,
+                                 bg="#17a2b8", fg="white",
+                                 font=("Helvetica",9,"bold"), command=self._run,
+                                 relief="raised", bd=1)
+        self.run_btn.pack(side="right", padx=5, pady=4)
+        
+        # Status bar - separate frame at bottom
+        status_frame = tk.Frame(self, relief="sunken", bd=1)
+        self.status_var = tk.StringVar(value="Ready.")
+        status_label = tk.Label(status_frame, textvariable=self.status_var, fg="#333", 
+                               font=("Helvetica",9), anchor="w")
+        status_label.pack(side="left", padx=5, pady=2, fill="x", expand=True)
+        status_frame.pack(side="bottom", fill="x", padx=15, pady=(0,8))
+        
+        # Progress bar - above status bar
+        self.progress = ttk.Progressbar(self, mode="indeterminate", length=400)
+        self.progress.pack(fill="x", padx=15, pady=(0,5))
+
+        # Set initial button visibility - Dub tab is default
+        self.process_flyer_btn.pack_forget()
+        self.publish_flyer_btn.pack_forget()
+        # run_btn is already packed, so it should be visible
+
+        # Now pack the bot frame at the bottom
+        bot.pack(side="bottom", fill="x")
+        self.update()  # Force window update to get proper size
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=8, pady=6)
@@ -312,39 +367,12 @@ class App(tk.Tk):
         self.pub_teaser_var = tk.StringVar()
         self._image_paths = []
 
-        # Bottom buttons frame
-        bot = tk.Frame(self, padx=14, pady=6); bot.pack(fill="x")
-        
-        # Left side: Clean button
-        self.cleanup_btn = tk.Button(bot, text="🧹 Clean", width=12,
-                                     bg="#ff6b35", fg="white",
-                                     font=("Helvetica",10,"bold"), command=self._manual_cleanup)
-        self.cleanup_btn.pack(side="left", padx=2)
-        
-        # Center: Process Flyer and Publish Generated buttons
-        center_frame = tk.Frame(bot)
-        center_frame.pack(side="left", expand=True, fill="x")
-        
-        self.process_flyer_btn = tk.Button(center_frame, text="Process Flyer", command=self._process_flyer, bg="#00e5ff", fg="white", width=15)
-        self.process_flyer_btn.pack(side="left", padx=4)
-        
-        self.publish_flyer_btn = tk.Button(center_frame, text="Publish Generated", command=self._publish_flyer_content, bg="#4CAF50", fg="white", width=15)
-        self.publish_flyer_btn.pack(side="left", padx=4)
-        
-        # Right side: Run Pipeline button (only for Dub tab functionality)
-        self.run_btn = tk.Button(bot, text="Run Full Pipeline", width=20,
-                                 bg="#2e7d32", fg="white",
-                                 font=("Helvetica",11,"bold"), command=self._run)
-        self.run_btn.pack(side="right", padx=6)
-        self.status_var = tk.StringVar(value="Ready.")
-        tk.Label(bot, textvariable=self.status_var, fg="#555", wraplength=340).pack(side="left", padx=10)
-        self.progress = ttk.Progressbar(self, mode="indeterminate", length=480)
-        self.progress.pack(fill="x", padx=14, pady=(0,8))
-
-        self._on_tab_changed(None)  # Set initial button visibility
-
     def _on_tab_changed(self, event):
         """Handle tab changes - hide/show buttons based on selected tab"""
+        # Skip if this is the initial load (no event object)
+        if event is None:
+            return
+            
         selected_tab = self.nb.index(self.nb.select())
         if selected_tab == 1:  # Flyer/Image tab
             # Show Process Flyer and Publish Generated buttons

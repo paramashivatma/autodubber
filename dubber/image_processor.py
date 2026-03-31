@@ -6,6 +6,8 @@ import json
 import time
 import re
 from .utils import log
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 
 def extract_text_from_image(image_path, api_key=None):
     """Extract text from image using OCR"""
