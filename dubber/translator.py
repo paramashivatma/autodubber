@@ -74,40 +74,39 @@ def _has_foreign_script(text):
 
 
 def _gemini_translate(text, source_hint="auto", target_language="gu"):
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("No Gemini API key found.")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-3-flash-preview")
-
+    client = genai.Client(api_key=api_key)
+    
     lang_names = {
         "gu": "Gujarati", "hi": "Hindi", "ta": "Tamil",
         "te": "Telugu", "kn": "Kannada", "ml": "Malayalam",
         "en": "English", "auto": "the detected language",
     }
-    target_name = lang_names.get(target_language, target_language)
-
-    prompt = f"""Translate the following text to {target_name}.
-
-Context: This is a spiritual/Vedantic teaching by a Hindu monk.
-Preserve the teacher's tone and voice.
-Use natural spoken {target_name} — not literal word-for-word translation.
-Convey the meaning and spiritual register, not just the words.
-Return ONLY the translated text. No explanations, no notes.
+    
+    source_lang = lang_names.get(source_hint, source_hint)
+    target_lang = lang_names.get(target_language, target_language)
+    
+    prompt = f"""Translate the following text from {source_lang} to {target_language}.
+Return ONLY the translation, no explanations or extra text.
 
 Text to translate:
 {text}"""
 
     for attempt in range(1, 4):
         try:
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=prompt,
+                config=types.GenerateContentConfig(
                     temperature=0.3,
                     top_p=0.8,
+                    max_output_tokens=1024,
                 )
             )
             result = response.text.strip()
@@ -115,6 +114,8 @@ Text to translate:
                 return result
         except Exception as e:
             log("TRANSLATE", f"  Gemini attempt {attempt} failed: {e}")
+            if attempt == 3:
+                raise RuntimeError(f"Gemini translation failed after 3 attempts: {e}")
             time.sleep(3 * attempt)
 
     raise RuntimeError("Gemini translation failed after 3 attempts.")
@@ -122,14 +123,14 @@ Text to translate:
 
 def _gemini_translate_batch(texts, source_hint, target_language):
     """Translate multiple texts in a single Gemini API call"""
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
     
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("No Gemini API key found.")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-3-flash-preview")
+    client = genai.Client(api_key=api_key)
 
     lang_names = {
         "gu": "Gujarati", "hi": "Hindi", "ta": "Tamil",
@@ -158,7 +159,15 @@ Texts to translate:
 
     for attempt in range(1, 4):
         try:
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.3,
+                    top_p=0.8,
+                    max_output_tokens=4096,
+                )
+            )
             result = response.text.strip()
             if result:
                 translations = _parse_batch_response(result, len(texts))
