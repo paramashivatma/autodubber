@@ -1,0 +1,15 @@
+{
+  "youtube": {
+    "title": "Test Video Title",
+    "caption": "This is a test YouTube caption for testing purposes."
+  },
+  "facebook": {
+    "caption": "This is a test Facebook caption for testing purposes."
+  },
+  "instagram": {
+    "caption": "This is a test Instagram caption for testing purposes."
+  },
+  "tiktok": {
+    "caption": "This is a test TikTok caption for testing purposes."
+  }
+}

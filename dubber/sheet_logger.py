@@ -57,7 +57,6 @@ def _parse_logs_for_data(log_buffer: List[str]) -> Dict:
         "source_lang": "",
         "target_lang": "",
         "platforms": [],
-        "post_ids": {},
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
     
@@ -92,22 +91,19 @@ def _parse_logs_for_data(log_buffer: List[str]) -> Dict:
     if duration_match:
         data["duration"] = duration_match.group(1)
     
-    # Extract YouTube post ID and build URL
+    # Extract YouTube presence and set format
     yt_match = re.search(r'youtube\s+OK\s*-?\s*id[:\s]+(\w+)', log_text, re.IGNORECASE)
     if yt_match:
-        yt_id = yt_match.group(1)
-        data["post_ids"]["youtube"] = yt_id
         # Set format to video since we have YouTube content
         data["format"] = "video"
+        data["platforms"].append("youtube")
     
-    # Extract all platform post IDs from PUBLISH OK lines
+    # Extract all platforms from PUBLISH OK lines
     publish_pattern = r'(\w+)\s+(?:OK|Fetched)\s*-?\s*(?:id[:\s]+)?(\w+)'
     for match in re.finditer(publish_pattern, log_text, re.IGNORECASE):
         platform = match.group(1).lower()
-        post_id = match.group(2)
         if platform in ["youtube", "instagram", "tiktok", "facebook", 
                        "twitter", "threads", "bluesky", "linkedin"]:
-            data["post_ids"][platform] = post_id
             if platform not in data["platforms"]:
                 data["platforms"].append(platform)
     
@@ -141,15 +137,6 @@ def _format_platforms_list(platforms: List[str]) -> str:
     return ",".join(formatted) if formatted else ""
 
 
-def _format_post_ids(post_ids: Dict[str, str]) -> str:
-    """Format post IDs for column I."""
-    if not post_ids:
-        return ""
-    parts = []
-    for platform, post_id in post_ids.items():
-        abbrev = platform[:2] if platform != "youtube" else "yt"
-        parts.append(f"{abbrev}:{post_id}")
-    return ",".join(parts)
 
 
 def update_video_tracker(
@@ -253,9 +240,8 @@ def update_video_tracker(
                 log("SHEET", f"Using empty row {row_index}")
             # else: will append new row at end
         
-        # Prepare row data (columns A-J)
+        # Prepare row data (columns A-I)
         platforms_str = _format_platforms_list(data["platforms"])
-        post_ids_str = _format_post_ids(data["post_ids"])
         
         row_data = [
             data["title"],
@@ -266,13 +252,12 @@ def update_video_tracker(
             _get_full_language_name(data["source_lang"]),
             _get_full_language_name(data["target_lang"]),
             platforms_str,
-            post_ids_str,
             data["timestamp"]
         ]
         
         if row_index:
             # Update existing row
-            worksheet.update(f"A{row_index}:J{row_index}", [row_data])
+            worksheet.update(f"A{row_index}:I{row_index}", [row_data])
             log("SHEET", f"Updated row {row_index} for '{data['title']}'")
             return True, f"Updated row {row_index}"
         else:
@@ -335,7 +320,6 @@ def quick_update_from_publish_result(
             "source_lang": source_lang,
             "target_lang": target_lang,
             "platforms": list(publish_results.keys()),
-            "post_ids": {p: r.get("post_id", "") for p, r in publish_results.items()},
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         
@@ -395,16 +379,15 @@ def quick_update_from_publish_result(
             # else: will append new row at end
         
         platforms_str = _format_platforms_list(data["platforms"])
-        post_ids_str = _format_post_ids(data["post_ids"])
         
         row_data = [
             data["title"], data["status"], data["attempts"],
             data["format"], data["duration"], _get_full_language_name(data["source_lang"]),
-            _get_full_language_name(data["target_lang"]), platforms_str, post_ids_str, data["timestamp"]
+            _get_full_language_name(data["target_lang"]), platforms_str, data["timestamp"]
         ]
         
         if row_index:
-            worksheet.update(f"A{row_index}:J{row_index}", [row_data])
+            worksheet.update(f"A{row_index}:I{row_index}", [row_data])
             log("SHEET", f"Updated row {row_index}")
             return True, f"Updated row {row_index}"
         else:

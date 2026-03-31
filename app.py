@@ -13,6 +13,7 @@ from dubber import (
 from dubber.utils import PLATFORMS
 from dubber.downloader    import is_url, download_video
 from dubber.bgm_separator import separate_background
+from dubber.parallel_upload import create_parallel_upload_manager, publish_with_preuploaded_urls
 from review_dialog        import ReviewDialog
 
 WORKSPACE   = "workspace"
@@ -795,7 +796,14 @@ class App(tk.Tk):
                      image_paths, done_cb, teaser_paths=None):
         self.progress.stop()
         self.status_var.set("Review captions — edit if needed, then approve.")
-        dlg = ReviewDialog(self, captions)
+        
+        # Create parallel upload manager
+        upload_manager = create_parallel_upload_manager(
+            zernio_key, video_path, teaser_paths, image_paths
+        )
+        
+        # Show review dialog with upload manager
+        dlg = ReviewDialog(self, captions, upload_manager)
         if dlg.result is None:
             self.run_btn.config(state="normal")
             self.status_var.set("Publishing cancelled."); return
@@ -820,18 +828,33 @@ class App(tk.Tk):
                     self.after(0, lambda: dlg.update_progress(
                         f"Publishing to {platform}...", platform, status))
                 
-                results = publish_to_platforms(
+                # Wait for uploads to complete
+                upload_results = dlg.get_upload_results()
+                if not upload_results.get("main_video"):
+                    dlg.update_progress("❌ Main video upload failed. Cannot publish.", None, "error")
+                    return
+                
+                dlg.update_progress("✅ All uploads completed. Starting platform publishing...", None, "ok")
+                
+                # Prepare fallback files for when uploads fail
+                fallback_files = {
+                    'main_video': video_path
+                }
+                for platform, teaser_path in (teaser_paths or {}).items():
+                    if teaser_path:
+                        fallback_files[f'teaser_{platform}'] = teaser_path
+                
+                results = publish_with_preuploaded_urls(
                     api_key         = zernio_key,
-                    video_path      = video_path,
                     captions        = approved,
                     platforms       = selected_platforms,
+                    upload_results  = upload_results,
                     scheduled_for   = scheduled_for if not publish_now else None,
                     publish_now     = publish_now,
-                    teaser_path     = teaser_path,
                     teaser_captions = teaser_caps if teaser_path else None,
-                    image_paths     = image_paths or [],
                     output_dir      = WORKSPACE,
                     progress_cb     = _thread_safe_progress,
+                    fallback_files  = fallback_files
                 )
                 ok  = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
                 msg = f"Published {ok} post(s)." if ok else "All posts failed — check log."

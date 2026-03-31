@@ -23,7 +23,6 @@ def update_google_sheet_correctly():
     # Mock publish results (since you already published manually)
     publish_results = {
         "youtube": {
-            "post_id": "manual_upload_" + datetime.now().strftime("%Y%m%d_%H%M%S"),
             "url": "https://youtube.com/watch?v=manual_upload"
         }
     }

@@ -3,7 +3,7 @@ from tkinter import ttk
 from dubber.utils import PLATFORMS, PLATFORM_LIMITS
 
 class ReviewDialog(tk.Toplevel):
-    def __init__(self, parent, captions):
+    def __init__(self, parent, captions, upload_manager=None):
         super().__init__(parent)
         self.title("Review Captions Before Publishing")
         self.grab_set()
@@ -12,8 +12,14 @@ class ReviewDialog(tk.Toplevel):
         self._captions = captions
         self._widgets  = {}
         self._publishing = False
+        self._upload_manager = upload_manager
         self._build(captions)
         self.geometry("820x660")
+        
+        # Start parallel uploads if upload manager provided
+        if self._upload_manager:
+            self._upload_manager.start_uploads(self._upload_progress_callback)
+        
         self.wait_window()
 
     def _build(self, captions):
@@ -51,17 +57,20 @@ class ReviewDialog(tk.Toplevel):
                 l.config(text=f"{n}/{lim}", fg="#c00" if n>lim else "#888")
             cap_box.bind("<KeyRelease>", _upd); _upd()
 
-        # Progress/Results area (hidden initially)
+        # Progress/Results area (shown immediately for upload progress)
         self._progress_frame = tk.Frame(self)
         self._progress_frame.pack(fill="x", padx=8, pady=(0,8))
-        self._progress_frame.pack_forget()  # Hide initially
         
-        tk.Label(self._progress_frame, text="Publishing Progress:", 
-                 font=("Helvetica",10,"bold"), fg="#2e7d32").pack(anchor="w")
+        tk.Label(self._progress_frame, text="Upload Progress:", 
+                 font=("Helvetica",10,"bold"), fg="#2196f3").pack(anchor="w")
         
         self._progress_text = tk.Text(self._progress_frame, height=6, wrap="word", 
                                       font=("Helvetica",9), bg="#f5f5f5")
         self._progress_text.pack(fill="x", pady=(4,0))
+        
+        # Initially show upload progress
+        self._progress_text.insert(tk.END, "🔄 Starting parallel uploads...\n")
+        self._progress_text.see(tk.END)
         
         # Status label
         self._status_lbl = tk.Label(self, text="Edit captions above, then click 'Approve & Publish'", 
@@ -85,6 +94,26 @@ class ReviewDialog(tk.Toplevel):
         self._close_btn.pack(side="left", padx=6)
         self._close_btn.pack_forget()  # Hide initially
 
+    def _upload_progress_callback(self, message, file_type=None, status=None):
+        """Callback for upload progress updates"""
+        if status == "uploading":
+            self._progress_text.insert(tk.END, f"🔄 {message}\n")
+        elif status == "completed":
+            self._progress_text.insert(tk.END, f"✅ {message}\n")
+        elif status == "error":
+            self._progress_text.insert(tk.END, f"❌ {message}\n")
+        else:
+            self._progress_text.insert(tk.END, f"{message}\n")
+        
+        self._progress_text.see(tk.END)
+        self.update_idletasks()
+
+    def get_upload_results(self):
+        """Get upload results from upload manager"""
+        if self._upload_manager:
+            return self._upload_manager.get_upload_results()
+        return {}
+
     def _approve(self):
         result = {}
         for p in PLATFORMS:
@@ -98,13 +127,18 @@ class ReviewDialog(tk.Toplevel):
         
         # Switch to publishing mode
         self._publishing = True
-        self._progress_frame.pack(fill="x", padx=8, pady=(0,8))
         self._status_lbl.config(text="Publishing in progress...", fg="#2e7d32")
         self._approve_btn.config(state="disabled")
         self._cancel_btn.config(text="Cancel Publish", command=self._cancel)
         
+        # Update progress label to show publishing progress
+        for widget in self._progress_frame.winfo_children():
+            if isinstance(widget, tk.Label) and "Upload Progress:" in widget.cget("text"):
+                widget.config(text="Publishing Progress:", fg="#2e7d32")
+                break
+        
         # Notify parent that approval is ready
-        self._progress_text.insert(tk.END, "✅ Captions approved. Starting publishing...\n")
+        self._progress_text.insert(tk.END, "\n✅ Captions approved. Starting publishing...\n")
         self._progress_text.see(tk.END)
 
     def update_progress(self, message, platform=None, status=None):
