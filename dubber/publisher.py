@@ -3,12 +3,12 @@ from .utils import log, PLATFORM_ACCOUNTS, PLATFORM_LIMITS
 
 BASE_URL = "https://zernio.com/api/v1"
 
-POST_TIMEOUT = 480  # 8 minutes per platform (default)
+POST_TIMEOUT = 120  # 2 minutes per platform (reduced from 8 minutes)
 
 # Platform-specific timeouts (in seconds)
 PLATFORM_TIMEOUTS = {
-    "bluesky": 600,  # 10 minutes for Bluesky (slower API)
-    # Other platforms use default POST_TIMEOUT (480s)
+    "bluesky": 180,  # 3 minutes for Bluesky (reduced from 10 minutes)
+    # Other platforms use default POST_TIMEOUT (120s)
 }
 
 
@@ -199,17 +199,21 @@ def upload_media(api_key, file_path):
     if not upload_url or not public_url:
         raise RuntimeError(f"Presign missing uploadUrl/publicUrl: {data}")
 
-    log("PUBLISH", f"  Uploading to GCS ...")
+    log("PUBLISH", f"  Starting upload to GCS (timeout: 180s)...")
+    start_time = time.time()
     with open(file_path, "rb") as f:
         put_r = requests.put(
             upload_url,
             headers={"Content-Type": mime},
             data=f,
-            timeout=600,
+            timeout=180,  # Reduced from 600s to 180s (3 minutes)
         )
+    upload_time = time.time() - start_time
+    
     if not put_r.ok:
         raise RuntimeError(f"GCS upload failed [{put_r.status_code}]: {put_r.text[:200]}")
-    log("PUBLISH", f"  Done -> {public_url[:72]}...")
+    
+    log("PUBLISH", f"  Upload completed in {upload_time:.1f}s -> {public_url[:72]}...")
     return public_url
 
 
