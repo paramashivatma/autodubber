@@ -762,6 +762,45 @@ class App(tk.Tk):
                 ok  = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
                 msg = f"Published {ok} post(s)." if ok else "All posts failed — check log."
                 
+                # Log to Google Sheet after successful publish
+                if ok > 0:
+                    try:
+                        from dubber.sheet_logger import quick_update_from_publish_result
+                        # Get video metadata
+                        video_title = os.path.basename(video_path)
+                        # Get duration from video
+                        duration = ""
+                        import subprocess
+                        try:
+                            result = subprocess.run(
+                                ['ffprobe', '-v', 'error', '-show_entries', 
+                                 'format=duration', '-of', 
+                                 'default=noprint_wrappers=1:nokey=1', video_path],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            if result.returncode == 0:
+                                secs = float(result.stdout.strip())
+                                mins, secs = divmod(int(secs), 60)
+                                duration = f"{mins:02d}:{secs:02d}"
+                        except:
+                            pass
+                        
+                        # Get languages from app state
+                        source_lang = self.src_lang_var.get()
+                        target_lang = self.tgt_lang_var.get()
+                        
+                        # Call sheet logger
+                        sheet_success, sheet_msg = quick_update_from_publish_result(
+                            video_title=video_title,
+                            publish_results=results,
+                            duration=duration,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                        )
+                        print(f"[SHEET] {sheet_msg}")
+                    except Exception as e:
+                        print(f"[SHEET] Sheet update failed: {e}")
+                
                 # Update dialog with final result
                 self.after(0, lambda: dlg.publishing_complete(success=bool(ok), message=msg))
                 done_cb(success=bool(ok), msg=msg, pub_results=results)
