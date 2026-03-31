@@ -213,12 +213,22 @@ def generate_gujarati_captions(extracted_text, api_key=None):
                 except:
                     actual_extracted_text = "Ask Nithyananda AI app - Your personal spiritual companion for divine guidance and blessings from SPH Bhagavan Sri Nithyananda Paramashivam"
             
+            # Create meaningful Gujarati content instead of using English OCR text
+            gujarati_content = """આસ્ક નિત્યાનંદ AI એપ્લિકેશન હવે ઉપલબ્ધ છે! 
+
+📱 તમારો અંગત આધ્યાત્મિક સાથી
+✨ SPH ભગવાન શ્રી નિત્યાનંદ પરમશિવમ પાસેથી ૨૪x૭ માર્ગદર્શન
+🙏 આશીર્વાદ અને ઉત્તરો
+📥 હવે iOS પર ડાઉનલોડ કરો
+
+ગમે ત્યાં હો, ગમે ત્યારે - કૃપાદૃષ્ટિ હંમેશા તમારી સાથે!"""
+            
             return {
-                "instagram": f"તમારા આધ્યાત્મિક માર્ગદર્શક હવે તમારી સાથે! ✨\n\n{actual_extracted_text}\n\n#KAILASA #Nithyananda",
-                "facebook": f"પરમ પૂજનીય ભગવાન શ્રી નિત્યાનંદ પરમશિવમની કૃપા હવે ઉપલબ્ધ છે!\n\n{actual_extracted_text}",
-                "twitter": f"આધ્યાત્મિક માર્ગદર્શન ઉપલબ્ધ! {actual_extracted_text[:100]}... #KAILASA #Nithyananda",
-                "threads": f"તમારા આધ્યાત્મિક સફરની શરૂઆત!\n\n{actual_extracted_text}",
-                "bluesky": f"દિવ્ય માર્ગદર્શન મેળવો - {actual_extracted_text[:100]}... #KAILASA"
+                "instagram": f"તમારા આધ્યાત્મિક માર્ગદર્શક હવે તમારી સાથે! ✨\n\n{gujarati_content}\n\n#KAILASA #Nithyananda",
+                "facebook": f"પરમ પૂજનીય ભગવાન શ્રી નિત્યાનંદ પરમશિવમની કૃપા હવે ઉપલબ્ધ છે!\n\n{gujarati_content}",
+                "twitter": f"આધ્યાત્મિક માર્ગદર્શન ઉપલબ્ધ!\n\n{gujarati_content}\n\n#KAILASA #Nithyananda",
+                "threads": f"તમારા આધ્યાત્મિક સફરની શરૂઆત!\n\n{gujarati_content}",
+                "bluesky": f"દિવ્ય માર્ગદર્શન મેળવો\n\n{gujarati_content}\n\n#KAILASA #Nithyananda"
             }
         
         return {"error": f"Caption generation failed: {str(e)}"}

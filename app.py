@@ -562,10 +562,16 @@ class App(tk.Tk):
                 messagebox.showerror("No Image", "Please select a flyer image first!")
                 return
             
-            # Get selected platforms
-            selected = [p for p,v in self._plat_vars.items() if v.get()]
+            # Get selected platforms (filter out video-only platforms for images)
+            all_selected = [p for p,v in self._plat_vars.items() if v.get()]
+            print(f"DEBUG: All selected platforms: {all_selected}")
+            # Remove YouTube and TikTok for image publishing
+            selected = [p for p in all_selected if p not in ["youtube", "tiktok"]]
+            print(f"DEBUG: Filtered platforms for images: {selected}")
+            
             if not selected:
-                messagebox.showwarning("No Platforms", "Please select at least one platform to publish!")
+                messagebox.showwarning("No Platforms", 
+                    "Please select at least one image-compatible platform (Instagram, Facebook, X, Threads, Bluesky)!\n\nNote: YouTube and TikTok don't support image publishing.")
                 return
             
             # Get API keys
@@ -574,10 +580,24 @@ class App(tk.Tk):
                 messagebox.showerror("No API Key", "Please enter Zernio API key in AI & Publish tab!")
                 return
             
-            # Show confirmation dialog
+            # Prepare captions for publishing (needed for both live and test mode)
+            publish_captions = {}
+            for platform in selected:
+                if platform in captions:
+                    publish_captions[platform] = {
+                        "caption": captions[platform]
+                    }
+                else:
+                    publish_captions[platform] = {
+                        "caption": f"Check out this content from KAILASA! #KAILASA #Nithyananda"
+                    }
+            
+            # Show confirmation dialog with test option
             result = messagebox.askyesno("Confirm Publish", 
-                f"Publish flyer to {len(selected)} platform(s):\n{', '.join(selected)}\n\nImage: {os.path.basename(self.flyer_path)}")
-            if not result:
+                f"Publish flyer to {len(selected)} platform(s):\n{', '.join(selected)}\n\nImage: {os.path.basename(self.flyer_path)}\n\nClick YES to publish, NO to test mode (no actual posting)")
+            if not result:  # User clicked NO = test mode
+                # Test mode - show what would be published without actually posting
+                self._test_flyer_publish(selected, publish_captions)
                 return
             
             # Start publishing
@@ -586,26 +606,14 @@ class App(tk.Tk):
             
             def _publish_thread():
                 try:
-                    # Prepare captions for publishing
-                    publish_captions = {}
-                    for platform in selected:
-                        if platform in captions:
-                            publish_captions[platform] = {
-                                "caption": captions[platform]
-                            }
-                        else:
-                            publish_captions[platform] = {
-                                "caption": f"Check out this content from KAILASA! #KAILASA #Nithyananda"
-                            }
-                    
                     # Publish to platforms
                     results = publish_to_platforms(
                         api_key=zernio_key,
-                        video_path=self.flyer_path,  # Use flyer as primary content
+                        video_path=self.flyer_path,  # Required for validation
                         captions=publish_captions,
                         platforms=selected,
                         publish_now=True,
-                        image_paths=[self.flyer_path],  # Publish as image
+                        image_paths=[],  # Don't add extra images to avoid duplicates
                         output_dir="workspace",
                         progress_cb=lambda done, total, platform, status: self.after(0, 
                             lambda: self._update_progress(done, total, platform, status))
@@ -624,6 +632,35 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to publish: {str(e)}")
 
+    def _test_flyer_publish(self, platforms, captions):
+        """Test mode - show what would be published without actually posting"""
+        test_info = "🧪 TEST MODE - No actual publishing\n\n"
+        test_info += f"Platforms: {', '.join(platforms)}\n"
+        test_info += f"Image: {os.path.basename(self.flyer_path)}\n\n"
+        
+        test_info += "Captions that would be posted:\n"
+        test_info += "=" * 50 + "\n"
+        
+        for platform in platforms:
+            caption = captions.get(platform, {}).get("caption", "No caption found")
+            # Show full caption without truncation for test mode
+            test_info += f"\n📱 {platform.upper()}:\n{caption}\n"
+        
+        # Show debug info about media
+        test_info += "\n" + "=" * 50 + "\n"
+        test_info += "DEBUG: Media analysis\n"
+        test_info += f"Primary media: {self.flyer_path}\n"
+        test_info += f"Media type: image\n"
+        test_info += f"Extra images: 0 (empty array)\n"
+        test_info += f"Total media items that would be sent: 1\n"
+        
+        # Display in results text area
+        self.flyer_results.delete(1.0, tk.END)
+        self.flyer_results.insert(tk.END, test_info)
+        
+        messagebox.showinfo("Test Mode Complete", "Test mode complete - no actual posts were made.\nCheck the Results section for details.")
+        self.status_var.set("Test mode completed")
+
     def _flyer_publish_done(self, successful, total, results):
         """Handle flyer publishing completion"""
         self.progress.stop()
@@ -639,8 +676,14 @@ class App(tk.Tk):
         for platform, result in results.items():
             if isinstance(result, dict) and "error" in result:
                 self._pub_log_write(f'FAIL {platform}: {result["error"]}')
+            elif isinstance(result, bool):
+                # Handle case where result is a boolean (from skip logic)
+                status = "skipped" if not result else "success"
+                self._pub_log_write(f'OK   {platform}: {status}')
             else:
-                self._pub_log_write(f'OK   {platform}: {result.get("_id", "success")}')
+                # Normal case - result is a dict with post info
+                post_id = result.get("_id", "success") if isinstance(result, dict) else "success"
+                self._pub_log_write(f'OK   {platform}: {post_id}')
 
     def _delayed_cleanup(self, workspace_dir):
         """Delayed cleanup after timer expires"""

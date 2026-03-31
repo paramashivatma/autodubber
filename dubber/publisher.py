@@ -282,6 +282,7 @@ async def _publish_to_platforms_async(api_key, video_path, captions, platforms, 
     # ── upload primary video once (shared across all platforms) ──
     primary_url = upload_media(api_key, video_path)
     media_items = [{"url": primary_url, "type": _media_type(video_path)}]
+    print(f"DEBUG: Primary media uploaded: {media_items[0]}")
 
     # ── upload extra images ──
     for img in (image_paths or []):
@@ -289,8 +290,13 @@ async def _publish_to_platforms_async(api_key, video_path, captions, platforms, 
             try:
                 url = upload_media(api_key, img)
                 media_items.append({"url": url, "type": "image"})
+                print(f"DEBUG: Extra image uploaded: {url}")
             except Exception as e:
                 log("PUBLISH", f"  Extra image upload failed: {e}")
+    
+    print(f"DEBUG: Total media_items: {len(media_items)}")
+    for i, item in enumerate(media_items):
+        print(f"  Media {i+1}: {item}")
 
     # ── upload per-platform teasers ──
     teaser_public_urls = {}
