@@ -168,24 +168,9 @@ class App(tk.Tk):
     def _build_ui(self):
         pad = {"padx":10,"pady":4}
 
-        top = tk.Frame(self, bg="#1a1a2e", pady=6)
-        top.pack(fill="x")
-        tk.Label(top, text="Mode:", fg="white", bg="#1a1a2e",
-                 font=("Helvetica",10,"bold")).pack(side="left", padx=12)
-        self.mode_var = tk.StringVar(value="dub")
-        tk.Radiobutton(top, text="Full Dub Pipeline", variable=self.mode_var,
-                       value="dub", bg="#1a1a2e", fg="white",
-                       selectcolor="#333", activebackground="#1a1a2e",
-                       font=("Helvetica",10,"bold"),
-                       command=self._on_mode_change).pack(side="left", padx=8)
-        tk.Radiobutton(top, text="Publish Only (Images / Teaser)", variable=self.mode_var,
-                       value="publish", bg="#1a1a2e", fg="#00e5ff",
-                       selectcolor="#333", activebackground="#1a1a2e",
-                       font=("Helvetica",10,"bold"),
-                       command=self._on_mode_change).pack(side="left", padx=8)
-
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=8, pady=6)
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self.t_dub = tk.Frame(self.nb, padx=14, pady=10)
         self.nb.add(self.t_dub, text="  Dub  ")
@@ -229,29 +214,27 @@ class App(tk.Tk):
                                   orient="horizontal", length=150)
         self.bgm_scale.grid(row=7,column=1,sticky="w",**pad)
 
-        self.t_pub = tk.Frame(self.nb, padx=14, pady=10)
-        self.nb.add(self.t_pub, text="  Publish Only  ")
+        # Platform Selection for Dub tab
+        ttk.Separator(self.t_dub,orient="horizontal").grid(row=8,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_dub, text="Platforms to Publish:", font=("Helvetica",10,"bold")).grid(row=9,column=0,sticky="w",**pad)
+        self._plat_vars = {}
+        pf = tk.Frame(self.t_dub); pf.grid(row=9,column=1,columnspan=2,sticky="w")
+        for i,p in enumerate(PLATFORMS):
+            v = tk.BooleanVar(value=True); self._plat_vars[p] = v
+            tk.Checkbutton(pf,text=p.capitalize(),variable=v).grid(row=i//3,column=i%3,sticky="w",padx=4)
+        
+        # Publish Options for Dub tab
+        ttk.Separator(self.t_dub,orient="horizontal").grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
+        self.dub_publish_now_var = tk.BooleanVar(value=True)
+        tk.Radiobutton(self.t_dub, text="Publish immediately",
+                       variable=self.dub_publish_now_var, value=True).grid(row=11,column=0,columnspan=2,sticky="w",**pad)
+        # Future: Schedule post option will be added here
 
-        tk.Label(self.t_pub, text="Topic / Hook hint for AI captions:",
-                 font=("Helvetica",9,"bold")).grid(row=0,column=0,columnspan=3,sticky="w",**pad)
-        self.topic_var = tk.StringVar()
-        tk.Entry(self.t_pub, textvariable=self.topic_var, width=52).grid(row=1,column=0,columnspan=3,**pad)
-        tk.Label(self.t_pub, text="Leave blank to write captions manually in the review screen.",
-                 fg="#888", font=("Helvetica",8)).grid(row=2,column=0,columnspan=3,sticky="w",padx=10)
-
-        ttk.Separator(self.t_pub,orient="horizontal").grid(row=3,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_pub, text="Images to post:", font=("Helvetica",9,"bold")).grid(row=4,column=0,sticky="w",**pad)
-        tk.Button(self.t_pub, text="+ Add Images", command=self._add_images).grid(row=4,column=1,sticky="w",**pad)
-        tk.Button(self.t_pub, text="Clear All", command=self._clear_images).grid(row=4,column=2,sticky="w")
-        self.image_listbox = tk.Listbox(self.t_pub, width=52, height=5, font=("Helvetica",8))
-        self.image_listbox.grid(row=5,column=0,columnspan=3,padx=10,pady=4)
-
-        ttk.Separator(self.t_pub,orient="horizontal").grid(row=6,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_pub, text="Teaser clip (optional):", font=("Helvetica",9,"bold")).grid(row=7,column=0,sticky="w",**pad)
-        self.pub_teaser_var = tk.StringVar()
-        tk.Entry(self.t_pub, textvariable=self.pub_teaser_var, width=34).grid(row=7,column=1,**pad)
-        tk.Button(self.t_pub, text="Browse", command=self._browse_pub_teaser).grid(row=7,column=2,**pad)
-        tk.Button(self.t_pub, text="Clear", command=lambda: self.pub_teaser_var.set("")).grid(row=8,column=2,pady=0)
+        # Results Display for Dub tab
+        ttk.Separator(self.t_dub,orient="horizontal").grid(row=12,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_dub, text="Results:", font=("Helvetica",10,"bold")).grid(row=13,column=0,sticky="w",**pad)
+        self.dub_results = tk.Text(self.t_dub, width=60, height=8, font=("Helvetica",9))
+        self.dub_results.grid(row=14,column=0,columnspan=3,padx=10,pady=4)
 
         self.t_media = tk.Frame(self.nb, padx=14, pady=10)
         self.nb.add(self.t_media, text="  Flyer/Image  ")
@@ -292,91 +275,88 @@ class App(tk.Tk):
         # Action Buttons
         ttk.Separator(self.t_media,orient="horizontal").grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
         bf = tk.Frame(self.t_media); bf.grid(row=11,column=0,columnspan=3,sticky="w",padx=10)
-        tk.Button(bf,text="Process Flyer",command=self._process_flyer,bg="#00e5ff",fg="white").pack(side="left",padx=4)
-        tk.Button(bf,text="Publish Generated",command=self._publish_flyer_content,bg="#4CAF50",fg="white").pack(side="left",padx=4)
         tk.Button(bf,text="Clear",command=self._clear_flyer).pack(side="left",padx=4)
         
         # Results Display
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=11,column=0,columnspan=3,sticky="ew",pady=8)
         tk.Label(self.t_media, text="Results:", font=("Helvetica",10,"bold")).grid(row=12,column=0,sticky="w",**pad)
         self.flyer_results = tk.Text(self.t_media, width=60, height=8, font=("Helvetica",9))
         self.flyer_results.grid(row=13,column=0,columnspan=3,padx=10,pady=4)
         
+        # Platform Selection for Flyer/Image tab
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=14,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_media, text="Platforms to Publish:", font=("Helvetica",10,"bold")).grid(row=15,column=0,sticky="w",**pad)
+        self._flyer_plat_vars = {}
+        pf = tk.Frame(self.t_media); pf.grid(row=15,column=1,columnspan=2,sticky="w")
+        for i,p in enumerate(PLATFORMS):
+            if p not in ["youtube", "tiktok"]:  # Exclude video-only platforms for image publishing
+                v = tk.BooleanVar(value=True); self._flyer_plat_vars[p] = v
+                tk.Checkbutton(pf,text=p.capitalize(),variable=v).grid(row=i//3,column=i%3,sticky="w",padx=4)
+        
+        # Publish Options
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=16,column=0,columnspan=3,sticky="ew",pady=8)
+        self.flyer_publish_now_var = tk.BooleanVar(value=True)
+        tk.Radiobutton(self.t_media, text="Publish immediately",
+                       variable=self.flyer_publish_now_var, value=True).grid(row=17,column=0,columnspan=2,sticky="w",**pad)
+        
         # Store flyer path
         self.flyer_path = ""
 
-        self.t_api = tk.Frame(self.nb, padx=14, pady=10)
-        self.nb.add(self.t_api, text="  AI & Publish  ")
-
-        tk.Label(self.t_api, text="Gemini Vision Key:").grid(row=0,column=0,sticky="w",**pad)
+        # Initialize API key variables (hidden from GUI)
         self.gemini_vision_key_var = tk.StringVar(value=self._env.get("GEMINI_VISION_KEY",""))
-        tk.Entry(self.t_api, textvariable=self.gemini_vision_key_var, width=42, show="*").grid(row=0,column=1,columnspan=2,**pad)
-
-        tk.Label(self.t_api, text="Mistral API Key:").grid(row=1,column=0,sticky="w",**pad)
         self.mistral_key_var = tk.StringVar(value=self._env.get("MISTRAL_API_KEY",""))
-        tk.Entry(self.t_api, textvariable=self.mistral_key_var, width=42, show="*").grid(row=1,column=1,columnspan=2,**pad)
-
-        tk.Label(self.t_api, text="Zernio API Key:").grid(row=2,column=0,sticky="w",**pad)
         self.zernio_key_var = tk.StringVar(value=self._env.get("ZERNIO_API_KEY",""))
-        tk.Entry(self.t_api, textvariable=self.zernio_key_var, width=42, show="*").grid(row=2,column=1,columnspan=2,**pad)
-        tk.Button(self.t_api, text="Save Keys", command=self._save_keys).grid(row=2,column=3,**pad)
+        
+        # Initialize missing variables from Publish Only tab
+        self.topic_var = tk.StringVar()
+        self.pub_teaser_var = tk.StringVar()
+        self._image_paths = []
 
-        tk.Label(self.t_api, text="Platforms:").grid(row=3,column=0,sticky="nw",**pad)
-        self._plat_vars = {}
-        pf = tk.Frame(self.t_api); pf.grid(row=3,column=1,columnspan=3,sticky="w")
-        for i,p in enumerate(PLATFORMS):
-            v = tk.BooleanVar(value=True); self._plat_vars[p] = v
-            tk.Checkbutton(pf,text=p.capitalize(),variable=v).grid(row=i//4,column=i%4,sticky="w",padx=6)
-
-        ttk.Separator(self.t_api,orient="horizontal").grid(row=4,column=0,columnspan=4,sticky="ew",pady=6)
-        self.publish_now_var = tk.BooleanVar(value=True)
-        tk.Radiobutton(self.t_api, text="Publish immediately",
-                       variable=self.publish_now_var, value=True,
-                       command=self._toggle_schedule).grid(row=5,column=0,columnspan=2,sticky="w",**pad)
-        tk.Radiobutton(self.t_api, text="Schedule for:",
-                       variable=self.publish_now_var, value=False,
-                       command=self._toggle_schedule).grid(row=6,column=0,sticky="w",**pad)
-        self.schedule_var   = tk.StringVar(value="2026-03-26T10:00:00Z")
-        self.schedule_entry = tk.Entry(self.t_api, textvariable=self.schedule_var,
-                                       width=24, state="disabled")
-        self.schedule_entry.grid(row=6,column=1,sticky="w",**pad)
-        tk.Label(self.t_api, text="ISO8601 UTC", fg="#888", font=("Helvetica",8)).grid(row=6,column=2,sticky="w")
-
-        ttk.Separator(self.t_api,orient="horizontal").grid(row=7,column=0,columnspan=4,sticky="ew",pady=6)
-        tk.Label(self.t_api, text="Publish log:", font=("Helvetica",9,"bold")).grid(row=8,column=0,sticky="w",**pad)
-        self.pub_log = tk.Text(self.t_api, width=54, height=5, wrap="word",
-                               font=("Courier",8), state="disabled")
-        self.pub_log.grid(row=9,column=0,columnspan=4,**pad)
-
+        # Bottom buttons frame
         bot = tk.Frame(self, padx=14, pady=6); bot.pack(fill="x")
-        self.run_btn = tk.Button(bot, text="Run Pipeline", width=20,
-                                 bg="#2e7d32", fg="white",
-                                 font=("Helvetica",11,"bold"), command=self._run)
-        self.run_btn.pack(side="left", padx=6)
+        
+        # Left side: Clean button
         self.cleanup_btn = tk.Button(bot, text="🧹 Clean", width=12,
                                      bg="#ff6b35", fg="white",
                                      font=("Helvetica",10,"bold"), command=self._manual_cleanup)
         self.cleanup_btn.pack(side="left", padx=2)
+        
+        # Center: Process Flyer and Publish Generated buttons
+        center_frame = tk.Frame(bot)
+        center_frame.pack(side="left", expand=True, fill="x")
+        
+        self.process_flyer_btn = tk.Button(center_frame, text="Process Flyer", command=self._process_flyer, bg="#00e5ff", fg="white", width=15)
+        self.process_flyer_btn.pack(side="left", padx=4)
+        
+        self.publish_flyer_btn = tk.Button(center_frame, text="Publish Generated", command=self._publish_flyer_content, bg="#4CAF50", fg="white", width=15)
+        self.publish_flyer_btn.pack(side="left", padx=4)
+        
+        # Right side: Run Pipeline button (only for Dub tab functionality)
+        self.run_btn = tk.Button(bot, text="Run Full Pipeline", width=20,
+                                 bg="#2e7d32", fg="white",
+                                 font=("Helvetica",11,"bold"), command=self._run)
+        self.run_btn.pack(side="right", padx=6)
         self.status_var = tk.StringVar(value="Ready.")
         tk.Label(bot, textvariable=self.status_var, fg="#555", wraplength=340).pack(side="left", padx=10)
         self.progress = ttk.Progressbar(self, mode="indeterminate", length=480)
         self.progress.pack(fill="x", padx=14, pady=(0,8))
 
-        self._on_mode_change()
+        self._on_tab_changed(None)  # Set initial button visibility
 
-    def _on_mode_change(self):
-        mode = self.mode_var.get()
-        dub_state = "normal" if mode == "dub" else "disabled"
-        self.nb.tab(0, state=dub_state)
-        self.nb.tab(2, state=dub_state)
-        pub_state = "normal" if mode == "publish" else "disabled"
-        self.nb.tab(1, state=pub_state)
-        if mode == "dub":
-            self.nb.select(0)
-            self.run_btn.config(text="Run Full Pipeline")
-        else:
-            self.nb.select(1)
-            self.run_btn.config(text="Publish Now")
+    def _on_tab_changed(self, event):
+        """Handle tab changes - hide/show buttons based on selected tab"""
+        selected_tab = self.nb.index(self.nb.select())
+        if selected_tab == 1:  # Flyer/Image tab
+            # Show Process Flyer and Publish Generated buttons
+            self.process_flyer_btn.pack(side="left", padx=4)
+            self.publish_flyer_btn.pack(side="left", padx=4)
+            # Hide Run Pipeline button
+            self.run_btn.pack_forget()
+        else:  # Dub tab
+            # Hide Process Flyer and Publish Generated buttons
+            self.process_flyer_btn.pack_forget()
+            self.publish_flyer_btn.pack_forget()
+            # Show Run Pipeline button
+            self.run_btn.pack(side="right", padx=6)
 
     def _toggle_bgm(self):
         self.bgm_scale.config(state="normal" if self.bgm_var.get() else "disabled")
@@ -443,6 +423,15 @@ class App(tk.Tk):
         self.flyer_var.set("")
         self.flyer_path = ""
         self.flyer_results.delete(1.0, tk.END)
+    
+    def _clear_dub_results(self):
+        """Clear dub results"""
+        self.dub_results.delete(1.0, tk.END)
+    
+    def _update_dub_results(self, message):
+        """Update dub results with new message"""
+        self.dub_results.insert(tk.END, f"{message}\n")
+        self.dub_results.see(tk.END)  # Auto-scroll to bottom
     
     def _process_flyer(self):
         """Process flyer to extract text and generate content"""
@@ -675,15 +664,15 @@ class App(tk.Tk):
         # Log results
         for platform, result in results.items():
             if isinstance(result, dict) and "error" in result:
-                self._pub_log_write(f'FAIL {platform}: {result["error"]}')
+                print(f'FAIL {platform}: {result["error"]}')
             elif isinstance(result, bool):
                 # Handle case where result is a boolean (from skip logic)
                 status = "skipped" if not result else "success"
-                self._pub_log_write(f'OK   {platform}: {status}')
+                print(f'OK   {platform}: {status}')
             else:
                 # Normal case - result is a dict with post info
                 post_id = result.get("_id", "success") if isinstance(result, dict) else "success"
-                self._pub_log_write(f'OK   {platform}: {post_id}')
+                print(f'OK   {platform}: {post_id}')
 
     def _delayed_cleanup(self, workspace_dir):
         """Delayed cleanup after timer expires"""
@@ -718,64 +707,44 @@ class App(tk.Tk):
             _save_env(to_save)
         self.status_var.set("Keys saved.")
 
-    def _pub_log_clear(self):
-        self.pub_log.config(state="normal")
-        self.pub_log.delete("1.0",tk.END)
-        self.pub_log.config(state="disabled")
-
-    def _pub_log_write(self, text):
-        self.pub_log.config(state="normal")
-        self.pub_log.insert(tk.END, text+"\n")
-        self.pub_log.config(state="disabled")
-
     def _run(self):
-        mode = self.mode_var.get()
-        self._pub_log_clear()
-        selected       = [p for p,v in self._plat_vars.items() if v.get()]
-        sched          = self.schedule_var.get().strip() if not self.publish_now_var.get() else None
-        gemini_vision  = self.gemini_vision_key_var.get().strip()
-        mistral        = self.mistral_key_var.get().strip()
-        zernio         = self.zernio_key_var.get().strip()
+        # Always run dub pipeline since mode selection is removed
+        video = self.video_var.get().strip()
+        if not video:
+            messagebox.showwarning("No input","Paste a URL or browse for a video.")
+            return
+        self.run_btn.config(state="disabled")
+        self._clear_dub_results()  # Clear previous results
+        self.dub_results.insert(tk.END, "🔄 Starting dub pipeline...\n\n")
+        self.progress.start(12); self.status_var.set("Starting dub pipeline ...")
+        
+        selected = [p for p,v in self._plat_vars.items() if v.get()]
+        sched = self.schedule_var.get().strip() if not self.dub_publish_now_var.get() else None
+        gemini_vision = self.gemini_vision_key_var.get().strip()
+        mistral = self.mistral_key_var.get().strip()
+        zernio = self.zernio_key_var.get().strip()
         to_save = {}
         if gemini_vision: to_save["GEMINI_VISION_KEY"] = gemini_vision
         if mistral:       to_save["MISTRAL_API_KEY"]   = mistral
         if zernio:        to_save["ZERNIO_API_KEY"]     = zernio
         if to_save:       _save_env(to_save)
-
-        if mode == "dub":
-            video = self.video_var.get().strip()
-            if not video:
-                messagebox.showwarning("No input","Paste a URL or browse for a video.")
-                return
-            self.run_btn.config(state="disabled")
-            self.progress.start(12); self.status_var.set("Starting dub pipeline ...")
-            manual_teaser = self.manual_teaser_var.get().strip() if not self.auto_teaser_var.get() else ""
-            threading.Thread(target=run_dub_pipeline, args=(
-                video, VOICES[self.voice_var.get()], self.model_var.get(),
-                LANGUAGES[self.src_lang_var.get()], LANGUAGES[self.tgt_lang_var.get()],
-                self.bgm_var.get(), self.bgm_vol_var.get(),
-                gemini_vision, mistral, zernio, selected,
-                self.publish_now_var.get(), sched,
-                self.auto_teaser_var.get(), manual_teaser,
-                list(self._image_paths),
-                self.status_var.set, self._caption_ready_cb, self._done_cb,
-            ), daemon=True).start()
-        else:
-            images = list(self._image_paths)
-            teaser = self.pub_teaser_var.get().strip()
-            if not images and not teaser:
-                messagebox.showwarning("Nothing to publish",
-                    "Add at least one image or a teaser clip to publish.")
-                return
-            self.run_btn.config(state="disabled")
-            self.progress.start(12); self.status_var.set("Preparing publish ...")
-            threading.Thread(target=run_publish_only, args=(
-                images, teaser if teaser else None,
-                self.topic_var.get().strip(),
-                gemini_vision, mistral, zernio, selected,
-                self.publish_now_var.get(), sched,
-                self.status_var.set, self._caption_ready_cb, self._done_cb,
-            ), daemon=True).start()
+        
+        manual_teaser = self.manual_teaser_var.get().strip() if not self.auto_teaser_var.get() else ""
+        
+        # Create custom status callback for dub results
+        def dub_status_callback(message):
+            self.after(0, lambda: self._update_dub_results(message))
+        
+        threading.Thread(target=run_dub_pipeline, args=(
+            video, VOICES[self.voice_var.get()], self.model_var.get(),
+            LANGUAGES[self.src_lang_var.get()], LANGUAGES[self.tgt_lang_var.get()],
+            self.bgm_var.get(), self.bgm_vol_var.get(),
+            gemini_vision, mistral, zernio, selected,
+            self.dub_publish_now_var.get(), sched,
+            self.auto_teaser_var.get(), manual_teaser,
+            list(self._image_paths),
+            dub_status_callback, self._caption_ready_cb, self._done_cb,
+        ), daemon=True).start()
 
     def _caption_ready_cb(self, **kwargs):
         self.after(0, lambda: self._show_review(**kwargs))
@@ -857,21 +826,17 @@ class App(tk.Tk):
                 
                 done_cb(success=bool(ok), msg=msg, pub_results=results)
             except Exception as e:
-                import traceback; traceback.print_exc()
                 done_cb(success=False, msg=str(e), pub_results={})
-
+        
         threading.Thread(target=_publish, daemon=True).start()
 
     def _done_cb(self, success, msg, pub_results=None):
         self.progress.stop()
-        self.run_btn.config(state="normal")
         self.status_var.set(msg)
+        self.run_btn.config(state="normal")
         if pub_results:
-            for k,v in pub_results.items():
-                if isinstance(v,dict) and "error" in v:
-                    self._pub_log_write(f'FAIL {k}: {v["error"]}')
-                else:
-                    self._pub_log_write(f'OK   {k}: id={v.get("_id","?") if isinstance(v,dict) else "ok"}')
+            for k, v in pub_results.items():
+                print(f'OK   {k}: id={v.get("_id","?") if isinstance(v,dict) else "ok"}')
         (messagebox.showinfo if success else messagebox.showerror)("Result", msg)
         
         # Clean up workspace after pipeline completion
