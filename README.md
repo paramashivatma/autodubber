@@ -1,4 +1,4 @@
-# Video Dubber v9
+# Video Dubber v2.0
 
 ## Pipeline
 1. Download (YouTube URL or local file)

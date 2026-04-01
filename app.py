@@ -171,7 +171,7 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v24")
+        self.title("Video Dubber v2.0")
         self.geometry("920x740")
         self.minsize(840, 660)
         self.resizable(True, True)
