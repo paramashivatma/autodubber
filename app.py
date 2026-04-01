@@ -393,7 +393,7 @@ class App(tk.Tk):
         self.bgm_scale.config(state="normal" if self.bgm_var.get() else "disabled")
 
     
-def _clear_flyer(self):
+    def _clear_flyer(self):
         """Clear flyer selection and results"""
         self.flyer_var.set("")
         self.flyer_path = ""
@@ -401,16 +401,53 @@ def _clear_flyer(self):
         self.flyer_count_label.config(text="")
         self.flyer_results.delete(1.0, tk.END)
     
-def _clear_dub_results(self):
-    """Clear dub results"""
-    self.dub_results.delete(1.0, tk.END)
+    def _clear_dub_results(self):
+            """Clear dub results"""
+            self.dub_results.delete(1.0, tk.END)
     
-def _update_dub_results(self, message):
-    """Update dub results with new message"""
-    self.dub_results.insert(tk.END, f"{message}\n")
-    self.dub_results.see(tk.END)  # Auto-scroll to bottom
+    def _update_dub_results(self, message):
+            """Update dub results with new message"""
+            self.dub_results.insert(tk.END, f"{message}\n")
+            self.dub_results.see(tk.END)  # Auto-scroll to bottom
     
-def _process_flyer(self):
+    def _browse_video(self):
+        """Browse for video file"""
+        file_path = filedialog.askopenfilename(
+            title="Select Video File",
+            filetypes=[
+                ("Video files", "*.mp4 *.avi *.mov *.mkv *.webm"),
+                ("All files", "*.*")
+            ]
+        )
+        if file_path:
+            self.video_var.set(file_path)
+    
+    def _browse_flyer(self):
+        """Browse for flyer/image files (multiple selection)"""
+        file_paths = filedialog.askopenfilenames(
+            title="Select Flyer/Images (Ctrl+Click for multiple)",
+            filetypes=[
+                ("Image files", "*.jpg *.jpeg *.png *.gif *.bmp *.webp"),
+                ("All files", "*.*")
+            ]
+        )
+        if file_paths:
+            self.flyer_paths = list(file_paths)
+            if len(file_paths) == 1:
+                self.flyer_var.set(file_paths[0])
+                self.flyer_count_label.config(text="")
+            else:
+                self.flyer_var.set(f"{len(file_paths)} images selected")
+                # Show first few filenames
+                preview = ", ".join([os.path.basename(p) for p in file_paths[:3]])
+                if len(file_paths) > 3:
+                    preview += f" +{len(file_paths)-3} more"
+                self.flyer_count_label.config(text=preview)
+            
+            # Store single path for compatibility
+            self.flyer_path = file_paths[0]
+    
+    def _process_flyer(self):
         """Process flyer to extract text and generate content"""
         if not self.flyer_path:
             messagebox.showerror("Error", "Please select a flyer/image file first")
@@ -508,7 +545,6 @@ def _process_flyer(self):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to process flyer: {str(e)}")
             self.flyer_results.insert(tk.END, f"❌ Error: {str(e)}\n")
-
 
     def _publish_flyer_content(self):
         """Publish the generated flyer content"""
