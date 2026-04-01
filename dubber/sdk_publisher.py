@@ -8,50 +8,46 @@ from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConn
 from dubber.utils import log, PLATFORM_ACCOUNTS
 
 def upload_large_file(client, file_path):
-    """Upload large file using upload token flow (per Zernio support - 20-50MB)"""
+    """Upload large file - currently limited by Vercel function payload size"""
     
     # Check file size
     file_size = os.path.getsize(file_path)
     log("PUBLISH", f"  📏 File size: {file_size:,} bytes ({file_size/1024/1024:.1f} MB)")
     
+    # Current limit based on testing: ~8MB due to Vercel FUNCTION_PAYLOAD_TOO_LARGE
+    if file_size > 8 * 1024 * 1024:  # 8MB limit
+        error_msg = f"""File too large for current upload method ({file_size/1024/1024:.1f} MB).
+
+Current upload limit: ~8MB (Vercel function payload limit)
+
+SOLUTIONS for {file_size/1024/1024:.1f} MB files:
+
+1. 🌐 Host externally and use media_items with external URL:
+   - Upload to YouTube, Vimeo, or your own CDN
+   - Use: media_items=[{{"type": "video", "url": "https://external-url/video.mp4"}}]
+
+2. 📏 Compress video to under 8MB:
+   - Reduce resolution or quality
+   - Use video compression tools
+
+3. 📞 Contact Zernio support for large file upload API:
+   - Request direct-to-storage upload URLs
+   - Ask about multipart/resumable upload support
+
+TEMPORARY: Upload smaller files or use external hosting."""
+        
+        log("PUBLISH", f"  ❌ {error_msg}")
+        raise Exception(error_msg)
+    
+    # Try regular upload for small files
     try:
-        # Step 1: Generate upload token
-        log("PUBLISH", f"  🔄 Generating upload token for {os.path.basename(file_path)}...")
-        token_response = client.media.generate_upload_token()
-        
-        log("PUBLISH", f"  ✅ Upload token generated: {token_response.token[:20]}...")
-        log("PUBLISH", f"  📍 Upload URL: {str(token_response.uploadUrl)[:50]}...")
-        
-        # Step 2: Upload file bytes to upload URL with correct headers
-        log("PUBLISH", f"  📤 Uploading to upload URL...")
-        import requests
-        
-        with open(file_path, 'rb') as f:
-            response = requests.put(
-                str(token_response.uploadUrl),
-                data=f,
-                headers={"Content-Type": "video/mp4"},
-            )
-            response.raise_for_status()
-        
-        log("PUBLISH", f"  ✅ File uploaded successfully to upload URL")
-        
-        # Step 3: Check upload status and get public URL
-        log("PUBLISH", f"  🔍 Checking upload status...")
-        files_response = client.media.check_upload_token(token_response.token)
-        
-        if hasattr(files_response, 'files') and files_response.files:
-            uploaded_file = files_response.files[0]
-            public_url = str(uploaded_file.url)
-            log("PUBLISH", f"  🔗 Public URL: {public_url[:50]}...")
-            return public_url
-        else:
-            raise Exception("No files found in upload response")
-        
+        log("PUBLISH", f"  � Trying regular upload (file under 8MB)...")
+        result = client.media.upload(file_path)
+        media_url = result["publicUrl"]
+        log("PUBLISH", f"  ✅ Regular upload worked: {media_url[:50]}...")
+        return media_url
     except Exception as e:
-        log("PUBLISH", f"  ❌ Upload token flow failed: {e}")
-        import traceback
-        traceback.print_exc()
+        log("PUBLISH", f"  ❌ Regular upload failed: {e}")
         raise e
 
 def publish_with_sdk(api_key, captions, platforms, upload_results=None, 
