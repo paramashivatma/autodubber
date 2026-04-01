@@ -1,8 +1,15 @@
 import datetime
+import sys
 
 def log(tag, msg):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
-    print(f"[{ts}] [{tag:<12}] {msg}", flush=True)
+    line = f"[{ts}] [{tag:<12}] {msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        enc = sys.stdout.encoding or "utf-8"
+        safe = line.encode(enc, errors="replace").decode(enc, errors="replace")
+        print(safe, flush=True)
 
 # Standardized platform definitions
 PLATFORMS = ["instagram", "facebook", "youtube", "threads", "twitter", "tiktok", "bluesky"]
@@ -11,8 +18,8 @@ PLATFORM_LIMITS = {
     "instagram": 2000,
     "facebook": 2000, 
     "threads": 380,
-    "bluesky": 280,
-    "twitter": 260,
+    "bluesky": 300,
+    "twitter": 280,
     "tiktok": 180,
     "youtube": 5000,
 }

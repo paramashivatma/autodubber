@@ -10,7 +10,7 @@ from dubber import (
     generate_teaser, generate_teasers, log,  # Removed legacy publish_to_platforms
     quick_update_from_publish_result,
 )
-from dubber.utils import PLATFORMS
+from dubber.utils import PLATFORMS, PLATFORM_LIMITS
 from dubber.downloader    import is_url, download_video
 from dubber.bgm_separator import separate_background
 from dubber.sdk_publisher import publish_to_platforms_sdk
@@ -182,14 +182,18 @@ class App(tk.Tk):
 
     def _init_theme(self):
         self._colors = {
-            "bg": "#f3f6fb",
-            "panel": "#ffffff",
-            "muted": "#6a7688",
-            "text": "#1f2937",
-            "border": "#d7deea",
-            "primary": "#0f5cc0",
-            "success": "#17803d",
-            "danger": "#c43d3d",
+            "bg": "#F9F5EF",         # Sandstone BG
+            "panel": "#F4EFE6",      # Surface
+            "input": "#EDE6D8",      # Surface 2
+            "muted": "#6B5740",      # Warm Muted
+            "text": "#1E1209",       # Deep Ink
+            "border": "#D5C8B0",     # Stone Border
+            "primary": "#7B1F1F",    # Kaavi
+            "primary_dark": "#5A1515",  # Kaavi Dark
+            "accent": "#C8860A",     # Sacred Gold
+            "accent_bright": "#E8A020", # Gold Bright
+            "success": "#2C5F2E",    # Dharma Green
+            "danger": "#E8700A",     # Saffron
         }
         self.configure(bg=self._colors["bg"])
 
@@ -200,20 +204,37 @@ class App(tk.Tk):
             pass
 
         style.configure("Modern.TNotebook", background=self._colors["bg"], borderwidth=0)
-        style.configure("Modern.TNotebook.Tab", padding=(18, 8), font=("Segoe UI", 10, "bold"))
-        style.map("Modern.TNotebook.Tab", background=[("selected", "#ffffff")], foreground=[("selected", self._colors["primary"])])
-        style.configure("Modern.Horizontal.TProgressbar", troughcolor="#e6ecf5", background=self._colors["primary"], bordercolor="#e6ecf5", lightcolor=self._colors["primary"], darkcolor=self._colors["primary"])
+        style.configure(
+            "Modern.TNotebook.Tab",
+            padding=(18, 8),
+            font=("Segoe UI", 10, "bold"),
+            background=self._colors["primary_dark"],
+            foreground="white",
+        )
+        style.map(
+            "Modern.TNotebook.Tab",
+            background=[("selected", self._colors["primary"]), ("!selected", self._colors["primary_dark"])],
+            foreground=[("selected", "white"), ("!selected", "white")],
+        )
+        style.configure(
+            "Modern.Horizontal.TProgressbar",
+            troughcolor=self._colors["panel"],
+            background=self._colors["accent"],
+            bordercolor=self._colors["border"],
+            lightcolor=self._colors["accent"],
+            darkcolor=self._colors["accent"],
+        )
 
     def _style_text_area(self, widget):
         widget.configure(
-            bg="#fbfcff",
+            bg=self._colors["input"],
             fg=self._colors["text"],
             insertbackground=self._colors["text"],
             relief="solid",
             bd=1,
             highlightthickness=1,
             highlightbackground=self._colors["border"],
-            highlightcolor=self._colors["primary"],
+            highlightcolor=self._colors["accent_bright"],
             padx=8,
             pady=8,
             wrap="word",
@@ -282,8 +303,83 @@ class App(tk.Tk):
                     fg=self._colors["text"],
                     activebackground=self._colors["panel"],
                     activeforeground=self._colors["text"],
-                    selectcolor="#eef3fb",
+                    selectcolor=self._colors["input"],
                 )
+
+    def _bind_button_states(self, button, normal, hover=None, pressed=None, fg="white"):
+        """Apply consistent hover/pressed states for tk.Button widgets."""
+        hover = hover or normal
+        pressed = pressed or hover
+        button.configure(
+            bg=normal,
+            fg=fg,
+            activebackground=pressed,
+            activeforeground=fg,
+        )
+
+        def _on_enter(_event):
+            button.configure(bg=hover)
+
+        def _on_leave(_event):
+            button.configure(bg=normal)
+
+        def _on_press(_event):
+            button.configure(bg=pressed)
+
+        def _on_release(_event):
+            inside = button.winfo_containing(button.winfo_pointerx(), button.winfo_pointery()) == button
+            button.configure(bg=hover if inside else normal)
+
+        button.bind("<Enter>", _on_enter)
+        button.bind("<Leave>", _on_leave)
+        button.bind("<ButtonPress-1>", _on_press)
+        button.bind("<ButtonRelease-1>", _on_release)
+
+    def _fit_caption_for_platform(self, platform, caption):
+        """Trim caption to platform character limits when needed."""
+        limit = PLATFORM_LIMITS.get(platform)
+        if limit is None:
+            return caption, False, None
+        text = str(caption or "").strip()
+        if len(text) <= limit:
+            return text, False, limit
+        ellipsis = "..."
+        cut = max(0, limit - len(ellipsis))
+        trimmed = text[:cut].rstrip() + ellipsis
+        return trimmed, True, limit
+
+    def _translate_title_to_english(self, text):
+        """Best-effort Gujarati->English translation for sheet title formatting."""
+        if not text:
+            return ""
+        try:
+            from deep_translator import GoogleTranslator
+            translated = GoogleTranslator(source="auto", target="en").translate(text)
+            return (translated or "").strip()
+        except Exception:
+            return ""
+
+    def _build_video_sheet_title(self, approved_captions, video_path):
+        """Return `Gujarati Title (English Title)` when available."""
+        fallback = os.path.splitext(os.path.basename(video_path))[0]
+        youtube = approved_captions.get("youtube", {}) if isinstance(approved_captions, dict) else {}
+        gujarati_title = ""
+        if isinstance(youtube, dict):
+            gujarati_title = (youtube.get("title") or "").strip()
+        if not gujarati_title:
+            return fallback
+        english_title = self._translate_title_to_english(gujarati_title)
+        if english_title:
+            return f"{gujarati_title} ({english_title})"
+        return gujarati_title
+
+    def _queue_ui(self, fn):
+        """Queue a callback on Tk UI thread; return False if UI loop is unavailable."""
+        try:
+            self.after(0, fn)
+            return True
+        except RuntimeError:
+            return False
 
     def _build_ui(self):
         pad = {"padx": 12, "pady": 6}
@@ -319,7 +415,7 @@ class App(tk.Tk):
         tk.Label(self.t_dub, text="Video / URL:", font=("Segoe UI", 10)).grid(row=1,column=0,sticky="w",**pad)
         self.video_var = tk.StringVar()
         tk.Entry(self.t_dub, textvariable=self.video_var, width=54, relief="solid", bd=1).grid(row=1,column=1,**pad)
-        tk.Button(self.t_dub, text="Browse", command=self._browse_video, width=10, bg="#eef3fb", fg=self._colors["text"], relief="solid", bd=1).grid(row=1,column=2,**pad)
+        tk.Button(self.t_dub, text="Browse", command=self._browse_video, width=10, bg=self._colors["input"], fg=self._colors["text"], relief="solid", bd=1).grid(row=1,column=2,**pad)
 
         tk.Label(self.t_dub, text="2) Language & Voice", font=("Segoe UI Semibold", 11)).grid(row=2, column=0, sticky="w", **pad)
         tk.Label(self.t_dub, text="Voice:", font=("Segoe UI", 10)).grid(row=3,column=0,sticky="w",**pad)
@@ -393,7 +489,7 @@ class App(tk.Tk):
         tk.Label(self.t_media, text="Select Flyer/Images:", font=("Segoe UI Semibold",10)).grid(row=3,column=0,sticky="w",**pad)
         self.flyer_var = tk.StringVar()
         tk.Entry(self.t_media, textvariable=self.flyer_var, width=54, relief="solid", bd=1).grid(row=3,column=1,**pad)
-        tk.Button(self.t_media, text="Browse", command=self._browse_flyer, width=10, bg="#eef3fb", fg=self._colors["text"], relief="solid", bd=1).grid(row=3,column=2,**pad)
+        tk.Button(self.t_media, text="Browse", command=self._browse_flyer, width=10, bg=self._colors["input"], fg=self._colors["text"], relief="solid", bd=1).grid(row=3,column=2,**pad)
         
         self.flyer_paths = []
         self.flyer_count_label = tk.Label(self.t_media, text="", fg=self._colors["muted"], font=("Segoe UI",8))
@@ -416,7 +512,7 @@ class App(tk.Tk):
         
         ttk.Separator(self.t_media,orient="horizontal").grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
         bf = tk.Frame(self.t_media, bg=self._colors["panel"]); bf.grid(row=11,column=0,columnspan=3,sticky="w",padx=12)
-        tk.Button(bf,text="Clear Selection",command=self._clear_flyer, bg="#eef3fb", fg=self._colors["text"], relief="solid", bd=1).pack(side="left",padx=4)
+        tk.Button(bf,text="Clear Selection",command=self._clear_flyer, bg=self._colors["input"], fg=self._colors["text"], relief="solid", bd=1).pack(side="left",padx=4)
         
         tk.Label(self.t_media, text="Processing activity", font=("Segoe UI Semibold",10)).grid(row=12,column=0,sticky="w",**pad)
         self.flyer_results = tk.Text(self.t_media, width=84, height=8, font=("Consolas",9))
@@ -455,7 +551,7 @@ class App(tk.Tk):
 
         self.process_flyer_btn = tk.Button(
             center_frame, text="Process Flyer", command=self._process_flyer,
-            bg=self._colors["primary"], fg="white", width=14,
+            bg=self._colors["accent"], fg="white", width=14,
             font=("Segoe UI Semibold", 9), relief="flat", bd=0, padx=10, pady=6
         )
         self.process_flyer_btn.pack(side="left", padx=4)
@@ -474,6 +570,34 @@ class App(tk.Tk):
             relief="flat", bd=0, padx=10, pady=6
         )
         self.run_btn.pack(side="right", padx=6)
+        self._bind_button_states(
+            self.run_btn,
+            normal=self._colors["primary"],
+            hover=self._colors["primary_dark"],
+            pressed=self._colors["primary_dark"],
+            fg="white",
+        )
+        self._bind_button_states(
+            self.process_flyer_btn,
+            normal=self._colors["accent"],
+            hover=self._colors["accent_bright"],
+            pressed=self._colors["accent_bright"],
+            fg="white",
+        )
+        self._bind_button_states(
+            self.publish_flyer_btn,
+            normal=self._colors["success"],
+            hover=self._colors["primary_dark"],
+            pressed=self._colors["primary_dark"],
+            fg="white",
+        )
+        self._bind_button_states(
+            self.cleanup_btn,
+            normal=self._colors["danger"],
+            hover=self._colors["primary_dark"],
+            pressed=self._colors["primary_dark"],
+            fg="white",
+        )
 
         self.process_flyer_btn.pack_forget()
         self.publish_flyer_btn.pack_forget()
@@ -717,15 +841,34 @@ class App(tk.Tk):
             
             # Prepare captions for publishing (needed for both live and test mode)
             publish_captions = {}
+            adjusted_platforms = []
             for platform in selected:
+                raw_caption = captions.get(platform)
+                if isinstance(raw_caption, dict):
+                    raw_caption = raw_caption.get("caption", "")
+                if raw_caption is None:
+                    raw_caption = f"Check out this content from KAILASA! #KAILASA #Nithyananda"
+                fitted_caption, adjusted, limit = self._fit_caption_for_platform(platform, raw_caption)
+                if adjusted:
+                    adjusted_platforms.append((platform, len(str(raw_caption)), limit))
                 if platform in captions:
                     publish_captions[platform] = {
-                        "caption": captions[platform]
+                        "caption": fitted_caption
                     }
                 else:
                     publish_captions[platform] = {
-                        "caption": f"Check out this content from KAILASA! #KAILASA #Nithyananda"
+                        "caption": fitted_caption
                     }
+
+            if adjusted_platforms:
+                self.flyer_results.insert(tk.END, "✂️ Caption length adjusted for platform limits:\n")
+                for platform, original_len, limit in adjusted_platforms:
+                    self.flyer_results.insert(
+                        tk.END,
+                        f"  - {platform.title()}: {original_len} → {limit} chars\n"
+                    )
+                self.flyer_results.insert(tk.END, "\n")
+                self.flyer_results.see(tk.END)
             
             # Show confirmation dialog with test option
             result = messagebox.askyesno("Confirm Publish", 
@@ -738,6 +881,10 @@ class App(tk.Tk):
             # Start publishing
             self.status_var.set("Publishing flyer...")
             self.progress.start(12)
+            publish_now_flag = bool(self.flyer_publish_now_var.get())
+            flyer_paths = list(self.flyer_paths)
+            primary_flyer = flyer_paths[0] if flyer_paths else self.flyer_path
+            additional_flyers = flyer_paths[1:] if len(flyer_paths) > 1 else []
             
             def _publish_thread():
                 try:
@@ -747,24 +894,25 @@ class App(tk.Tk):
                         video_path=None,  # No video for flyers
                         captions=publish_captions,
                         platforms=selected,
-                        publish_now=self.flyer_publish_now_var.get(),
-                        image_paths=self.flyer_paths,  # Pass all selected images
+                        publish_now=publish_now_flag,
+                        image_paths=flyer_paths,  # Pass all selected images
                         output_dir="workspace",
-                        progress_cb=lambda done, total, platform, status: self.after(0, 
-                            lambda: self._update_progress(done, total, platform, status)),
+                        progress_cb=lambda done, total, platform, status: self._queue_ui(
+                            lambda: self._update_progress(done, total, platform, status)
+                        ),
                         fallback_files={
-                            "main_image": self.flyer_paths[0] if self.flyer_paths else self.flyer_path,
-                            "additional_images": self.flyer_paths[1:] if len(self.flyer_paths) > 1 else []
+                            "main_image": primary_flyer,
+                            "additional_images": additional_flyers
                         }  # Pass all images for upload
                     )
                     
                     # Count successful publishes correctly (ignore top-level {"error": "..."} payloads)
                     successful = _count_successful_results(results)
                     
-                    self.after(0, lambda: self._flyer_publish_done(successful, len(selected), results))
+                    self._queue_ui(lambda: self._flyer_publish_done(successful, len(selected), results))
                     
                 except Exception as e:
-                    self.after(0, lambda: self._flyer_publish_done(0, 1, {"error": str(e)}))
+                    self._queue_ui(lambda: self._flyer_publish_done(0, 1, {"error": str(e)}))
             
             threading.Thread(target=_publish_thread, daemon=True).start()
             
@@ -803,10 +951,41 @@ class App(tk.Tk):
     def _flyer_publish_done(self, successful, total, results):
         """Handle flyer publishing completion"""
         self.progress.stop()
+        self.flyer_results.insert(tk.END, "\n📊 Publish Results:\n")
+        self.flyer_results.insert(tk.END, "=" * 40 + "\n")
+        failure_lines = []
+        success_lines = []
+        for platform, result in results.items():
+            if isinstance(result, dict):
+                status = str(result.get("status", "")).lower()
+                post_id = result.get("post_id") or result.get("_id") or "n/a"
+                if status == "ok":
+                    success_lines.append(f"✅ {platform}: {post_id}")
+                else:
+                    err_msg = result.get("error") or result.get("error_message") or "Unknown error"
+                    failure_lines.append(f"❌ {platform}: {err_msg}")
+            elif isinstance(result, bool):
+                if result:
+                    success_lines.append(f"✅ {platform}: success")
+                else:
+                    failure_lines.append(f"❌ {platform}: skipped")
+            else:
+                failure_lines.append(f"❌ {platform}: unexpected result format")
+
+        for line in success_lines + failure_lines:
+            self.flyer_results.insert(tk.END, line + "\n")
+        self.flyer_results.see(tk.END)
         
         if successful > 0:
             self.status_var.set(f"Published to {successful}/{total} platforms!")
-            messagebox.showinfo("Success", f"Successfully published to {successful} platform(s)!")
+            if failure_lines:
+                msg = (
+                    f"Published to {successful}/{total} platform(s).\n\n"
+                    f"Failures:\n" + "\n".join(failure_lines[:5])
+                )
+                messagebox.showinfo("Partial Success", msg)
+            else:
+                messagebox.showinfo("Success", f"Successfully published to {successful} platform(s)!")
             
             # Log to Google Sheet after successful flyer publish
             try:
@@ -851,9 +1030,9 @@ class App(tk.Tk):
                     video_title=formatted_title,
                     publish_results=results,
                     duration="N/A",  # N/A for images
-                    source_lang="",  # Not applicable for flyers
-                    target_lang="gujarati",  # Flyers are always Gujarati
-                    content_format="image",  # Images publishing
+                    source_lang="English",  # Flyers are treated as English source content
+                    target_lang="Gujarati",  # Flyers are always Gujarati output
+                    content_format="Image",  # Images publishing
                 )
                 print(f"[SHEET] Flyer publish: {sheet_msg}")
                 
@@ -862,7 +1041,8 @@ class App(tk.Tk):
                 
         else:
             self.status_var.set("Publishing failed")
-            messagebox.showerror("Failed", "Publishing failed. Check API keys and try again.")
+            error_msg = "\n".join(failure_lines[:6]) if failure_lines else "Publishing failed. Check API keys and try again."
+            messagebox.showerror("Failed", error_msg)
         
         # Log results
         for platform, result in results.items():
@@ -975,14 +1155,18 @@ class App(tk.Tk):
 
         def _safe_done(success, msg, pub_results=None):
             if done_cb:
-                self.after(0, lambda: done_cb(success=success, msg=msg, pub_results=pub_results))
+                if not self._queue_ui(lambda: done_cb(success=success, msg=msg, pub_results=pub_results)):
+                    try:
+                        done_cb(success=success, msg=msg, pub_results=pub_results)
+                    except Exception:
+                        pass
 
         self.progress.start(12); self.status_var.set("Publishing ...")
 
         # Thread-safe progress callback for status bar updates
         def _thread_safe_progress(done, total, platform, status):
             """Thread-safe progress update for status bar"""
-            self.after(0, lambda: self._update_progress(done, total, platform, status))
+            self._queue_ui(lambda: self._update_progress(done, total, platform, status))
 
         def _publish():
             try:
@@ -1008,58 +1192,31 @@ class App(tk.Tk):
                 if ok > 0:
                     try:
                         from dubber.sheet_logger import quick_update_from_publish_result
-                        
-                        # Get the generated Gujarati title from captions
-                        formatted_title = ""
-                        english_title = ""  # Initialize english_title
-                        try:
-                            captions_file = os.path.join("workspace", "captions.json")
-                            if os.path.exists(captions_file):
-                                with open(captions_file, "r", encoding="utf-8") as f:
-                                    captions = json.load(f)
-                                
-                                # Get Gujarati title from YouTube captions
-                                gujarati_title = captions.get("youtube", {}).get("title", "")
-                                if gujarati_title:
-                                    # Get English translation of original title
-                                    try:
-                                        english_title = vision_data.get("main_topic", "") if 'vision_data' in locals() else ""
-                                        
-                                        # Format the Gujarati title properly
-                                        formatted_title = gujarati_title.strip()
-                                        
-                                        # Update Google Sheet
-                                        quick_update_from_publish_result(
-                                            video_title=formatted_title or os.path.basename(video_path),
-                                            publish_results=results,
-                                            target_lang=LANGUAGES.get(self.tgt_lang_var.get(), "gu"),
-                                            content_format="video",
-                                        )
-                                        
-                                        log("PUBLISH", f"✅ Google Sheet updated with title: {formatted_title}")
-                                    except Exception as sheet_error:
-                                        log("PUBLISH", f"⚠️ Google Sheet update failed: {sheet_error}")
-                                else:
-                                    log("PUBLISH", "⚠️ No Gujarati title found for Google Sheet")
-                            else:
-                                log("PUBLISH", "⚠️ Captions file not found for Google Sheet")
-                        except Exception as e:
-                            log("PUBLISH", f"⚠️ Google Sheet update error: {e}")
+                        formatted_title = self._build_video_sheet_title(approved, video_path)
+                        sheet_success, sheet_msg = quick_update_from_publish_result(
+                            video_title=formatted_title,
+                            publish_results=results,
+                            duration="",
+                            source_lang=self.src_lang_var.get() or "English",
+                            target_lang=self.tgt_lang_var.get() or "Gujarati",
+                            content_format="",  # keep blank for videos in sheet
+                        )
+                        log("PUBLISH", f"✅ Google Sheet update: {sheet_msg}")
                     
                     except ImportError:
                         log("PUBLISH", "⚠️ Google Sheet logger not available")
                 
-                self.after(0, lambda: self.run_btn.config(state="normal"))
-                self.after(0, self.progress.stop)
-                self.after(0, lambda: self.status_var.set(msg))
+                self._queue_ui(lambda: self.run_btn.config(state="normal"))
+                self._queue_ui(self.progress.stop)
+                self._queue_ui(lambda: self.status_var.set(msg))
                 log("PUBLISH", f"✅ Publishing completed: {msg}")
                 _safe_done(success=(ok > 0), msg=msg, pub_results=results)
                 
             except Exception as e:
                 log("PUBLISH", f"❌ Publishing error: {e}")
-                self.after(0, lambda: self.run_btn.config(state="normal"))
-                self.after(0, self.progress.stop)
-                self.after(0, lambda: self.status_var.set(f"Publishing failed: {e}"))
+                self._queue_ui(lambda: self.run_btn.config(state="normal"))
+                self._queue_ui(self.progress.stop)
+                self._queue_ui(lambda: self.status_var.set(f"Publishing failed: {e}"))
                 _safe_done(success=False, msg=f"Publishing failed: {e}", pub_results={"error": str(e)})
         
         threading.Thread(target=_publish, daemon=True).start()

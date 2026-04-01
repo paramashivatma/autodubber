@@ -148,6 +148,15 @@ def _format_post_ids(publish_results: Dict[str, Dict]) -> str:
                 parts.append(f"{platform}:{post_id}")
     return ",".join(parts)
 
+def _is_success_result(result) -> bool:
+    if isinstance(result, bool):
+        return result
+    if not isinstance(result, dict):
+        return False
+    if "error" in result:
+        return False
+    return str(result.get("status", "")).lower() == "ok"
+
 
 
 
@@ -324,15 +333,37 @@ def quick_update_from_publish_result(
             return False, f"Credentials not found: {creds_path}"
         
         # Build data structure
+        successful_results = {
+            platform: result
+            for platform, result in (publish_results or {}).items()
+            if _is_success_result(result)
+        }
+        failed_count = max(0, len((publish_results or {}).keys()) - len(successful_results.keys()))
+
+        if successful_results and failed_count == 0:
+            status_text = "Published ✅"
+        elif successful_results and failed_count > 0:
+            status_text = "Partial ⚠️"
+        else:
+            status_text = "Failed ❌"
+
+        raw_format = str(content_format or "").strip().lower()
+        if raw_format in ("", "video"):
+            format_label = ""
+        elif raw_format == "image":
+            format_label = "Image"
+        else:
+            format_label = str(content_format or "").strip()
+
         data = {
             "title": video_title,
-            "status": "Published ✅",
+            "status": status_text,
             "attempts": 1,
-            "format": content_format,  # "video" or "image"
+            "format": format_label,  # "Video" or "Image"
             "duration": duration,
             "source_lang": source_lang,
             "target_lang": target_lang,
-            "platforms": list(publish_results.keys()),
+            "platforms": list(successful_results.keys()),
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         
@@ -392,7 +423,7 @@ def quick_update_from_publish_result(
             # else: will append new row at end
         
         platforms_str = _format_platforms_list(data["platforms"])
-        post_ids_str = _format_post_ids(publish_results)
+        post_ids_str = _format_post_ids(successful_results)
         
         row_data = [
             data["title"], data["status"], data["attempts"],

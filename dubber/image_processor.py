@@ -122,12 +122,13 @@ CONTENT RULES:
 3. EACH PLATFORM NEEDS A DIFFERENT EMOTIONAL ENTRY POINT:
    - Instagram: Feeling of SPH's presence — visual, devotional, personal
    - Facebook: Community/family sharing together — warm, inclusive
-   - Twitter/X: Breaking urgency — punchy. STRICT 220 character max 
-     including hashtags and URL. Count characters before finalizing.
-     Hook must reference a specific feature visible in this image. 
-     Never open with the app name or product announcement.
+   - Twitter/X: Breaking urgency — punchy. STRICT 280 character max 
+      including hashtags and URL. Count characters before finalizing.
+      Hook must reference a specific feature visible in this image. 
+      Never open with the app name or product announcement.
    - Threads: Conversational — "you asked, now it exists"
-   - Bluesky: Thoughtful — AI + divine guidance for seekers
+   - Bluesky: Thoughtful — AI + divine guidance for seekers.
+     STRICT 300 character max including hashtags and URL.
 
 4. HOOK RULE — NEVER open with product info. Open with:
    - Devotee desire: "ગમે ત્યાં હો — SPH ની ઉપસ્થિતિ..."
