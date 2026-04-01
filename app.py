@@ -13,7 +13,7 @@ from dubber import (
 from dubber.utils import PLATFORMS
 from dubber.downloader    import is_url, download_video
 from dubber.bgm_separator import separate_background
-from dubber.parallel_upload import create_parallel_upload_manager, publish_with_preuploaded_urls
+from dubber.parallel_upload import create_parallel_upload_manager, publish_with_preuploaded_urls_sync
 from review_dialog        import ReviewDialog
 
 WORKSPACE   = "workspace"
@@ -844,7 +844,7 @@ class App(tk.Tk):
                     if teaser_path:
                         fallback_files[f'teaser_{platform}'] = teaser_path
                 
-                results = publish_with_preuploaded_urls(
+                results = publish_with_preuploaded_urls_sync(
                     api_key         = zernio_key,
                     captions        = approved,
                     platforms       = selected_platforms,

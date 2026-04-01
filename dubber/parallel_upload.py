@@ -367,3 +367,36 @@ def publish_with_preuploaded_urls(api_key, captions, platforms, upload_results,
         return results
 
     return asyncio.run(_publish_all_platforms())
+
+def publish_with_preuploaded_urls_sync(api_key, captions, platforms, upload_results,
+                                      scheduled_for=None, publish_now=True,
+                                      teaser_captions=None, output_dir="workspace",
+                                      progress_cb=None, fallback_files=None):
+    """
+    Sync wrapper for publish_with_preuploaded_urls to work in GUI context
+    """
+    import threading
+    
+    result_container = {}
+    exception_container = {}
+    
+    def run_in_thread():
+        try:
+            result = publish_with_preuploaded_urls(
+                api_key, captions, platforms, upload_results,
+                scheduled_for, publish_now, teaser_captions, output_dir,
+                progress_cb, fallback_files
+            )
+            result_container['result'] = result
+        except Exception as e:
+            exception_container['exception'] = e
+    
+    # Run in separate thread to avoid asyncio.run() in event loop
+    thread = threading.Thread(target=run_in_thread)
+    thread.start()
+    thread.join()
+    
+    if 'exception' in exception_container:
+        raise exception_container['exception']
+    
+    return result_container.get('result', {})
