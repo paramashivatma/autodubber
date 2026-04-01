@@ -94,14 +94,23 @@ async def _post_to_single_platform(api_key, platform, captions, media_items,
                 progress_cb(done_count + 1, total_count, platform, "error")
             return platform, result
 
+        custom_content = _trim(
+            captions.get(platform, "") if isinstance(captions, dict) else captions, platform
+        )
+
+        # Build payload according to Zernio API documentation
         payload = {
-            "content":    "",           # customContent per platform overrides this
-            "mediaItems": media_items,
-            "platforms":  [entry],
+            "content": custom_content,  # Main caption content
+            "platforms": [entry],      # Platform-specific settings
+            "publishNow": publish_now,
         }
-        if publish_now:
-            payload["publishNow"] = True
-        elif scheduled_for:
+        
+        # Add media items if provided
+        if media_items:
+            payload["mediaItems"] = media_items
+            
+        # Add scheduling if provided
+        if scheduled_for:
             payload["scheduledFor"] = scheduled_for
 
         # notify UI: this platform is now being posted
@@ -245,31 +254,30 @@ def _build_entry(platform, captions, teaser_public_urls=None):
         log("PUBLISH", f"  No account ID for '{platform}' — skipping")
         return None
 
-    pdata          = captions.get(platform, {})
-    custom_content = _trim(
-        pdata.get("caption", "") if isinstance(pdata, dict) else pdata, platform
-    )
-
+    # Build platform entry according to Zernio API documentation
     entry = {
-        "platform":      platform,
-        "accountId":     acc,
-        "customContent": custom_content,
+        "platform": platform,
+        "accountId": acc,
     }
 
+    # Add platform-specific fields
     if platform == "youtube":
+        pdata = captions.get(platform, {})
         title = _extract_str(pdata.get("title", "")) if isinstance(pdata, dict) else ""
-        if title: entry["title"] = title
+        if title: 
+            entry["title"] = title
         entry["visibility"] = "public"
 
     if platform == "tiktok":
         entry["privacyLevel"] = "PUBLIC_TO_EVERYONE"
 
+    # Add teaser media if available
     t_url = (teaser_public_urls or {}).get(platform)
     if t_url:
         entry["customMedia"] = [{"url": t_url, "type": "video"}]
         log("PUBLISH", f"  [{platform}] customMedia teaser attached")
 
-    log("PUBLISH", f"  [{platform}] customContent={len(custom_content)}c")
+    log("PUBLISH", f"  [{platform}] entry built for account {acc}")
     return entry
 
 
