@@ -6,6 +6,10 @@ yt-dlp
 demucs
 soundfile
 requests
+httpx
+numpy
+Pillow
 google-genai
 gspread
 google-auth
+zernio

@@ -92,22 +92,53 @@ def _groq_transcribe(api_key, audio_path, language, output_dir):
 
 
 def _local_transcribe(audio_path, language, model_size, output_dir):
-    import whisper
-    log("TRANSCRIBE", f"Whisper model: {model_size}")
-    model = whisper.load_model(model_size)
     lang_code = language if language and language != "auto" else None
-    result = model.transcribe(audio_path, language=lang_code, verbose=False)
-    detected = result.get("language", language)
-    log("TRANSCRIBE", f"Lang: {detected} p={result.get('language_probability', 0):.2f}")
-    segments = []
-    for seg in result.get("segments", []):
-        segments.append({
-            "id":    seg["id"],
-            "start": round(seg["start"], 3),
-            "end":   round(seg["end"],   3),
-            "text":  seg["text"].strip(),
-        })
-    return segments, detected
+
+    # Try OpenAI Whisper first if installed.
+    try:
+        import whisper
+        log("TRANSCRIBE", f"Local Whisper (openai-whisper): {model_size}")
+        model = whisper.load_model(model_size)
+        result = model.transcribe(audio_path, language=lang_code, verbose=False)
+        detected = result.get("language", language)
+        log("TRANSCRIBE", f"Lang: {detected} p={result.get('language_probability', 0):.2f}")
+        segments = []
+        for seg in result.get("segments", []):
+            segments.append({
+                "id":    seg["id"],
+                "start": round(seg["start"], 3),
+                "end":   round(seg["end"],   3),
+                "text":  seg["text"].strip(),
+            })
+        return segments, detected
+    except Exception as e:
+        log("TRANSCRIBE", f"openai-whisper unavailable, trying faster-whisper: {e}")
+
+    # Fallback to faster-whisper (already part of requirements.txt).
+    try:
+        from faster_whisper import WhisperModel
+        log("TRANSCRIBE", f"Local Whisper (faster-whisper): {model_size}")
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        fw_segments, info = model.transcribe(audio_path, language=lang_code, beam_size=5)
+        detected = getattr(info, "language", language)
+        segments = []
+        for i, seg in enumerate(fw_segments):
+            text = (getattr(seg, "text", "") or "").strip()
+            if not text:
+                continue
+            segments.append({
+                "id": i,
+                "start": round(float(seg.start), 3),
+                "end": round(float(seg.end), 3),
+                "text": text,
+            })
+        log("TRANSCRIBE", f"Lang: {detected} | segments={len(segments)}")
+        return segments, detected
+    except Exception as e:
+        raise RuntimeError(
+            "Local transcription failed. Set GROQ_API_KEY for cloud transcription "
+            "or install openai-whisper/faster-whisper properly."
+        ) from e
 
 
 def transcribe_audio(video_path, output_dir, model_size="large",
