@@ -7,6 +7,62 @@ import os
 from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConnectionError, ZernioRateLimitError, ZernioTimeoutError
 from dubber.utils import log, PLATFORM_ACCOUNTS
 
+def upload_large_file(client, file_path):
+    """Upload large file using Vercel Blob"""
+    try:
+        import vercel_blob
+        
+        # Get Vercel Blob token from environment or config
+        vercel_token = os.environ.get('VERCEL_BLOB_TOKEN')
+        if not vercel_token:
+            # Try to load from .env file
+            env_file = ".env"
+            if os.path.exists(env_file):
+                with open(env_file, 'r') as f:
+                    for line in f:
+                        if line.startswith('VERCEL_BLOB_TOKEN=') and not line.startswith('#'):
+                            vercel_token = line.split('=', 1)[1].strip()
+                            break
+        
+        if not vercel_token:
+            raise Exception("VERCEL_BLOB_TOKEN not found in environment or .env file. Add it to your .env file: VERCEL_BLOB_TOKEN=vercel_blob_rw_your_token_here")
+        
+        log("PUBLISH", f"  📤 Using Vercel Blob for large file upload...")
+        
+        # Read file and upload
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+        
+        # Generate unique filename
+        import uuid
+        file_ext = os.path.splitext(file_path)[1]
+        unique_filename = f"videos/{uuid.uuid4()}{file_ext}"
+        
+        # Upload with multipart for large files
+        result = vercel_blob.put(
+            unique_filename,
+            file_data,
+            {
+                "token": vercel_token,
+                "addRandomSuffix": "false",
+                "allowOverwrite": "true"
+            },
+            multipart=True,
+            verbose=True
+        )
+        
+        # Get the public URL
+        public_url = result.get('url', '')
+        log("PUBLISH", f"  ✅ Large file uploaded: {public_url[:50]}...")
+        return public_url
+        
+    except ImportError:
+        log("PUBLISH", f"  ❌ vercel-blob package not available - install with: pip install vercel-blob")
+        raise Exception("vercel-blob package not available for large file uploads. Install with: pip install vercel-blob")
+    except Exception as e:
+        log("PUBLISH", f"  ❌ Large file upload failed: {e}")
+        raise e
+
 def publish_with_sdk(api_key, captions, platforms, upload_results=None, 
                     scheduled_for=None, publish_now=True, teaser_captions=None, 
                     output_dir="workspace", progress_cb=None, fallback_files=None):
@@ -44,9 +100,19 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             main_video_path = fallback_files.get("main_video")
             if main_video_path and os.path.exists(main_video_path):
                 try:
-                    result = client.media.upload(main_video_path)
-                    media_urls.append(result["publicUrl"])
-                    log("PUBLISH", f"  ✅ Uploaded main video: {result['publicUrl'][:50]}...")
+                    # Check file size
+                    file_size = os.path.getsize(main_video_path)
+                    log("PUBLISH", f"  📏 Video file size: {file_size:,} bytes")
+                    
+                    if file_size > 4 * 1024 * 1024:  # 4MB limit
+                        log("PUBLISH", f"  📤 File too large for direct upload, using Vercel Blob...")
+                        video_url = upload_large_file(client, main_video_path)
+                    else:
+                        result = client.media.upload(main_video_path)
+                        video_url = result["publicUrl"]
+                    
+                    media_urls.append(video_url)
+                    log("PUBLISH", f"  ✅ Main video uploaded: {video_url[:50]}...")
                 except Exception as e:
                     log("PUBLISH", f"  ❌ Upload failed: {e}")
                     return {"error": f"Media upload failed: {e}"}
@@ -57,9 +123,19 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 main_image_path = fallback_files.get("main_image")
                 if main_image_path and os.path.exists(main_image_path):
                     try:
-                        result = client.media.upload(main_image_path)
-                        media_urls.append(result["publicUrl"])
-                        log("PUBLISH", f"  ✅ Uploaded main image: {result['publicUrl'][:50]}...")
+                        # Check file size
+                        file_size = os.path.getsize(main_image_path)
+                        log("PUBLISH", f"  📏 Main image file size: {file_size:,} bytes")
+                        
+                        if file_size > 4 * 1024 * 1024:  # 4MB limit
+                            log("PUBLISH", f"  📤 Main image too large, using Vercel Blob...")
+                            img_url = upload_large_file(client, main_image_path)
+                        else:
+                            result = client.media.upload(main_image_path)
+                            img_url = result["publicUrl"]
+                        
+                        media_urls.append(img_url)
+                        log("PUBLISH", f"  ✅ Main image uploaded: {img_url[:50]}...")
                     except Exception as e:
                         log("PUBLISH", f"  ❌ Upload failed: {e}")
                         return {"error": f"Media upload failed: {e}"}
@@ -69,9 +145,19 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 for i, img_path in enumerate(additional_images):
                     if img_path and os.path.exists(img_path):
                         try:
-                            result = client.media.upload(img_path)
-                            media_urls.append(result["publicUrl"])
-                            log("PUBLISH", f"  ✅ Uploaded additional image {i+1}: {result['publicUrl'][:50]}...")
+                            # Check file size
+                            file_size = os.path.getsize(img_path)
+                            log("PUBLISH", f"  📏 Image {i+1} file size: {file_size:,} bytes")
+                            
+                            if file_size > 4 * 1024 * 1024:  # 4MB limit
+                                log("PUBLISH", f"  📤 Image {i+1} too large, using Vercel Blob...")
+                                img_url = upload_large_file(client, img_path)
+                            else:
+                                result = client.media.upload(img_path)
+                                img_url = result["publicUrl"]
+                            
+                            media_urls.append(img_url)
+                            log("PUBLISH", f"  ✅ Uploaded additional image {i+1}: {img_url[:50]}...")
                         except Exception as e:
                             log("PUBLISH", f"  ❌ Additional image {i+1} upload failed: {e}")
                             # Continue with other images instead of failing completely
@@ -148,12 +234,20 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         try:
             if media_urls:
                 # All platforms can post with media
+                log("PUBLISH", f"🚀 Starting SDK call...")
+                log("PUBLISH", f"  📱 Platforms: {[p['platform'] for p in platform_list]}")
+                log("PUBLISH", f"  🎬 Media URLs: {len(media_urls)} items")
+                log("PUBLISH", f"  ⏰ Publish now: {publish_now}")
+                log("PUBLISH", f"  📞 Calling client.posts.create()...")
+                
                 post_result = client.posts.create(
                     content=default_content,
                     media_urls=media_urls,
                     platforms=platform_list,
                     publish_now=publish_now
                 )
+                
+                log("PUBLISH", f"  ✅ SDK call returned: {type(post_result)}")
             else:
                 # Filter platforms that don't require media
                 # Instagram, Facebook, Threads, Twitter, Bluesky support images
@@ -209,22 +303,32 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         
         # Extract results - handle actual SDK response format
         try:
+            log("PUBLISH", f"🔍 Starting response parsing...")
+            log("PUBLISH", f"  📊 Response type: {type(post_result)}")
+            log("PUBLISH", f"  📄 Response content: {str(post_result)[:200]}...")
+            
             # The SDK returns PostCreateResponse objects with complex structure
             published_platforms = []
             
             if hasattr(post_result, 'post'):
+                log("PUBLISH", f"  🔗 Found post object")
                 post_obj = post_result.post
                 if hasattr(post_obj, 'platforms'):
                     published_platforms = post_obj.platforms
                     log("PUBLISH", f"  📊 Got platforms from post.platforms: {len(published_platforms)}")
+                    log("PUBLISH", f"  📋 Platform objects: {published_platforms}")
                 else:
                     log("PUBLISH", f"  ❌ No platforms attribute on post object")
+                    log("PUBLISH", f"  🔍 Post object attributes: {[attr for attr in dir(post_obj) if not attr.startswith('_')]}")
             elif isinstance(post_result, dict):
+                log("PUBLISH", f"  📦 Response is dict")
                 post = post_result.get('post', {})
                 published_platforms = post.get('platforms', [])
                 log("PUBLISH", f"  📊 Got platforms from dict: {len(published_platforms)}")
+                log("PUBLISH", f"  📋 Dict keys: {list(post_result.keys())}")
             else:
                 log("PUBLISH", f"  ❌ Unknown response format: {type(post_result)}")
+                log("PUBLISH", f"  🔍 Available attributes: {[attr for attr in dir(post_result) if not attr.startswith('_')]}")
                 
             log("PUBLISH", f"  📊 Response type: {type(post_result)}")
             log("PUBLISH", f"  📊 Platforms in response: {len(published_platforms)}")
