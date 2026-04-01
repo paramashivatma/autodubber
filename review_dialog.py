@@ -14,7 +14,7 @@ class ReviewDialog(tk.Toplevel):
         self._publishing = False
         self._upload_manager = upload_manager
         self._build(captions)
-        self.geometry("820x660")
+        self.geometry("900x750")  # Increased height and width
         
         # Start parallel uploads if upload manager provided
         if self._upload_manager:
@@ -24,7 +24,7 @@ class ReviewDialog(tk.Toplevel):
 
     def _build(self, captions):
         nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=8, pady=8)
+        nb.pack(fill="both", expand=False, padx=8, pady=8)  # Don't expand vertically
 
         for p in PLATFORMS:
             data  = captions.get(p, {})
@@ -44,7 +44,7 @@ class ReviewDialog(tk.Toplevel):
 
             sf = tk.Frame(frame); sf.pack(fill="both", expand=True)
             sb = tk.Scrollbar(sf); sb.pack(side="right", fill="y")
-            cap_box = tk.Text(sf, wrap="word", font=("Helvetica",9), yscrollcommand=sb.set)
+            cap_box = tk.Text(sf, wrap="word", font=("Helvetica",9), yscrollcommand=sb.set, height=8)  # Fixed height
             cap_box.insert("1.0", data.get("caption",""))
             cap_box.pack(side="left", fill="both", expand=True)
             sb.config(command=cap_box.yview)
@@ -64,7 +64,7 @@ class ReviewDialog(tk.Toplevel):
         tk.Label(self._progress_frame, text="Upload Progress:", 
                  font=("Helvetica",10,"bold"), fg="#2196f3").pack(anchor="w")
         
-        self._progress_text = tk.Text(self._progress_frame, height=6, wrap="word", 
+        self._progress_text = tk.Text(self._progress_frame, height=4, wrap="word",  # Reduced height
                                       font=("Helvetica",9), bg="#f5f5f5")
         self._progress_text.pack(fill="x", pady=(4,0))
         
