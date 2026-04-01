@@ -117,10 +117,10 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         else:
             log("PUBLISH", f"  SDK Call: client.posts.create(content={len(default_content)} chars, platforms={len(platform_list)} platforms)")
         
-        # Create the post - match exact documentation format
+        # Create the post - handle media requirements per platform
         try:
             if media_urls:
-                # Exact format from official docs
+                # All platforms can post with media
                 post_result = client.posts.create(
                     content=default_content,
                     media_urls=media_urls,
@@ -128,10 +128,24 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                     publish_now=publish_now
                 )
             else:
-                # Exact format from official docs
+                # Filter platforms that don't require media
+                media_required_platforms = ["instagram", "youtube", "tiktok"]
+                platforms_without_media = [
+                    p for p in platform_list 
+                    if p["platform"] not in media_required_platforms
+                ]
+                
+                if not platforms_without_media:
+                    error_msg = "No media uploaded but all selected platforms require media (instagram, youtube, tiktok)"
+                    log("PUBLISH", f"❌ {error_msg}")
+                    return {"error": error_msg}
+                
+                log("PUBLISH", f"⚠️ No media - posting only to text platforms: {[p['platform'] for p in platforms_without_media]}")
+                log("PUBLISH", f"⚠️ Skipped media-required platforms: {[p for p in media_required_platforms if any(p2['platform'] == p for p2 in platform_list)]}")
+                
                 post_result = client.posts.create(
                     content=default_content,
-                    platforms=platform_list,
+                    platforms=platforms_without_media,
                     publish_now=publish_now
                 )
             
