@@ -105,17 +105,6 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         if progress_cb:
             progress_cb(2, len(platforms), "sdk", "creating_post")
         
-        # Create the post using SDK
-        post_data = {
-            "content": default_content,
-            "platforms": platform_list,
-            "publish_now": publish_now,
-        }
-        
-        # Add scheduling if provided
-        if scheduled_for:
-            post_data["scheduled_for"] = scheduled_for
-        
         log("PUBLISH", f"🚀 Creating post for {len(platform_list)} platforms...")
         log("PUBLISH", f"  Content: {default_content[:100]}...")
         log("PUBLISH", f"  Media: {len(media_urls)} files")
@@ -128,13 +117,31 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         else:
             log("PUBLISH", f"  SDK Call: client.posts.create(content={len(default_content)} chars, platforms={len(platform_list)} platforms)")
         
-        # Create the post - media_urls passed as separate parameter
+        # Create the post - match exact documentation format
         try:
             if media_urls:
-                post_result = client.posts.create(media_urls=media_urls, **post_data)
+                # Exact format from official docs
+                post_result = client.posts.create(
+                    content=default_content,
+                    media_urls=media_urls,
+                    platforms=platform_list,
+                    publish_now=publish_now
+                )
             else:
-                post_result = client.posts.create(**post_data)
+                # Exact format from official docs
+                post_result = client.posts.create(
+                    content=default_content,
+                    platforms=platform_list,
+                    publish_now=publish_now
+                )
+            
+            # Add scheduling if needed (separate from main call)
+            if scheduled_for and hasattr(post_result, 'post'):
+                # For scheduled posts, we might need to create differently
+                log("PUBLISH", f"⚠️ Scheduling not fully implemented - using immediate publish")
+                
             log("PUBLISH", f"  ✅ SDK call successful: {type(post_result)}")
+            
         except Exception as sdk_error:
             log("PUBLISH", f"  ❌ SDK call failed: {sdk_error}")
             raise sdk_error
