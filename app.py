@@ -3,7 +3,6 @@ import re
 from tkinter import filedialog, ttk, messagebox
 
 import json
-import os
 try:
     from PIL import Image, ImageTk
 except Exception:
@@ -14,8 +13,7 @@ from dubber import (
     get_translation_runtime_meta,
     generate_tts_audio, build_dubbed_video,
     extract_vision, generate_all_captions,
-    generate_teaser, generate_teasers, log,  # Removed legacy publish_to_platforms
-    quick_update_from_publish_result,
+    generate_teasers, log,  # Removed legacy publish_to_platforms
 )
 from dubber.utils import PLATFORMS, PLATFORM_LIMITS
 from dubber.downloader    import is_url, download_video

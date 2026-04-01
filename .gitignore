@@ -11,6 +11,13 @@ workspace/
 
 # Output video
 output.mp4
+translation_cache.json
+logs/
+
+# Local test artifacts
+dummy_input_for_e2e.mp4
+digi.jpg
+debugging_package/
 
 # VS Code / Windsurf
 .vscode/
