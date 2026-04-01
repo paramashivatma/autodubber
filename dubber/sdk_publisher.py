@@ -6,7 +6,40 @@ Replaces complex custom publishing with official SDK
 import os
 import mimetypes
 from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConnectionError, ZernioRateLimitError, ZernioTimeoutError
-from dubber.utils import log, PLATFORM_ACCOUNTS
+from dubber.utils import log, PLATFORM_ACCOUNTS, PLATFORM_LIMITS
+
+def _extract_public_url(upload_result):
+    """Handle SDK upload responses returned as dicts or typed objects."""
+    if isinstance(upload_result, dict):
+        if upload_result.get("publicUrl") or upload_result.get("public_url"):
+            return upload_result.get("publicUrl") or upload_result.get("public_url")
+        files = upload_result.get("files")
+        if isinstance(files, list) and files:
+            first = files[0]
+            if isinstance(first, dict):
+                return first.get("url") or first.get("publicUrl") or first.get("public_url")
+    direct = getattr(upload_result, "publicUrl", None) or getattr(upload_result, "public_url", None)
+    if direct:
+        return direct
+    files_attr = getattr(upload_result, "files", None)
+    if isinstance(files_attr, list) and files_attr:
+        first = files_attr[0]
+        if isinstance(first, dict):
+            return first.get("url") or first.get("publicUrl") or first.get("public_url")
+        url_attr = getattr(first, "url", None) or getattr(first, "publicUrl", None) or getattr(first, "public_url", None)
+        if url_attr:
+            return str(url_attr)
+    return None
+
+def _fit_platform_content(platform, text):
+    """Clamp content to platform hard limits."""
+    content = str(text or "").strip()
+    limit = PLATFORM_LIMITS.get(platform)
+    if not limit or len(content) <= limit:
+        return content
+    ellipsis = "..."
+    cut = max(0, limit - len(ellipsis))
+    return content[:cut].rstrip() + ellipsis
 
 def upload_large_file(client, file_path):
     """Upload large file using direct REST API presigned URL flow (20-50MB support)"""
@@ -152,7 +185,9 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                         video_url = upload_large_file(client, main_video_path)
                     else:
                         result = client.media.upload(main_video_path)
-                        video_url = result["publicUrl"]
+                        video_url = _extract_public_url(result)
+                        if not video_url:
+                            raise ValueError(f"Upload response missing public URL: {result}")
                     
                     media_urls.append(video_url)  # Add single URL to list
                     log("PUBLISH", f"  ✅ Main video uploaded: {video_url[:50]}...")
@@ -175,7 +210,9 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                             img_url = upload_large_file(client, main_image_path)
                         else:
                             result = client.media.upload(main_image_path)
-                            img_url = result["publicUrl"]
+                            img_url = _extract_public_url(result)
+                            if not img_url:
+                                raise ValueError(f"Upload response missing public URL: {result}")
                         
                         media_urls.append(img_url)
                         log("PUBLISH", f"  ✅ Main image uploaded: {img_url[:50]}...")
@@ -197,7 +234,9 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                                 img_url = upload_large_file(client, img_path)
                             else:
                                 result = client.media.upload(img_path)
-                                img_url = result["publicUrl"]
+                                img_url = _extract_public_url(result)
+                                if not img_url:
+                                    raise ValueError(f"Upload response missing public URL: {result}")
                             
                             media_urls.append(img_url)
                             log("PUBLISH", f"  ✅ Uploaded additional image {i+1}: {img_url[:50]}...")
@@ -211,18 +250,29 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         
         for platform, platform_data in captions.items():
             if isinstance(platform_data, dict) and platform_data.get("caption"):
-                caption_text = platform_data["caption"]
+                caption_text = _fit_platform_content(platform, platform_data["caption"])
                 if not default_content:
                     default_content = caption_text  # First one becomes default
                 # Store platform-specific content (will be used if different from default)
                 platform_specific_contents[platform] = caption_text
             elif isinstance(platform_data, str):
+                caption_text = _fit_platform_content(platform, platform_data)
                 if not default_content:
-                    default_content = platform_data  # First one becomes default
-                platform_specific_contents[platform] = platform_data
+                    default_content = caption_text  # First one becomes default
+                platform_specific_contents[platform] = caption_text
         
         if not default_content:
             default_content = "Published via AutoDubber"
+
+        # Choose a safe shared content baseline for strict platforms.
+        strict_selected = [p for p in platforms if p in PLATFORM_LIMITS]
+        if strict_selected:
+            strictest = min(strict_selected, key=lambda p: PLATFORM_LIMITS.get(p, 10_000))
+            strict_caption = platform_specific_contents.get(strictest)
+            if strict_caption:
+                default_content = strict_caption
+            else:
+                default_content = _fit_platform_content(strictest, default_content)
         
         # Prepare platform list
         platform_list = []
@@ -393,14 +443,17 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                     platform_name = platform_info.platform
                     post_id = getattr(platform_info, 'platformPostId', 'unknown')
                     status = getattr(platform_info, 'status', 'unknown')
+                    error_message = getattr(platform_info, 'errorMessage', None)
                 elif isinstance(platform_info, dict):
                     platform_name = platform_info.get("platform", "unknown")
                     post_id = platform_info.get("platformPostId", platform_info.get("id", platform_info.get("_id", "unknown")))
                     status = platform_info.get("status", "unknown")
+                    error_message = platform_info.get("errorMessage") or platform_info.get("error")
                 else:
                     platform_name = "unknown"
                     post_id = "unknown"
                     status = "error"
+                    error_message = "Unknown platform response format"
                 
                 # Update progress for this platform
                 if progress_cb:
@@ -419,8 +472,14 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                     "post_id": post_id,
                     "platform": platform_name
                 }
+                if not success:
+                    results[platform_name]["error"] = error_message or f"Publish failed with status={status}"
+                    results[platform_name]["error_message"] = error_message or f"Publish failed with status={status}"
                 
-                log("PUBLISH", f"  ✅ {platform_name}: {'ok' if success else 'error'} (ID: {post_id})")
+                if success:
+                    log("PUBLISH", f"  ✅ {platform_name}: ok (ID: {post_id})")
+                else:
+                    log("PUBLISH", f"  ❌ {platform_name}: {results[platform_name]['error']}")
                 
             except Exception as e:
                 log("PUBLISH", f"  ❌ Error processing platform {platform_info}: {e}")
