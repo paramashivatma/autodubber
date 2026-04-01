@@ -53,6 +53,17 @@ def _save_env(data):
     with open(ENV_FILE,"w") as f:
         for k,v in e.items(): f.write(f"{k}={v}\n")
 
+def _count_successful_results(results):
+    """Count successful platform results, handling error-shaped responses."""
+    if not isinstance(results, dict):
+        return 0
+    if "error" in results and len(results) == 1:
+        return 0
+    return sum(
+        1 for v in results.values()
+        if isinstance(v, dict) and "error" not in v and v.get("status", "ok") != "error"
+    )
+
 
 def run_dub_pipeline(video_input, voice, model_size, src_lang, tgt_lang,
                      use_bgm, bgm_volume, gemini_vision_key, mistral_key, zernio_key,
@@ -622,8 +633,8 @@ class App(tk.Tk):
                         }  # Pass all images for upload
                     )
                     
-                    # Count successful publishes
-                    successful = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
+                    # Count successful publishes correctly (ignore top-level {"error": "..."} payloads)
+                    successful = _count_successful_results(results)
                     
                     self.after(0, lambda: self._flyer_publish_done(successful, len(selected), results))
                     
@@ -717,7 +728,7 @@ class App(tk.Tk):
                     duration="N/A",  # N/A for images
                     source_lang="",  # Not applicable for flyers
                     target_lang="gujarati",  # Flyers are always Gujarati
-                    content_format="images",  # Images publishing
+                    content_format="image",  # Images publishing
                 )
                 print(f"[SHEET] Flyer publish: {sheet_msg}")
                 
@@ -806,6 +817,9 @@ class App(tk.Tk):
         
         # Test callback immediately
         dub_status_callback("🔄 Initializing dub pipeline...")
+
+        def safe_done_callback(success, msg, pub_results=None):
+            self.after(0, lambda: self._done_cb(success, msg, pub_results))
         
         threading.Thread(target=run_dub_pipeline, args=(
             video, VOICES[self.voice_var.get()], self.model_var.get(),
@@ -815,7 +829,7 @@ class App(tk.Tk):
             self.dub_publish_now_var.get(), sched,
             True, manual_teaser,  # auto_teaser=True, manual_teaser=""
             list(self._image_paths),
-            dub_status_callback, self._caption_ready_cb, self._done_cb,
+            dub_status_callback, self._caption_ready_cb, safe_done_callback,
         ), daemon=True).start()
 
     def _caption_ready_cb(self, **kwargs):
@@ -833,9 +847,11 @@ class App(tk.Tk):
             self.run_btn.config(state="normal")
             self.status_var.set("Publishing cancelled."); return
         approved = dlg.result
-        
-        # Publishing has started, update dialog progress
-        dlg.update_progress("Starting publishing process...")
+
+        def _safe_done(success, msg, pub_results=None):
+            if done_cb:
+                self.after(0, lambda: done_cb(success=success, msg=msg, pub_results=pub_results))
+
         self.progress.start(12); self.status_var.set("Publishing ...")
 
         # Thread-safe progress callback for status bar updates
@@ -845,9 +861,6 @@ class App(tk.Tk):
 
         def _publish():
             try:
-                # Use simple SDK publishing
-                dlg.update_progress("Publishing with Zernio SDK...", None, "posting")
-                
                 results = publish_to_platforms_sdk(
                     api_key=zernio_key,
                     video_path=video_path,
@@ -863,7 +876,7 @@ class App(tk.Tk):
                     fallback_files={"main_video": video_path}  # Pass video for upload
                 )
                 
-                ok = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
+                ok = _count_successful_results(results)
                 msg = f"Published {ok} post(s)." if ok else "All posts failed — check log."
                 
                 # Log to Google Sheet after successful publish
@@ -892,10 +905,10 @@ class App(tk.Tk):
                                         
                                         # Update Google Sheet
                                         quick_update_from_publish_result(
-                                            video_path=video_path,
-                                            gujarati_title=formatted_title,
-                                            english_title=english_title,
-                                            publish_results=results
+                                            video_title=formatted_title or os.path.basename(video_path),
+                                            publish_results=results,
+                                            target_lang=LANGUAGES.get(self.tgt_lang_var.get(), "gu"),
+                                            content_format="video",
                                         )
                                         
                                         log("PUBLISH", f"✅ Google Sheet updated with title: {formatted_title}")
@@ -911,20 +924,18 @@ class App(tk.Tk):
                     except ImportError:
                         log("PUBLISH", "⚠️ Google Sheet logger not available")
                 
-                dlg.publishing_complete(msg, results)
-                self.run_btn.config(state="normal")
-                self.progress.stop()
-                self.status_var.set(msg)
+                self.after(0, lambda: self.run_btn.config(state="normal"))
+                self.after(0, self.progress.stop)
+                self.after(0, lambda: self.status_var.set(msg))
                 log("PUBLISH", f"✅ Publishing completed: {msg}")
+                _safe_done(success=(ok > 0), msg=msg, pub_results=results)
                 
             except Exception as e:
                 log("PUBLISH", f"❌ Publishing error: {e}")
-                dlg.publishing_complete(f"Publishing failed: {e}", {"error": str(e)})
-                self.run_btn.config(state="normal")
-                self.progress.stop()
-                self.status_var.set(f"Publishing failed: {e}")
-            finally:
-                if done_cb: done_cb()
+                self.after(0, lambda: self.run_btn.config(state="normal"))
+                self.after(0, self.progress.stop)
+                self.after(0, lambda: self.status_var.set(f"Publishing failed: {e}"))
+                _safe_done(success=False, msg=f"Publishing failed: {e}", pub_results={"error": str(e)})
         
         threading.Thread(target=_publish, daemon=True).start()
 

@@ -140,6 +140,8 @@ class ReviewDialog(tk.Toplevel):
         # Notify parent that approval is ready
         self._progress_text.insert(tk.END, "\n✅ Captions approved. Starting publishing...\n")
         self._progress_text.see(tk.END)
+        # Close dialog so caller can continue with publish flow.
+        self.destroy()
 
     def update_progress(self, message, platform=None, status=None):
         """Update the progress display with publishing status"""

@@ -8,10 +8,12 @@ MAX_FILE_MB  = 25  # Groq limit
 
 
 def _extract_audio(video_path, out_wav):
-    subprocess.run([
+    r = subprocess.run([
         "ffmpeg", "-y", "-i", video_path,
         "-ar", "16000", "-ac", "1", "-f", "wav", out_wav
-    ], capture_output=True)
+    ], capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.exists(out_wav):
+        raise RuntimeError(f"Audio extraction failed for {video_path}: {r.stderr[-400:]}")
 
 
 def _split_audio(wav_path, output_dir, chunk_sec=600):
@@ -63,6 +65,8 @@ def _transcribe_chunk(api_key, audio_path, language=None):
 
 def _groq_transcribe(api_key, audio_path, language, output_dir):
     chunks = _split_audio(audio_path, output_dir)
+    if not chunks:
+        raise RuntimeError("Audio chunking produced no chunks for Groq transcription.")
     all_segments = []
     time_offset  = 0.0
     detected_lang = None

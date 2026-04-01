@@ -39,19 +39,19 @@ def _save_cache():
     except Exception as e:
         log("TRANSLATE", f"[CACHE] Save failed: {e}")
 
-def _normalize_key(text):
-    """Normalize text for cache key."""
-    return text.strip().lower()
+def _normalize_key(text, target_language="gu"):
+    """Normalize text for cache key, scoped by target language."""
+    return f"{target_language}::{text.strip().lower()}"
 
-def _get_cached(text):
+def _get_cached(text, target_language="gu"):
     """Get cached translation if exists."""
-    key = _normalize_key(text)
+    key = _normalize_key(text, target_language)
     return _translation_cache.get(key)
 
-def _set_cached(text, translation):
+def _set_cached(text, translation, target_language="gu"):
     """Cache translation if text is short enough."""
     if len(text) < 300:
-        key = _normalize_key(text)
+        key = _normalize_key(text, target_language)
         _translation_cache[key] = translation
 
 # Load cache on module import
@@ -235,7 +235,7 @@ def _parse_batch_response(response, expected_count):
 
 def _translate_to_gujarati(text, source_hint="auto"):
     # Check cache first
-    cached = _get_cached(text)
+    cached = _get_cached(text, "gu")
     if cached:
         log("TRANSLATE", "[CACHE_HIT] Using cached translation")
         return cached
@@ -243,7 +243,7 @@ def _translate_to_gujarati(text, source_hint="auto"):
     try:
         result = _gemini_translate(text, source_hint, "gu")
         if result and _is_gujarati_script(result) and not _has_foreign_script(result):
-            _set_cached(text, result)
+            _set_cached(text, result, "gu")
             return result
         log("TRANSLATE", "  Gemini output not clean Gujarati — falling back to Google Translate ...")
     except Exception as e:
@@ -253,7 +253,7 @@ def _translate_to_gujarati(text, source_hint="auto"):
 
     result = GoogleTranslator(source="auto", target="gu").translate(text)
     if result and _is_gujarati_script(result) and not _has_foreign_script(result):
-        _set_cached(text, result)
+        _set_cached(text, result, "gu")
         return result
 
     if source_hint != "en":
@@ -262,13 +262,13 @@ def _translate_to_gujarati(text, source_hint="auto"):
             english = GoogleTranslator(source="auto", target="en").translate(text)
             result2 = GoogleTranslator(source="en", target="gu").translate(english)
             if result2 and _is_gujarati_script(result2) and not _has_foreign_script(result2):
-                _set_cached(text, result2)
+                _set_cached(text, result2, "gu")
                 return result2
         except Exception as e:
             log("TRANSLATE", f"  Pivot error: {e}")
 
     log("TRANSLATE", "  WARNING: Could not get clean Gujarati — using best available result")
-    _set_cached(text, result or text)
+    _set_cached(text, result or text, "gu")
     return result or text
 
 
@@ -320,20 +320,20 @@ def _translate_to_gujarati_batch(texts, source_hint="auto"):
 
 def _translate_generic(text, target_language):
     # Check cache first
-    cached = _get_cached(text)
+    cached = _get_cached(text, target_language)
     if cached:
         log("TRANSLATE", "[CACHE_HIT] Using cached translation")
         return cached
     
     try:
         result = _gemini_translate(text, "auto", target_language)
-        _set_cached(text, result)
+        _set_cached(text, result, target_language)
         return result
     except Exception as e:
         log("TRANSLATE", f"  Gemini failed for {target_language}: {e} — using Google Translate")
         from deep_translator import GoogleTranslator
         result = GoogleTranslator(source="auto", target=target_language).translate(text)
-        _set_cached(text, result)
+        _set_cached(text, result, target_language)
         return result
 
 

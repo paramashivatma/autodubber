@@ -78,7 +78,7 @@ YOUTUBE (max 4500 chars):
 - 5 bullet points (•), structured as: 1) Blessing, 2) Practical disciple practice, 3) Transformation, 4–5) Key spiritual insights. Full sentences.
 - Leave blank line between sections.
 - Generate 2-3 relevant devotional hashtags based on video content before fixed tags.
-- End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
+- End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda.
 - Provide "title" field: max 75 chars, punchy devotional Gujarati title from transcript.
 
 === CRITICAL RULES ===
@@ -91,7 +91,11 @@ YOUTUBE (max 4500 chars):
 7. Twitter uses only fixed tags: #KAILASA #Nithyananda.
 8. Each bullet or sentence must convey blessing, awakening, or sacred practice as per Guru's teaching.
 9. Encourage Sanskritized Gujarati words naturally for spiritual resonance.
-10. Tone and energy should align with platform guidance as described above.
+10. **CRITICAL: ALWAYS include required hashtags - NO EXCEPTIONS:**
+   - Instagram, Facebook, YouTube, TikTok: MUST end with #KAILASA #Nithyananda
+   - Threads, Bluesky: MUST end with #KAILASA
+   - Failure to include required hashtags will cause regeneration
+11. Tone and energy should align with platform guidance as described above.
 
 === OUTPUT ===
 Valid JSON only. No markdown fences. Exactly 7 keys: instagram, facebook, tiktok, twitter, youtube, threads, bluesky
@@ -345,8 +349,9 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
     for p, data in captions.items():
         caption = data.get("caption", "")
 
-        # Check for required hashtags
-        if p in ["instagram", "facebook", "youtube", "threads", "bluesky", "tiktok"]:
+        # Check for required hashtags per platform
+        if p in ["instagram", "facebook", "youtube", "tiktok"]:
+            # These platforms need both #KAILASA and #Nithyananda
             if "#kailasa" not in caption.lower() or "#nithyananda" not in caption.lower():
                 log("CAPTION",f"Missing required tags for {p} — regenerating...")
                 try:
@@ -363,7 +368,26 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                         captions[p] = new_captions[p]
                         log("CAPTION",f"Regenerated caption for {p}")
                 except Exception as e:
-                    log("CAPTION",f"Regeneration failed for {p}: {e}")
+                    log("CAPTION",f"Failed to regenerate {p}: {e}")
+        elif p in ["threads", "bluesky"]:
+            # These platforms only need #KAILASA
+            if "#kailasa" not in caption.lower():
+                log("CAPTION",f"Missing required #KAILASA tag for {p} — regenerating...")
+                try:
+                    # Build regeneration prompt
+                    retry_prompt = (
+                        f"{prompt}\n\nCRITICAL: The previous caption for {p} was missing required #KAILASA hashtag. "
+                        f"Must include #KAILASA hashtag. "
+                        f"Regenerate the caption for {p} with proper hashtag. "
+                        f"Return full JSON for all 7 platforms."
+                    )
+                    raw = _call_mistral(mistral_key, retry_prompt)
+                    new_captions = _parse_raw(raw)
+                    if new_captions.get(p) and new_captions[p].get("caption"):
+                        captions[p] = new_captions[p]
+                        log("CAPTION",f"Regenerated caption for {p}")
+                except Exception as e:
+                    log("CAPTION",f"Failed to regenerate {p}: {e}")
 
         # Check Gujarati content for Gujarati platforms
         if p in ["instagram", "facebook", "youtube", "threads", "bluesky"]:

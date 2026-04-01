@@ -135,10 +135,14 @@ def build_dubbed_video(video_path, segments, output_path,
 
     if bgm_path and os.path.exists(bgm_path) and bgm_volume > 0.01:
         bgm = AudioSegment.from_file(bgm_path)
-        if len(bgm) < total_ms:
-            bgm = bgm * ((total_ms // len(bgm)) + 2)
-        bgm   = bgm[:total_ms] - int(20 * (1.0 - bgm_volume))
-        mixed = bgm.overlay(tts_track)
+        if len(bgm) <= 0:
+            log("BUILD", "  BGM track is empty/corrupt — skipping BGM mix")
+            mixed = tts_track
+        else:
+            if len(bgm) < total_ms:
+                bgm = bgm * ((total_ms // len(bgm)) + 2)
+            bgm   = bgm[:total_ms] - int(20 * (1.0 - bgm_volume))
+            mixed = bgm.overlay(tts_track)
     else:
         mixed = tts_track
 

@@ -4,6 +4,7 @@ Replaces complex custom publishing with official SDK
 """
 
 import os
+import mimetypes
 from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConnectionError, ZernioRateLimitError, ZernioTimeoutError
 from dubber.utils import log, PLATFORM_ACCOUNTS
 
@@ -20,6 +21,7 @@ def upload_large_file(client, file_path):
         import requests
         import json
         
+        guessed_content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
         presign_response = requests.post(
             "https://zernio.com/api/v1/media/presign",
             headers={
@@ -28,7 +30,7 @@ def upload_large_file(client, file_path):
             },
             json={
                 "filename": os.path.basename(file_path),
-                "contentType": "video/mp4"
+                "contentType": guessed_content_type
             },
             timeout=120
         )
@@ -47,7 +49,7 @@ def upload_large_file(client, file_path):
             upload_response = requests.put(
                 upload_url,
                 data=f,
-                headers={"Content-Type": "video/mp4"},
+                headers={"Content-Type": guessed_content_type},
                 timeout=600  # 10 minute timeout for large uploads
             )
             upload_response.raise_for_status()
@@ -267,7 +269,8 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         
         # Debug: Print the exact SDK call
         if media_urls:
-            log("PUBLISH", f"  SDK Call: client.posts.create(media_urls={len(media_urls)} files, content={len(default_content)} chars, platforms={len(platform_list)} platforms)")
+            media_items_count = len(media_urls)
+            log("PUBLISH", f"  SDK Call: client.posts.create(media_items={media_items_count} items, content={len(default_content)} chars, platforms={len(platform_list)} platforms)")
         else:
             log("PUBLISH", f"  SDK Call: client.posts.create(content={len(default_content)} chars, platforms={len(platform_list)} platforms)")
         
@@ -277,14 +280,15 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 # All platforms can post with media
                 log("PUBLISH", f"🚀 Starting SDK call...")
                 log("PUBLISH", f"  📱 Platforms: {[p['platform'] for p in platform_list]}")
-                log("PUBLISH", f"  🎬 Media URLs: {len(media_urls)} items")
-                log("PUBLISH", f"  📄 Media URLs: {media_urls}")
+                log("PUBLISH", f"  🎬 Media Items: {len(media_urls)} items")
+                media_items = [{"type": "video", "url": url} for url in media_urls]
+                log("PUBLISH", f"  📄 Media Items: {media_items}")
                 log("PUBLISH", f"  ⏰ Publish now: {publish_now}")
                 log("PUBLISH", f"  📞 Calling client.posts.create()...")
                 
                 post_result = client.posts.create(
                     content=default_content,
-                    media_urls=media_urls,  # Use list format: [public_url]
+                    media_items=media_items,  # Use the prepared media_items
                     platforms=platform_list,
                     publish_now=publish_now
                 )
