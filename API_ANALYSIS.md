@@ -152,5 +152,5 @@ NVIDIA_API_KEY=xxx          # (not currently used)
 4. **Vision** → `generate_all_captions()` → OpenRouter Llama → `captions.json`
 5. **Translated** → `generate_tts_audio()` → Azure Edge TTS → Audio files
 6. **Audio+Video** → `build_dubbed_video()` → FFmpeg → `output.mp4`
-7. **Video+Captions** → `publish_to_platforms()` → Zernio → Published posts
+7. **Video+Captions** → `publish_to_platforms_sdk()` → Zernio SDK → Published posts
 8. **Results** → `quick_update_from_publish_result()` → Google Sheets → AutoDubQueue

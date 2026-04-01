@@ -3,7 +3,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
 from dubber.utils import log
-from dubber.publisher import publish_to_platforms
+from dubber.sdk_publisher import publish_to_platforms_sdk
 
 # Load environment
 load_dotenv()
@@ -90,8 +90,8 @@ def main():
                 
                 _log(f"PUBLISH — {url[:50]} — publishing to platforms", log_file)
                 
-                # Call publish_to_platforms
-                pub_results = publish_to_platforms(
+                # Call publish_to_platforms_sdk (NEW SDK version)
+                pub_results = publish_to_platforms_sdk(
                     api_key=os.getenv("ZERNIO_API_KEY"),
                     video_path=output_file,
                     captions=captions,
@@ -99,9 +99,11 @@ def main():
                     publish_now=True,
                     scheduled_for=None,
                     teaser_path=None,
+                    teaser_paths=None,
                     teaser_captions=None,
                     image_paths=[],
-                    output_dir="workspace"
+                    output_dir="workspace",
+                    fallback_files={"main_video": output_file}  # Pass video for upload
                 )
                 
                 # Update sheet with results

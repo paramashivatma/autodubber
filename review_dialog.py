@@ -14,7 +14,7 @@ class ReviewDialog(tk.Toplevel):
         self._publishing = False
         self._upload_manager = upload_manager
         self._build(captions)
-        self.geometry("900x750")  # Increased height and width
+        self.geometry("700x600")  # Reasonable size
         
         # Start parallel uploads if upload manager provided
         if self._upload_manager:
@@ -24,18 +24,18 @@ class ReviewDialog(tk.Toplevel):
 
     def _build(self, captions):
         nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=False, padx=8, pady=8)  # Don't expand vertically
+        nb.pack(fill="both", expand=False, padx=12, pady=6)  # Reduced padding
 
         for p in PLATFORMS:
             data  = captions.get(p, {})
-            frame = tk.Frame(nb, padx=8, pady=6)
+            frame = tk.Frame(nb, padx=6, pady=4)
             nb.add(frame, text=f"  {p.capitalize()}  ")
 
             if p == "youtube":
                 tk.Label(frame, text="Title:", font=("Helvetica",9,"bold")).pack(anchor="w")
                 title_box = tk.Text(frame, height=2, wrap="word", font=("Helvetica",9))
                 title_box.insert("1.0", data.get("title",""))
-                title_box.pack(fill="x", pady=(0,6))
+                title_box.pack(fill="x", pady=(0,4))
                 self._widgets["youtube_title"] = title_box
 
             lim = PLATFORM_LIMITS.get(p, 2000)
@@ -44,7 +44,7 @@ class ReviewDialog(tk.Toplevel):
 
             sf = tk.Frame(frame); sf.pack(fill="both", expand=True)
             sb = tk.Scrollbar(sf); sb.pack(side="right", fill="y")
-            cap_box = tk.Text(sf, wrap="word", font=("Helvetica",9), yscrollcommand=sb.set, height=8)  # Fixed height
+            cap_box = tk.Text(sf, wrap="word", font=("Helvetica",9), yscrollcommand=sb.set, height=6)  # Reduced height
             cap_box.insert("1.0", data.get("caption",""))
             cap_box.pack(side="left", fill="both", expand=True)
             sb.config(command=cap_box.yview)
@@ -59,12 +59,12 @@ class ReviewDialog(tk.Toplevel):
 
         # Progress/Results area (shown immediately for upload progress)
         self._progress_frame = tk.Frame(self)
-        self._progress_frame.pack(fill="x", padx=8, pady=(0,8))
+        self._progress_frame.pack(fill="x", padx=12, pady=(0,6))
         
         tk.Label(self._progress_frame, text="Upload Progress:", 
                  font=("Helvetica",10,"bold"), fg="#2196f3").pack(anchor="w")
         
-        self._progress_text = tk.Text(self._progress_frame, height=4, wrap="word",  # Reduced height
+        self._progress_text = tk.Text(self._progress_frame, height=3, wrap="word",  # Compact height
                                       font=("Helvetica",9), bg="#f5f5f5")
         self._progress_text.pack(fill="x", pady=(4,0))
         
@@ -75,23 +75,23 @@ class ReviewDialog(tk.Toplevel):
         # Status label
         self._status_lbl = tk.Label(self, text="Edit captions above, then click 'Approve & Publish'", 
                                     fg="#555", font=("Helvetica",9))
-        self._status_lbl.pack(padx=8, pady=(0,4))
+        self._status_lbl.pack(padx=12, pady=(0,2))
 
-        btn = tk.Frame(self); btn.pack(fill="x", padx=8, pady=8)
-        self._approve_btn = tk.Button(btn, text="Approve & Publish", width=20,
-                  bg="#2e7d32", fg="white", font=("Helvetica",10,"bold"),
+        btn = tk.Frame(self); btn.pack(fill="x", padx=12, pady=6)
+        self._approve_btn = tk.Button(btn, text="Approve & Publish", width=18,
+                  bg="#2e7d32", fg="white", font=("Helvetica",9,"bold"),
                   command=self._approve)
-        self._approve_btn.pack(side="left", padx=6)
+        self._approve_btn.pack(side="left", padx=4)
         
-        self._cancel_btn = tk.Button(btn, text="Cancel", width=12,
-                  bg="#c62828", fg="white", font=("Helvetica",10,"bold"),
+        self._cancel_btn = tk.Button(btn, text="Cancel", width=10,
+                  bg="#c62828", fg="white", font=("Helvetica",9,"bold"),
                   command=self._cancel)
-        self._cancel_btn.pack(side="left", padx=6)
+        self._cancel_btn.pack(side="left", padx=4)
         
-        self._close_btn = tk.Button(btn, text="Close", width=12,
-                  bg="#666", fg="white", font=("Helvetica",10,"bold"),
+        self._close_btn = tk.Button(btn, text="Close", width=10,
+                  bg="#666", fg="white", font=("Helvetica",9,"bold"),
                   command=self.destroy)
-        self._close_btn.pack(side="left", padx=6)
+        self._close_btn.pack(side="left", padx=4)
         self._close_btn.pack_forget()  # Hide initially
 
     def _upload_progress_callback(self, message, file_type=None, status=None):

@@ -9,7 +9,7 @@ from dubber import (
     transcribe_audio, merge_short_segments, translate_segments,
     generate_tts_audio, build_dubbed_video,
     extract_vision, generate_all_captions,
-    generate_teaser, generate_teasers, publish_to_platforms,
+    generate_teaser, generate_teasers,  # Removed legacy publish_to_platforms
     quick_update_from_publish_result,
 )
 
@@ -261,7 +261,7 @@ def main():
                             try:
                                 _log(f"VIDEO {processed_count} — Auto-publishing to {len(selected_platforms)} platforms", log_file)
                                 # Import here to avoid circular imports
-                                from dubber import publish_to_platforms
+                                from dubber.sdk_publisher import publish_to_platforms_sdk
                                 import threading
                                 
                                 def _auto_publish():
@@ -269,14 +269,14 @@ def main():
                                         results = {}
                                         for platform in selected_platforms:
                                             cap = captions.get(platform, {}).get("caption", "")
-                                            pub_results = publish_to_platforms(
+                                            pub_results = publish_to_platforms_sdk(
+                                                api_key=zernio_key,
                                                 video_path=video_path,
-                                                teaser_path=teaser_path,
-                                                captions_by_platform={platform: {"caption": cap}},
-                                                zernio_key=zernio_key,
-                                                selected_platforms=[platform],
+                                                captions={platform: {"caption": cap}},
+                                                platforms=[platform],
+                                                publish_now=True,
                                                 scheduled_for=scheduled_for,
-                                                progress_cb=lambda p, s: _log(f"VIDEO {processed_count} — {platform}: {s}", log_file)
+                                                fallback_files={"main_video": video_path}  # Pass video for upload
                                             )
                                             results.update(pub_results)
                                         

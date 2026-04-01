@@ -4,7 +4,7 @@ Replaces complex custom publishing with official SDK
 """
 
 import os
-from zernio import Zernio
+from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConnectionError, ZernioRateLimitError, ZernioTimeoutError
 from dubber.utils import log, PLATFORM_ACCOUNTS
 
 def publish_with_sdk(api_key, captions, platforms, upload_results=None, 
@@ -36,9 +36,11 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                     media_urls.append(teaser_url)
                     log("PUBLISH", f"  ✅ Teaser {platform}: {teaser_url[:50]}...")
         
-        # If no media URLs, we need to upload the video
+        # If no media URLs, we need to upload the video or images
         if not media_urls and fallback_files:
             log("PUBLISH", "🔄 Uploading media files...")
+            
+            # Try video first
             main_video_path = fallback_files.get("main_video")
             if main_video_path and os.path.exists(main_video_path):
                 try:
@@ -48,6 +50,31 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 except Exception as e:
                     log("PUBLISH", f"  ❌ Upload failed: {e}")
                     return {"error": f"Media upload failed: {e}"}
+            
+            # Try images if no video
+            elif not main_video_path:
+                # Support multiple images
+                main_image_path = fallback_files.get("main_image")
+                if main_image_path and os.path.exists(main_image_path):
+                    try:
+                        result = client.media.upload(main_image_path)
+                        media_urls.append(result["publicUrl"])
+                        log("PUBLISH", f"  ✅ Uploaded main image: {result['publicUrl'][:50]}...")
+                    except Exception as e:
+                        log("PUBLISH", f"  ❌ Upload failed: {e}")
+                        return {"error": f"Media upload failed: {e}"}
+                
+                # Additional images
+                additional_images = fallback_files.get("additional_images", [])
+                for i, img_path in enumerate(additional_images):
+                    if img_path and os.path.exists(img_path):
+                        try:
+                            result = client.media.upload(img_path)
+                            media_urls.append(result["publicUrl"])
+                            log("PUBLISH", f"  ✅ Uploaded additional image {i+1}: {result['publicUrl'][:50]}...")
+                        except Exception as e:
+                            log("PUBLISH", f"  ❌ Additional image {i+1} upload failed: {e}")
+                            # Continue with other images instead of failing completely
         
         # Get default content (use first available caption as fallback)
         default_content = ""
@@ -129,19 +156,21 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 )
             else:
                 # Filter platforms that don't require media
-                media_required_platforms = ["instagram", "youtube", "tiktok"]
+                # Instagram, Facebook, Threads, Twitter, Bluesky support images
+                # YouTube and Tiktok require video
+                video_required_platforms = ["youtube", "tiktok"]
                 platforms_without_media = [
                     p for p in platform_list 
-                    if p["platform"] not in media_required_platforms
+                    if p["platform"] not in video_required_platforms
                 ]
                 
                 if not platforms_without_media:
-                    error_msg = "No media uploaded but all selected platforms require media (instagram, youtube, tiktok)"
+                    error_msg = "No media uploaded but all selected platforms require video (youtube, tiktok)"
                     log("PUBLISH", f"❌ {error_msg}")
                     return {"error": error_msg}
                 
-                log("PUBLISH", f"⚠️ No media - posting only to text platforms: {[p['platform'] for p in platforms_without_media]}")
-                log("PUBLISH", f"⚠️ Skipped media-required platforms: {[p for p in media_required_platforms if any(p2['platform'] == p for p2 in platform_list)]}")
+                log("PUBLISH", f"⚠️ No media - posting only to image/text platforms: {[p['platform'] for p in platforms_without_media]}")
+                log("PUBLISH", f"⚠️ Skipped video-required platforms: {[p for p in video_required_platforms if any(p2['platform'] == p for p2 in platform_list)]}")
                 
                 post_result = client.posts.create(
                     content=default_content,
@@ -156,8 +185,23 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 
             log("PUBLISH", f"  ✅ SDK call successful: {type(post_result)}")
             
+        except ZernioAuthenticationError as e:
+            log("PUBLISH", f"  ❌ Authentication failed: Invalid API key - {e}")
+            raise ZernioAuthenticationError("Invalid Zernio API key. Please check your API key in the settings.")
+        except ZernioRateLimitError as e:
+            log("PUBLISH", f"  ❌ Rate limit exceeded: {e}")
+            raise ZernioRateLimitError("Rate limit exceeded. Please wait before trying again.")
+        except ZernioTimeoutError as e:
+            log("PUBLISH", f"  ❌ Request timeout: {e}")
+            raise ZernioTimeoutError("Request timed out. Please check your connection and try again.")
+        except ZernioConnectionError as e:
+            log("PUBLISH", f"  ❌ Connection error: {e}")
+            raise ZernioConnectionError("Failed to connect to Zernio. Please check your internet connection.")
+        except ZernioAPIError as e:
+            log("PUBLISH", f"  ❌ API error: {e}")
+            raise ZernioAPIError(f"Zernio API error: {e}")
         except Exception as sdk_error:
-            log("PUBLISH", f"  ❌ SDK call failed: {sdk_error}")
+            log("PUBLISH", f"  ❌ Unexpected SDK error: {sdk_error}")
             raise sdk_error
         
         if progress_cb:
@@ -192,7 +236,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             published_platforms = []
         
         results = {}
-        for platform_info in published_platforms:
+        for i, platform_info in enumerate(published_platforms):
             try:
                 # Handle SDK PlatformTarget objects
                 if hasattr(platform_info, 'platform'):
@@ -207,6 +251,16 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                     platform_name = "unknown"
                     post_id = "unknown"
                     status = "error"
+                
+                # Update progress for this platform
+                if progress_cb:
+                    log("PUBLISH", f"  📱 Updating progress: {platform_name} -> {status}")
+                    if status == 'published':
+                        progress_cb(i+1, len(published_platforms), platform_name, "ok")
+                    elif status == 'error' or status == 'failed':
+                        progress_cb(i+1, len(published_platforms), platform_name, "error")
+                    else:
+                        progress_cb(i+1, len(published_platforms), platform_name, "posting")
                 
                 success = status == 'published' or (post_id and post_id != "unknown")
                 
@@ -236,7 +290,7 @@ def publish_to_platforms_sdk(api_key, video_path, captions, platforms,
                             scheduled_for=None, publish_now=True,
                             teaser_path=None, teaser_paths=None,
                             teaser_captions=None, image_paths=None,
-                            output_dir="workspace", progress_cb=None):
+                            output_dir="workspace", progress_cb=None, fallback_files=None):
     """
     Simplified publishing using Zernio SDK
     """
@@ -248,5 +302,6 @@ def publish_to_platforms_sdk(api_key, video_path, captions, platforms,
         scheduled_for=scheduled_for,
         publish_now=publish_now,
         output_dir=output_dir,
-        progress_cb=progress_cb
+        progress_cb=progress_cb,
+        fallback_files=fallback_files  # Pass through fallback files
     )

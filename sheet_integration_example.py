@@ -1,10 +1,11 @@
 """Example: Run sheet logger after successful publish.
 
-Add this to your pipeline after publish_to_platforms() succeeds:
+Add this to your pipeline after publish_to_platforms_sdk() succeeds:
 """
 import os
-from dubber import publish_to_platforms, quick_update_from_publish_result, log
-from dubber.sheet_logger import update_video_tracker
+from dubber.sdk_publisher import publish_to_platforms_sdk
+from dubber.sheet_logger import quick_update_from_publish_result
+from dubber.utils import log
 
 def run_pipeline_with_sheet_logging():
     """Example showing how to integrate sheet logging after publish."""
@@ -36,14 +37,18 @@ def run_pipeline_with_sheet_logging():
 
 # Integration for auto_publish.py or app.py after ReviewDialog approval:
 """
-# In your done callback after publish_to_platforms_async:
+# In your done callback after publish_to_platforms_sdk:
 
-async def publish_and_log(video_path, captions, teasers):
-    # Publish to platforms
-    results = await publish_to_platforms_async(
+def publish_and_log(video_path, captions, teasers):
+    # Publish to platforms using SDK
+    from dubber.sdk_publisher import publish_to_platforms_sdk
+    results = publish_to_platforms_sdk(
+        api_key=os.getenv("ZERNIO_API_KEY"),
         video_path=video_path,
         captions=captions,
-        teasers=teasers,
+        platforms=["instagram", "youtube", "tiktok", "facebook", "threads", "bluesky"],
+        publish_now=True,
+        fallback_files={"main_video": video_path}
     )
     
     # Log to Google Sheet

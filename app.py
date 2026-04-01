@@ -7,7 +7,7 @@ from dubber import (
     transcribe_audio, merge_short_segments, translate_segments,
     generate_tts_audio, build_dubbed_video,
     extract_vision, generate_all_captions,
-    generate_teaser, generate_teasers, publish_to_platforms, log,
+    generate_teaser, generate_teasers, log,  # Removed legacy publish_to_platforms
     quick_update_from_publish_result,
 )
 from dubber.utils import PLATFORMS
@@ -304,52 +304,57 @@ class App(tk.Tk):
         ttk.Separator(self.t_media,orient="horizontal").grid(row=2,column=0,columnspan=3,sticky="ew",pady=8)
         
         # Flyer/Image Upload Section
-        tk.Label(self.t_media, text="Select Flyer/Image:", font=("Helvetica",10,"bold")).grid(row=3,column=0,sticky="w",**pad)
+        tk.Label(self.t_media, text="Select Flyer/Images:", font=("Helvetica",10,"bold")).grid(row=3,column=0,sticky="w",**pad)
         self.flyer_var = tk.StringVar()
         tk.Entry(self.t_media, textvariable=self.flyer_var, width=42).grid(row=3,column=1,**pad)
         tk.Button(self.t_media, text="Browse", command=self._browse_flyer).grid(row=3,column=2,**pad)
         
+        # Multiple images support
+        self.flyer_paths = []  # Store multiple image paths
+        self.flyer_count_label = tk.Label(self.t_media, text="", fg="#666", font=("Helvetica",8))
+        self.flyer_count_label.grid(row=4,column=0,columnspan=3,sticky="w",padx=10)
+        
         # Processing Options
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=4,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_media, text="Processing Options:", font=("Helvetica",10,"bold")).grid(row=5,column=0,sticky="w",**pad)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=5,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_media, text="Processing Options:", font=("Helvetica",10,"bold")).grid(row=6,column=0,sticky="w",**pad)
         
         self.extract_text_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_media, text="Extract text from flyer/image",
-                       variable=self.extract_text_var).grid(row=6,column=0,columnspan=3,sticky="w",padx=10)
+                       variable=self.extract_text_var).grid(row=7,column=0,columnspan=3,sticky="w",padx=10)
         
         self.generate_captions_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_media, text="Generate Gujarati captions",
-                       variable=self.generate_captions_var).grid(row=7,column=0,columnspan=3,sticky="w",padx=10)
+                       variable=self.generate_captions_var).grid(row=8,column=0,columnspan=3,sticky="w",padx=10)
         
         self.generate_teaser_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_media, text="Create teaser content",
-                       variable=self.generate_teaser_var).grid(row=8,column=0,columnspan=3,sticky="w",padx=10)
+                       variable=self.generate_teaser_var).grid(row=9,column=0,columnspan=3,sticky="w",padx=10)
         
         # Action Buttons
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=9,column=0,columnspan=3,sticky="ew",pady=8)
-        bf = tk.Frame(self.t_media); bf.grid(row=10,column=0,columnspan=3,sticky="w",padx=10)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
+        bf = tk.Frame(self.t_media); bf.grid(row=11,column=0,columnspan=3,sticky="w",padx=10)
         tk.Button(bf,text="Clear",command=self._clear_flyer).pack(side="left",padx=4)
         
         # Results Display
-        tk.Label(self.t_media, text="Results:", font=("Helvetica",10,"bold")).grid(row=11,column=0,sticky="w",**pad)
+        tk.Label(self.t_media, text="Results:", font=("Helvetica",10,"bold")).grid(row=12,column=0,sticky="w",**pad)
         self.flyer_results = tk.Text(self.t_media, width=60, height=8, font=("Helvetica",9))
-        self.flyer_results.grid(row=12,column=0,columnspan=3,padx=10,pady=4)
+        self.flyer_results.grid(row=13,column=0,columnspan=3,padx=10,pady=4)
         
         # Platform Selection for Flyer/Image tab
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=13,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_media, text="Platforms to Publish:", font=("Helvetica",10,"bold")).grid(row=14,column=0,sticky="w",**pad)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=14,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_media, text="Platforms to Publish:", font=("Helvetica",10,"bold")).grid(row=15,column=0,sticky="w",**pad)
         self._flyer_plat_vars = {}
-        pf = tk.Frame(self.t_media); pf.grid(row=14,column=1,columnspan=2,sticky="w")
+        pf = tk.Frame(self.t_media); pf.grid(row=15,column=1,columnspan=2,sticky="w")
         for i,p in enumerate(PLATFORMS):
             if p not in ["youtube", "tiktok"]:  # Exclude video-only platforms for image publishing
                 v = tk.BooleanVar(value=True); self._flyer_plat_vars[p] = v
                 tk.Checkbutton(pf,text=p.capitalize(),variable=v).grid(row=i//3,column=i%3,sticky="w",padx=4)
         
         # Publish Options
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=15,column=0,columnspan=3,sticky="ew",pady=8)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=16,column=0,columnspan=3,sticky="ew",pady=8)
         self.flyer_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(self.t_media, text="Publish immediately",
-                       variable=self.flyer_publish_now_var, value=True).grid(row=16,column=0,columnspan=2,sticky="w",**pad)
+                       variable=self.flyer_publish_now_var, value=True).grid(row=17,column=0,columnspan=2,sticky="w",**pad)
         
         # Store flyer path
         self.flyer_path = ""
@@ -387,40 +392,25 @@ class App(tk.Tk):
     def _toggle_bgm(self):
         self.bgm_scale.config(state="normal" if self.bgm_var.get() else "disabled")
 
-    def _browse_video(self):
-        p = filedialog.askopenfilename(filetypes=[("Video","*.mp4 *.mov *.mkv *.avi *.webm"),("All","*.*")])
-        if p: self.video_var.set(p)
-
-    def _browse_flyer(self):
-        """Browse for flyer/image file"""
-        from tkinter import filedialog
-        p = filedialog.askopenfilename(
-            filetypes=[
-                ("Images","*.jpg *.jpeg *.png *.gif *.webp *.bmp *.tiff"),
-                ("PDF","*.pdf"),
-                ("All","*.*")
-            ]
-        )
-        if p:
-            self.flyer_var.set(p)
-            self.flyer_path = p
     
-    def _clear_flyer(self):
+def _clear_flyer(self):
         """Clear flyer selection and results"""
         self.flyer_var.set("")
         self.flyer_path = ""
+        self.flyer_paths = []  # Clear multiple images
+        self.flyer_count_label.config(text="")
         self.flyer_results.delete(1.0, tk.END)
     
-    def _clear_dub_results(self):
-        """Clear dub results"""
-        self.dub_results.delete(1.0, tk.END)
+def _clear_dub_results(self):
+    """Clear dub results"""
+    self.dub_results.delete(1.0, tk.END)
     
-    def _update_dub_results(self, message):
-        """Update dub results with new message"""
-        self.dub_results.insert(tk.END, f"{message}\n")
-        self.dub_results.see(tk.END)  # Auto-scroll to bottom
+def _update_dub_results(self, message):
+    """Update dub results with new message"""
+    self.dub_results.insert(tk.END, f"{message}\n")
+    self.dub_results.see(tk.END)  # Auto-scroll to bottom
     
-    def _process_flyer(self):
+def _process_flyer(self):
         """Process flyer to extract text and generate content"""
         if not self.flyer_path:
             messagebox.showerror("Error", "Please select a flyer/image file first")
@@ -579,17 +569,21 @@ class App(tk.Tk):
             
             def _publish_thread():
                 try:
-                    # Publish to platforms
-                    results = publish_to_platforms(
+                    # Publish to platforms using NEW SDK publisher
+                    results = publish_to_platforms_sdk(
                         api_key=zernio_key,
-                        video_path=self.flyer_path,  # Required for validation
+                        video_path=None,  # No video for flyers
                         captions=publish_captions,
                         platforms=selected,
                         publish_now=self.flyer_publish_now_var.get(),
-                        image_paths=[],  # Don't add extra images to avoid duplicates
+                        image_paths=self.flyer_paths,  # Pass all selected images
                         output_dir="workspace",
                         progress_cb=lambda done, total, platform, status: self.after(0, 
-                            lambda: self._update_progress(done, total, platform, status))
+                            lambda: self._update_progress(done, total, platform, status)),
+                        fallback_files={
+                            "main_image": self.flyer_paths[0] if self.flyer_paths else self.flyer_path,
+                            "additional_images": self.flyer_paths[1:] if len(self.flyer_paths) > 1 else []
+                        }  # Pass all images for upload
                     )
                     
                     # Count successful publishes
@@ -808,6 +802,11 @@ class App(tk.Tk):
         dlg.update_progress("Starting publishing process...")
         self.progress.start(12); self.status_var.set("Publishing ...")
 
+        # Thread-safe progress callback for status bar updates
+        def _thread_safe_progress(done, total, platform, status):
+            """Thread-safe progress update for status bar"""
+            self.after(0, lambda: self._update_progress(done, total, platform, status))
+
         def _publish():
             try:
                 # Use simple SDK publishing
@@ -912,6 +911,9 @@ class App(tk.Tk):
 
     def _update_progress(self, done, total, platform, status):
         """Thread-safe progress update for publishing"""
+        # Debug logging
+        print(f"[STATUS] Progress update: {platform} -> {status} ({done}/{total})")
+        
         if status == "posting":
             self.status_var.set(f"Posting to {platform} ...")
         elif status == "ok":
@@ -922,6 +924,19 @@ class App(tk.Tk):
             self.status_var.set(f"⏱ {platform} timed out")
         elif status == "skipped":
             self.status_var.set(f"⊘ {platform} skipped")
+        elif status == "initializing":
+            self.status_var.set("Initializing Zernio SDK...")
+        elif status == "uploading_media":
+            self.status_var.set("Uploading media to Zernio...")
+        elif status == "creating_post":
+            self.status_var.set("Creating posts for all platforms...")
+        elif status == "completed":
+            self.status_var.set("✅ Publishing completed!")
+        elif status == "sdk":
+            if platform == "sdk":
+                self.status_var.set(f"Zernio SDK progress: {done}/{total}")
+            else:
+                self.status_var.set(f"Processing {platform}...")
 
 
 if __name__ == "__main__":
