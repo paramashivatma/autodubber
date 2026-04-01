@@ -322,7 +322,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
     log("CAPTION", f"Vision -> key_message: {key_message[:100]}")
     prompt      = _build_prompt(main_topic, key_message, theme, transcript_text)
     captions    = {}
-    mistral_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("MISTRAL_API_KEY") or "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"
+    mistral_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("MISTRAL_API_KEY")
 
     if mistral_key:
         try:

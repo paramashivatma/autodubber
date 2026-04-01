@@ -254,8 +254,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Video Dubber v2.0")
-        self.geometry("920x740")
-        self.minsize(840, 660)
+        self.geometry("860x720")
+        self.minsize(780, 620)
         self.resizable(True, True)
         self._env         = _load_env()
         self._image_paths = []
@@ -579,14 +579,14 @@ class App(tk.Tk):
         tk.Label(self.t_dub, text="1) Source Input", font=("Segoe UI Semibold", 11)).grid(row=0, column=0, sticky="w", **pad)
         tk.Label(self.t_dub, text="Video / URL:", font=("Segoe UI", 10)).grid(row=1,column=0,sticky="w",**pad)
         self.video_var = tk.StringVar()
-        tk.Entry(self.t_dub, textvariable=self.video_var, width=54, relief="solid", bd=1).grid(row=1,column=1,**pad)
+        tk.Entry(self.t_dub, textvariable=self.video_var, width=44, relief="solid", bd=1).grid(row=1,column=1,**pad)
         tk.Button(self.t_dub, text="Browse", command=self._browse_video, width=10, bg=self._colors["input"], fg=self._colors["text"], relief="solid", bd=1).grid(row=1,column=2,**pad)
 
         tk.Label(self.t_dub, text="2) Language & Voice", font=("Segoe UI Semibold", 11)).grid(row=2, column=0, sticky="w", **pad)
         tk.Label(self.t_dub, text="Voice:", font=("Segoe UI", 10)).grid(row=3,column=0,sticky="w",**pad)
         self.voice_var = tk.StringVar(value=list(VOICES.keys())[0])
         ttk.Combobox(self.t_dub, textvariable=self.voice_var, values=list(VOICES.keys()),
-                     width=46, state="readonly").grid(row=3,column=1,columnspan=2,sticky="ew",**pad)
+                     width=30, state="readonly").grid(row=3,column=1,sticky="w",**pad)
 
         tk.Label(self.t_dub, text="Whisper model:", font=("Segoe UI", 10)).grid(row=4,column=0,sticky="w",**pad)
         self.model_var = tk.StringVar(value="medium")

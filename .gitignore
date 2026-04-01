@@ -5,6 +5,11 @@ __pycache__/
 
 # Environment / secrets
 .env
+.env.clean
+credentials.json
+client_secret_*.json
+*.pem
+*.key
 
 # Workspace (generated files, not source code)
 workspace/
