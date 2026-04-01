@@ -8,47 +8,85 @@ from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConn
 from dubber.utils import log, PLATFORM_ACCOUNTS
 
 def upload_large_file(client, file_path):
-    """Upload large file - currently limited by Vercel function payload size"""
+    """Upload large file using direct REST API presigned URL flow (20-50MB support)"""
     
     # Check file size
     file_size = os.path.getsize(file_path)
     log("PUBLISH", f"  📏 File size: {file_size:,} bytes ({file_size/1024/1024:.1f} MB)")
     
-    # Current limit based on testing: ~8MB due to Vercel FUNCTION_PAYLOAD_TOO_LARGE
-    if file_size > 8 * 1024 * 1024:  # 8MB limit
-        error_msg = f"""File too large for current upload method ({file_size/1024/1024:.1f} MB).
-
-Current upload limit: ~8MB (Vercel function payload limit)
-
-SOLUTIONS for {file_size/1024/1024:.1f} MB files:
-
-1. 🌐 Host externally and use media_items with external URL:
-   - Upload to YouTube, Vimeo, or your own CDN
-   - Use: media_items=[{{"type": "video", "url": "https://external-url/video.mp4"}}]
-
-2. 📏 Compress video to under 8MB:
-   - Reduce resolution or quality
-   - Use video compression tools
-
-3. 📞 Contact Zernio support for large file upload API:
-   - Request direct-to-storage upload URLs
-   - Ask about multipart/resumable upload support
-
-TEMPORARY: Upload smaller files or use external hosting."""
-        
-        log("PUBLISH", f"  ❌ {error_msg}")
-        raise Exception(error_msg)
-    
-    # Try regular upload for small files
     try:
-        log("PUBLISH", f"  � Trying regular upload (file under 8MB)...")
-        result = client.media.upload(file_path)
-        media_url = result["publicUrl"]
-        log("PUBLISH", f"  ✅ Regular upload worked: {media_url[:50]}...")
-        return media_url
+        # Step 1: Call REST API directly to get presigned URL
+        log("PUBLISH", f"  🔄 Getting presigned URL for {os.path.basename(file_path)}...")
+        import requests
+        import json
+        
+        presign_response = requests.post(
+            "https://zernio.com/api/v1/media/presign",
+            headers={
+                "Authorization": f"Bearer {client.api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "filename": os.path.basename(file_path),
+                "contentType": "video/mp4"
+            },
+            timeout=120
+        )
+        presign_response.raise_for_status()
+        
+        presign_data = presign_response.json()
+        upload_url = presign_data["uploadUrl"]
+        public_url = presign_data["publicUrl"]
+        
+        log("PUBLISH", f"  ✅ Presigned URL received: {upload_url[:50]}...")
+        log("PUBLISH", f"  📍 Public URL will be: {public_url[:50]}...")
+        
+        # Step 2: Upload file bytes directly to storage (bypasses Vercel limits)
+        log("PUBLISH", f"  📤 Uploading to direct storage URL...")
+        with open(file_path, 'rb') as f:
+            upload_response = requests.put(
+                upload_url,
+                data=f,
+                headers={"Content-Type": "video/mp4"},
+                timeout=600  # 10 minute timeout for large uploads
+            )
+            upload_response.raise_for_status()
+        
+        log("PUBLISH", f"  ✅ File uploaded successfully to direct storage")
+        log("PUBLISH", f"  🔗 Public URL: {public_url[:50]}...")
+        
+        # Step 3: Return the public URL for media_urls=[public_url]
+        return public_url
+        
     except Exception as e:
-        log("PUBLISH", f"  ❌ Regular upload failed: {e}")
-        raise e
+        log("PUBLISH", f"  ❌ Presigned upload failed: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Fallback error message with external hosting option
+        error_msg = f"""Direct storage upload failed ({file_size/1024/1024:.1f} MB).
+
+🚨 TECHNICAL ISSUE: {str(e)}
+
+✅ ALTERNATIVE SOLUTIONS:
+
+1. 🌐 EXTERNAL HOSTING (Immediate workaround):
+   • Upload to: YouTube, Vimeo, S3, R2, or Vercel Blob
+   • Get public URL
+   • Use: media_urls=[https://your-cdn.com/video.mp4]
+
+2. 📏 COMPRESS VIDEO:
+   • Reduce to under 8MB for regular upload
+   • Lower resolution/bitrate
+
+3. 📞 CONTACT ZERNIO SUPPORT:
+   • Reference: /api/v1/media/presign endpoint error
+   • File size: {file_size/1024/1024:.1f} MB
+   • Error: {str(e)}
+
+📝 TEMPORARY: Host externally and use the public URL."""
+        
+        raise Exception(error_msg)
 
 def publish_with_sdk(api_key, captions, platforms, upload_results=None, 
                     scheduled_for=None, publish_now=True, teaser_captions=None, 
