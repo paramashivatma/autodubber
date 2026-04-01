@@ -1,10 +1,8 @@
 import os, json, time
 import httpx
 import re
-from dotenv import load_dotenv
+from .config import get_mistral_api_key
 from .utils import log, PLATFORM_LIMITS, SHORT_MINIMUMS, REQUIRED_PLATFORMS
-
-load_dotenv()
 
 TAGS4  = "#KAILASA #Nithyananda #સનાતનધર્મ #આધ્યાત્મ"
 TAGS3  = "#KAILASA #Nithyananda #સનાતનધર્મ"
@@ -322,7 +320,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
     log("CAPTION", f"Vision -> key_message: {key_message[:100]}")
     prompt      = _build_prompt(main_topic, key_message, theme, transcript_text)
     captions    = {}
-    mistral_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("MISTRAL_API_KEY")
+    mistral_key = get_mistral_api_key(api_key)
 
     if mistral_key:
         try:

@@ -7,11 +7,13 @@ import time
 import re
 from .utils import log
 from .runtime_config import is_economy_mode
+from .config import get_gemini_api_key
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
 def extract_text_from_image(image_path, api_key=None):
     """Extract text from image using OCR"""
+    api_key = get_gemini_api_key(api_key)
     try:
         # Try multiple OCR approaches
         extracted_text = ""
@@ -169,6 +171,7 @@ OUTPUT RULES:
 
 def generate_gujarati_captions(extracted_text, api_key=None):
     """Generate Gujarati captions from extracted text"""
+    api_key = get_gemini_api_key(api_key)
     if not api_key:
         return "No API key available for caption generation"
     
@@ -239,6 +242,7 @@ def generate_gujarati_captions(extracted_text, api_key=None):
 
 def generate_teaser_content(extracted_text, captions, api_key=None):
     """Generate teaser content from extracted text and captions"""
+    api_key = get_gemini_api_key(api_key)
     if is_economy_mode():
         # Save one Gemini call in Economy mode: build deterministic teaser locally.
         sample_caption = ""

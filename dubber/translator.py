@@ -1,6 +1,7 @@
 import os, json, time
 from .utils import log
 from .runtime_config import is_economy_mode
+from .config import get_gemini_api_key
 
 GUJARATI_RANGE = (0x0A80, 0x0AFF)
 
@@ -158,7 +159,7 @@ def _gemini_translate(text, source_hint="auto", target_language="gu"):
     if _gemini_quota_exhausted:
         raise RuntimeError(f"Gemini disabled for this run: {_gemini_quota_reason or 'quota exhausted'}")
 
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    api_key = get_gemini_api_key()
     if not api_key:
         raise RuntimeError("No Gemini API key found.")
 
@@ -214,7 +215,7 @@ def _gemini_translate_batch(texts, source_hint, target_language):
     if _gemini_quota_exhausted:
         raise RuntimeError(f"Gemini disabled for this run: {_gemini_quota_reason or 'quota exhausted'}")
 
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    api_key = get_gemini_api_key()
     if not api_key:
         raise RuntimeError("No Gemini API key found.")
 

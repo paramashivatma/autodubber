@@ -20,11 +20,17 @@ from dubber.downloader    import is_url, download_video
 from dubber.bgm_separator import separate_background
 from dubber.sdk_publisher import publish_to_platforms_sdk
 from dubber.runtime_config import is_economy_mode
+from dubber.config import (
+    load_env_into_process,
+    save_env_updates,
+    get_gemini_api_key,
+    get_mistral_api_key,
+    get_zernio_api_key,
+)
 from review_dialog        import ReviewDialog
 
 WORKSPACE   = "workspace"
 OUTPUT_FILE = "output.mp4"
-ENV_FILE    = ".env"
 
 VOICES = {
     "Gujarati - Niranjan (M)": "gu-IN-NiranjanNeural",
@@ -69,19 +75,22 @@ def _backup_warning(provider, reason, backup_label):
     )
 
 def _load_env():
-    env = {}
-    if os.path.exists(ENV_FILE):
-        with open(ENV_FILE) as f:
-            for line in f:
-                line = line.strip()
-                if "=" in line and not line.startswith("#"):
-                    k, v = line.split("=",1); env[k.strip()] = v.strip()
-    return env
+    return load_env_into_process()
 
 def _save_env(data):
-    e = _load_env(); e.update(data)
-    with open(ENV_FILE,"w") as f:
-        for k,v in e.items(): f.write(f"{k}={v}\n")
+    save_env_updates(data)
+
+
+def _canonicalize_env_keys(env):
+    """Map legacy key names into canonical keys for consistency."""
+    updates = {}
+    gemini = (env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY") or env.get("GEMINI_VISION_KEY") or "").strip()
+    mistral = (env.get("MISTRAL_API_KEY") or env.get("OPENROUTER_API_KEY") or "").strip()
+    if gemini and not (env.get("GEMINI_API_KEY") or "").strip():
+        updates["GEMINI_API_KEY"] = gemini
+    if mistral and not (env.get("MISTRAL_API_KEY") or "").strip():
+        updates["MISTRAL_API_KEY"] = mistral
+    return updates
 
 def _count_successful_results(results):
     """Count successful platform results, handling error-shaped responses."""
@@ -258,6 +267,10 @@ class App(tk.Tk):
         self.minsize(780, 620)
         self.resizable(True, True)
         self._env         = _load_env()
+        canonical_updates = _canonicalize_env_keys(self._env)
+        if canonical_updates:
+            _save_env(canonical_updates)
+            self._env.update(canonical_updates)
         self._image_paths = []
         self._header_photo = None
         self._publish_state_lock = threading.Lock()
@@ -785,9 +798,9 @@ class App(tk.Tk):
         self.flyer_path = ""
 
         # Initialize API key variables (hidden from GUI)
-        self.gemini_vision_key_var = tk.StringVar(value=self._env.get("GEMINI_VISION_KEY",""))
-        self.mistral_key_var = tk.StringVar(value=self._env.get("MISTRAL_API_KEY",""))
-        self.zernio_key_var = tk.StringVar(value=self._env.get("ZERNIO_API_KEY",""))
+        self.gemini_vision_key_var = tk.StringVar(value=get_gemini_api_key())
+        self.mistral_key_var = tk.StringVar(value=get_mistral_api_key())
+        self.zernio_key_var = tk.StringVar(value=get_zernio_api_key())
         
         # Initialize missing variables from Publish Only tab
         self.topic_var = tk.StringVar()
@@ -1319,7 +1332,7 @@ class App(tk.Tk):
     def _save_keys(self):
         to_save = {}
         if self.gemini_vision_key_var.get().strip():
-            to_save["GEMINI_VISION_KEY"] = self.gemini_vision_key_var.get().strip()
+            to_save["GEMINI_API_KEY"] = self.gemini_vision_key_var.get().strip()
         if self.mistral_key_var.get().strip():
             to_save["MISTRAL_API_KEY"] = self.mistral_key_var.get().strip()
         if self.zernio_key_var.get().strip():
@@ -1346,7 +1359,7 @@ class App(tk.Tk):
         mistral = self.mistral_key_var.get().strip()
         zernio = self.zernio_key_var.get().strip()
         to_save = {}
-        if gemini_vision: to_save["GEMINI_VISION_KEY"] = gemini_vision
+        if gemini_vision: to_save["GEMINI_API_KEY"] = gemini_vision
         if mistral:       to_save["MISTRAL_API_KEY"]   = mistral
         if zernio:        to_save["ZERNIO_API_KEY"]     = zernio
         if to_save:       _save_env(to_save)

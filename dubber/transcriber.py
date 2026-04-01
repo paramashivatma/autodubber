@@ -1,5 +1,6 @@
 import os, json, subprocess
 import httpx
+from .config import get_groq_api_key
 from .utils import log
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -115,7 +116,7 @@ def transcribe_audio(video_path, output_dir, model_size="large",
     wav_path = os.path.join(output_dir, "audio.wav")
     _extract_audio(video_path, wav_path)
 
-    groq_key = groq_api_key or os.getenv("GROQ_API_KEY")
+    groq_key = get_groq_api_key(groq_api_key)
 
     if groq_key:
         log("TRANSCRIBE", f"Using Groq whisper-large-v3 (lang={language}) ...")

@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+from .config import get_sheet_id, get_credentials_file
 
 try:
     import gspread
@@ -43,7 +44,7 @@ SCOPES = [
 
 def _get_sheet_id_from_env() -> Optional[str]:
     """Get Google Sheet ID from environment."""
-    return os.getenv("GOOGLE_SHEET_ID") or os.getenv("SHEET_ID")
+    return get_sheet_id()
 
 
 def _parse_logs_for_data(log_buffer: List[str]) -> Dict:
@@ -195,10 +196,17 @@ def update_video_tracker(
             return False, "No Google Sheet ID found (set GOOGLE_SHEET_ID)"
         
         # Get credentials path
-        creds_path = credentials_path or os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), 
-            CREDENTIALS_FILE
-        )
+        if credentials_path:
+            creds_path = credentials_path
+        else:
+            configured_file = get_credentials_file(CREDENTIALS_FILE)
+            if os.path.isabs(configured_file):
+                creds_path = configured_file
+            else:
+                creds_path = os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)),
+                    configured_file
+                )
         
         if not os.path.exists(creds_path):
             return False, f"Credentials file not found: {creds_path}"

@@ -19,9 +19,16 @@ pip install -r requirements.txt
 ```
 
 ## API Keys needed
-- OpenAI (GPT-4o for vision + captions)
-- Zernio (publishing)
-Both saved to .env via the UI.
+- `GEMINI_API_KEY` (translation, vision, flyer OCR/captioning)
+- `MISTRAL_API_KEY` (caption generation)
+- `ZERNIO_API_KEY` (publishing)
+- `GROQ_API_KEY` (optional, faster transcription)
+
+Optional for Google Sheet logging:
+- `GOOGLE_SHEET_ID`
+- `GOOGLE_CREDENTIALS_FILE` (defaults to `credentials.json`)
+
+Config is read from `.env` (see `.env.example`).
 
 ## Run
 ```
