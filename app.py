@@ -83,6 +83,19 @@ def _count_successful_results(results):
             ok += 1
     return ok
 
+def _count_unconfirmed_results(results):
+    """Count platform results that are submitted but not confirmed."""
+    if not isinstance(results, dict):
+        return 0
+    unconfirmed = 0
+    for v in results.values():
+        if not isinstance(v, dict):
+            continue
+        status = str(v.get("status", "")).lower()
+        if status in {"unconfirmed", "submitted_unconfirmed"}:
+            unconfirmed += 1
+    return unconfirmed
+
 
 def run_dub_pipeline(video_input, voice, model_size, src_lang, tgt_lang,
                      use_bgm, bgm_volume, gemini_vision_key, mistral_key, zernio_key,
@@ -1065,10 +1078,16 @@ class App(tk.Tk):
         self.flyer_results.insert(tk.END, "=" * 40 + "\n")
         failure_lines = []
         success_lines = []
+        unconfirmed_lines = []
+        unconfirmed = _count_unconfirmed_results(results)
         for platform, result in results.items():
             if isinstance(result, dict):
                 status = str(result.get("status", "")).lower()
                 post_id = result.get("post_id") or result.get("_id") or "n/a"
+                if status in {"unconfirmed", "submitted_unconfirmed"}:
+                    err_msg = result.get("error") or result.get("error_message") or "Publish status unconfirmed"
+                    unconfirmed_lines.append(f"⚠️ {platform}: {err_msg}")
+                    continue
                 if status in {"ok", "published", "success", "submitted", "queued", "processing"}:
                     success_lines.append(f"✅ {platform}: {post_id}")
                 else:
@@ -1082,7 +1101,7 @@ class App(tk.Tk):
             else:
                 failure_lines.append(f"❌ {platform}: unexpected result format")
 
-        for line in success_lines + failure_lines:
+        for line in success_lines + unconfirmed_lines + failure_lines:
             self.flyer_results.insert(tk.END, line + "\n")
         self.flyer_results.see(tk.END)
         
@@ -1149,6 +1168,47 @@ class App(tk.Tk):
             except Exception as e:
                 print(f"[SHEET] Flyer sheet update failed: {e}")
                 
+        elif unconfirmed > 0:
+            self.status_var.set("Publish submitted but unconfirmed")
+            warn_msg = (
+                f"Publish request was sent, but confirmation is unverified for {unconfirmed}/{total} platform(s).\n\n"
+                "Zernio returned an empty/invalid response. Please check platform dashboards before retrying to avoid duplicates."
+            )
+            messagebox.showwarning("Unconfirmed Publish", warn_msg)
+            # Still update Google Sheet to track this attempt and mark unconfirmed status.
+            try:
+                from dubber.sheet_logger import quick_update_from_publish_result
+                formatted_title = ""
+                try:
+                    flyer_title = os.path.basename(self.flyer_path)
+                    title_without_ext = os.path.splitext(flyer_title)[0]
+                    captions_file = os.path.join("workspace", "flyer_captions.json")
+                    if os.path.exists(captions_file):
+                        with open(captions_file, "r", encoding="utf-8") as f:
+                            captions = json.load(f)
+                        gujarati_title = ""
+                        for platform, data in captions.items():
+                            if isinstance(data, dict) and data.get("title"):
+                                gujarati_title = data["title"]
+                                break
+                        formatted_title = f"{gujarati_title} ({title_without_ext})" if gujarati_title else title_without_ext
+                    else:
+                        formatted_title = title_without_ext
+                except Exception as e:
+                    print(f"[SHEET] Error getting flyer title: {e}")
+                    formatted_title = os.path.basename(self.flyer_path)
+
+                sheet_success, sheet_msg = quick_update_from_publish_result(
+                    video_title=formatted_title,
+                    publish_results=results,
+                    duration="N/A",
+                    source_lang="English",
+                    target_lang="Gujarati",
+                    content_format="Image",
+                )
+                print(f"[SHEET] Flyer publish (unconfirmed): {sheet_msg}")
+            except Exception as e:
+                print(f"[SHEET] Flyer sheet update failed (unconfirmed): {e}")
         else:
             self.status_var.set("Publishing failed")
             error_msg = "\n".join(failure_lines[:6]) if failure_lines else "Publishing failed. Check API keys and try again."
@@ -1299,11 +1359,25 @@ class App(tk.Tk):
                 )
                 
                 ok = _count_successful_results(results)
+                unconfirmed = _count_unconfirmed_results(results)
                 total = len(selected_platforms or [])
-                msg = f"Published {ok}/{total} platform(s)." if ok else f"Published 0/{total} platform(s)."
+                if ok > 0 and unconfirmed > 0:
+                    msg = (
+                        f"Published {ok}/{total} platform(s); {unconfirmed} unconfirmed. "
+                        "Check dashboard before retrying."
+                    )
+                elif ok > 0:
+                    msg = f"Published {ok}/{total} platform(s)."
+                elif unconfirmed > 0:
+                    msg = (
+                        f"Publish submitted but unconfirmed for {unconfirmed}/{total} platform(s). "
+                        "Check dashboard before retrying."
+                    )
+                else:
+                    msg = f"Published 0/{total} platform(s)."
                 
-                # Log to Google Sheet after successful publish
-                if ok > 0:
+                # Log to Google Sheet after successful or unconfirmed publish
+                if ok > 0 or unconfirmed > 0:
                     try:
                         from dubber.sheet_logger import quick_update_from_publish_result
                         formatted_title = self._build_video_sheet_title(approved, video_path)
@@ -1324,7 +1398,7 @@ class App(tk.Tk):
                 self._queue_ui(self.progress.stop)
                 self._queue_ui(lambda: self.status_var.set(msg))
                 log("PUBLISH", f"✅ Publishing completed: {msg}")
-                _safe_done(success=(ok > 0), msg=msg, pub_results=results)
+                _safe_done(success=(ok > 0 or unconfirmed > 0), msg=msg, pub_results=results)
                 
             except Exception as e:
                 log("PUBLISH", f"❌ Publishing error: {e}")
@@ -1343,7 +1417,16 @@ class App(tk.Tk):
         self.run_btn.config(state="normal")
         if pub_results:
             for k, v in pub_results.items():
-                print(f'OK   {k}: id={v.get("_id","?") if isinstance(v,dict) else "ok"}')
+                if isinstance(v, dict):
+                    status = v.get("status", "unknown")
+                    pid = v.get("post_id") or v.get("_id") or "n/a"
+                    err = v.get("error") or v.get("error_message")
+                    if err:
+                        print(f'FAIL {k}: status={status} error={err}')
+                    else:
+                        print(f'OK   {k}: status={status} id={pid}')
+                else:
+                    print(f'OK   {k}: {v}')
         (messagebox.showinfo if success else messagebox.showerror)("Result", msg)
         
         # Clean up workspace after pipeline completion
@@ -1367,6 +1450,8 @@ class App(tk.Tk):
             self.status_var.set(f"✗ {platform} failed")
         elif status == "timeout":
             self.status_var.set(f"⏱ {platform} timed out")
+        elif status == "unconfirmed":
+            self.status_var.set(f"⚠ {platform} unconfirmed")
         elif status == "skipped":
             self.status_var.set(f"⊘ {platform} skipped")
         elif status == "initializing":

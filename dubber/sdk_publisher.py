@@ -136,9 +136,12 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
     log("PUBLISH", f"  📄 Fallback files: {list(fallback_files.keys()) if fallback_files else None}")
     
     try:
-        # Initialize Zernio client with timeout
-        log("PUBLISH", f"  🔧 Initializing Zernio client with timeout...")
-        client = Zernio(api_key=api_key, timeout=120.0)  # 2 min timeout for large uploads
+        # Initialize Zernio client with timeout.
+        # Bluesky can take noticeably longer for video processing.
+        has_bluesky = any(str(p).lower() == "bluesky" for p in (platforms or []))
+        sdk_timeout = 360.0 if has_bluesky else 120.0
+        log("PUBLISH", f"  🔧 Initializing Zernio client with timeout={sdk_timeout}s...")
+        client = Zernio(api_key=api_key, timeout=sdk_timeout)
         log("PUBLISH", "✅ Zernio SDK initialized")
         
         if progress_cb:
@@ -382,6 +385,27 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             log("PUBLISH", f"  ❌ Rate limit exceeded: {e}")
             raise ZernioRateLimitError("Rate limit exceeded. Please wait before trying again.")
         except ZernioTimeoutError as e:
+            # If Bluesky is selected, treat timeout as unconfirmed instead of hard fail.
+            # The submit can succeed server-side while the client waits for long processing.
+            if has_bluesky:
+                log("PUBLISH", f"  ⚠️ Request timeout with Bluesky selected: {e}")
+                if progress_cb:
+                    progress_cb(len(platforms), len(platforms), "bluesky", "unconfirmed")
+                unconfirmed_results = {}
+                for platform in platforms:
+                    unconfirmed_results[platform] = {
+                        "status": "unconfirmed",
+                        "platform": platform,
+                        "error": (
+                            "Publish status unconfirmed: request timed out while Bluesky may still be processing. "
+                            "Verify dashboard before retrying."
+                        ),
+                        "error_message": (
+                            "Publish status unconfirmed: request timed out while Bluesky may still be processing. "
+                            "Verify dashboard before retrying."
+                        ),
+                    }
+                return unconfirmed_results
             log("PUBLISH", f"  ❌ Request timeout: {e}")
             raise ZernioTimeoutError("Request timed out. Please check your connection and try again.")
         except ZernioConnectionError as e:
@@ -391,6 +415,31 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             log("PUBLISH", f"  ❌ API error: {e}")
             raise ZernioAPIError(f"Zernio API error: {e}")
         except Exception as sdk_error:
+            err_text = str(sdk_error or "").strip()
+            err_lower = err_text.lower()
+            # Seen in production: SDK receives empty/non-JSON body and raises JSON decode error.
+            # Request may already be accepted server-side, so mark as unconfirmed (not hard fail)
+            # to prevent users from immediate blind retries that can create duplicates.
+            if "expecting value: line 1 column 1 (char 0)" in err_lower or "jsondecodeerror" in err_lower:
+                log("PUBLISH", "  ⚠️ SDK returned empty/non-JSON response after submit; marking platforms unconfirmed")
+                if progress_cb:
+                    progress_cb(len(platforms), len(platforms), "sdk", "unconfirmed")
+                unconfirmed_results = {}
+                for platform in platforms:
+                    unconfirmed_results[platform] = {
+                        "status": "unconfirmed",
+                        "platform": platform,
+                        "error": (
+                            "Publish status unconfirmed: Zernio returned an empty/invalid response "
+                            "after submit. Verify on dashboard before retrying."
+                        ),
+                        "error_message": (
+                            "Publish status unconfirmed: Zernio returned an empty/invalid response "
+                            "after submit. Verify on dashboard before retrying."
+                        ),
+                    }
+                return unconfirmed_results
+
             log("PUBLISH", f"  ❌ Unexpected SDK error: {sdk_error}")
             raise sdk_error
         
@@ -480,34 +529,52 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                     status = "error"
                     error_message = "Unknown platform response format"
                 
+                status_l = str(status).lower()
+                platform_l = str(platform_name).lower()
+                timeout_like = status_l in {"timeout", "timed_out", "timed-out"} or (
+                    "timeout" in str(error_message or "").lower()
+                )
+                bluesky_unconfirmed = platform_l == "bluesky" and timeout_like
+
                 # Update progress for this platform
                 if progress_cb:
                     log("PUBLISH", f"  📱 Updating progress: {platform_name} -> {status}")
-                    if status == 'published':
+                    if status_l == 'published':
                         progress_cb(i+1, len(published_platforms), platform_name, "ok")
-                    elif status == 'error' or status == 'failed':
+                    elif bluesky_unconfirmed:
+                        progress_cb(i+1, len(published_platforms), platform_name, "unconfirmed")
+                    elif status_l == 'error' or status_l == 'failed':
                         progress_cb(i+1, len(published_platforms), platform_name, "error")
                     else:
                         progress_cb(i+1, len(published_platforms), platform_name, "posting")
                 
-                status_l = str(status).lower()
                 hard_fail = status_l in {"error", "failed", "fail", "rejected"}
                 success = (not hard_fail) and (
                     status_l in {"published", "ok", "success", "submitted", "queued", "processing"}
                     or (post_id and post_id != "unknown")
                 )
+                if bluesky_unconfirmed:
+                    success = False
                 
                 results[platform_name] = {
-                    "status": "ok" if success else "error",
+                    "status": "unconfirmed" if bluesky_unconfirmed else ("ok" if success else "error"),
                     "post_id": post_id,
                     "platform": platform_name
                 }
-                if not success:
+                if bluesky_unconfirmed:
+                    results[platform_name]["error"] = (
+                        "Bluesky is taking longer than usual; status unconfirmed. "
+                        "Verify dashboard before retrying."
+                    )
+                    results[platform_name]["error_message"] = results[platform_name]["error"]
+                elif not success:
                     results[platform_name]["error"] = error_message or f"Publish failed with status={status}"
                     results[platform_name]["error_message"] = error_message or f"Publish failed with status={status}"
                 
                 if success:
                     log("PUBLISH", f"  ✅ {platform_name}: ok (ID: {post_id})")
+                elif bluesky_unconfirmed:
+                    log("PUBLISH", f"  ⚠️ {platform_name}: unconfirmed (slow processing)")
                 else:
                     log("PUBLISH", f"  ❌ {platform_name}: {results[platform_name]['error']}")
                 
@@ -515,15 +582,23 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 log("PUBLISH", f"  ❌ Error processing platform {platform_info}: {e}")
 
         # Some SDK responses confirm post creation but omit per-platform statuses.
-        # Avoid false "all failed" in UI by treating selected platforms as submitted.
+        # Mark as unconfirmed to avoid false "all failed" and avoid false "all success".
         if not results and platforms:
-            log("PUBLISH", "⚠️ No per-platform statuses returned; marking selected platforms as submitted")
+            log("PUBLISH", "⚠️ No per-platform statuses returned; marking selected platforms as unconfirmed")
             fallback_post_id = parent_post_id or "submitted"
             for platform in platforms:
                 results[platform] = {
-                    "status": "ok",
+                    "status": "unconfirmed",
                     "post_id": fallback_post_id,
                     "platform": platform,
+                    "error": (
+                        "Publish status unconfirmed: per-platform status missing from API response. "
+                        "Verify on dashboard before retrying."
+                    ),
+                    "error_message": (
+                        "Publish status unconfirmed: per-platform status missing from API response. "
+                        "Verify on dashboard before retrying."
+                    ),
                 }
         
         log("PUBLISH", f"🎉 SDK publishing completed! {len(results)} platforms")
@@ -562,7 +637,19 @@ def publish_to_platforms_sdk(api_key, video_path, captions, platforms,
             progress_cb=progress_cb,
             fallback_files=fallback_files  # Pass through fallback files
         )
-        log("PUBLISH", f"✅ publish_to_platforms_sdk COMPLETED")
+        if isinstance(result, dict) and "error" in result and len(result) == 1:
+            log("PUBLISH", f"❌ publish_to_platforms_sdk FAILED: {result.get('error')}")
+        else:
+            has_unconfirmed = False
+            if isinstance(result, dict):
+                for v in result.values():
+                    if isinstance(v, dict) and str(v.get("status", "")).lower() in {"unconfirmed", "submitted_unconfirmed"}:
+                        has_unconfirmed = True
+                        break
+            if has_unconfirmed:
+                log("PUBLISH", "⚠️ publish_to_platforms_sdk COMPLETED WITH UNCONFIRMED RESULTS")
+            else:
+                log("PUBLISH", "✅ publish_to_platforms_sdk COMPLETED")
         return result
     except Exception as e:
         log("PUBLISH", f"❌ publish_to_platforms_sdk FAILED: {e}")
