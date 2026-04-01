@@ -13,7 +13,7 @@ from dubber import (
 from dubber.utils import PLATFORMS
 from dubber.downloader    import is_url, download_video
 from dubber.bgm_separator import separate_background
-from dubber.parallel_upload import create_parallel_upload_manager, publish_with_preuploaded_urls_sync
+from dubber.sdk_publisher import publish_to_platforms_sdk
 from review_dialog        import ReviewDialog
 
 WORKSPACE   = "workspace"
@@ -797,13 +797,8 @@ class App(tk.Tk):
         self.progress.stop()
         self.status_var.set("Review captions — edit if needed, then approve.")
         
-        # Create parallel upload manager
-        upload_manager = create_parallel_upload_manager(
-            zernio_key, video_path, teaser_paths, image_paths
-        )
-        
-        # Show review dialog with upload manager
-        dlg = ReviewDialog(self, captions, upload_manager)
+        # Show review dialog (simplified without parallel uploads for now)
+        dlg = ReviewDialog(self, captions, upload_manager=None)
         if dlg.result is None:
             self.run_btn.config(state="normal")
             self.status_var.set("Publishing cancelled."); return
@@ -815,48 +810,24 @@ class App(tk.Tk):
 
         def _publish():
             try:
-                teaser_caps = {p:{"caption":approved.get(p,{}).get("caption","")[:180]}
-                               for p in selected_platforms}
+                # Use simple SDK publishing
+                dlg.update_progress("Publishing with Zernio SDK...", None, "posting")
                 
-                # Track progress
-                total = len(selected_platforms)
-                completed = 0
-                
-                # Create thread-safe progress callback
-                def _thread_safe_progress(done, total, platform, status):
-                    completed = done
-                    self.after(0, lambda: dlg.update_progress(
-                        f"Publishing to {platform}...", platform, status))
-                
-                # Wait for uploads to complete
-                upload_results = dlg.get_upload_results()
-                if not upload_results.get("main_video"):
-                    dlg.update_progress("❌ Main video upload failed. Cannot publish.", None, "error")
-                    return
-                
-                dlg.update_progress("✅ All uploads completed. Starting platform publishing...", None, "ok")
-                
-                # Prepare fallback files for when uploads fail
-                fallback_files = {
-                    'main_video': video_path
-                }
-                for platform, teaser_path in (teaser_paths or {}).items():
-                    if teaser_path:
-                        fallback_files[f'teaser_{platform}'] = teaser_path
-                
-                results = publish_with_preuploaded_urls_sync(
-                    api_key         = zernio_key,
-                    captions        = approved,
-                    platforms       = selected_platforms,
-                    upload_results  = upload_results,
-                    scheduled_for   = scheduled_for if not publish_now else None,
-                    publish_now     = publish_now,
-                    teaser_captions = teaser_caps if teaser_path else None,
-                    output_dir      = WORKSPACE,
-                    progress_cb     = _thread_safe_progress,
-                    fallback_files  = fallback_files
+                results = publish_to_platforms_sdk(
+                    api_key=zernio_key,
+                    video_path=video_path,
+                    captions=approved,
+                    platforms=selected_platforms,
+                    scheduled_for=scheduled_for if not publish_now else None,
+                    publish_now=publish_now,
+                    teaser_path=teaser_path,
+                    teaser_paths=teaser_paths,
+                    image_paths=image_paths,
+                    output_dir=WORKSPACE,
+                    progress_cb=_thread_safe_progress
                 )
-                ok  = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
+                
+                ok = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))
                 msg = f"Published {ok} post(s)." if ok else "All posts failed — check log."
                 
                 # Log to Google Sheet after successful publish
@@ -877,103 +848,47 @@ class App(tk.Tk):
                                 gujarati_title = captions.get("youtube", {}).get("title", "")
                                 if gujarati_title:
                                     # Get English translation of original title
-                                    video_url = self.video_var.get().strip()
-                                    
-                                    # Try to get English title from YouTube first
-                                    if "youtube.com" in video_url or "youtu.be" in video_url:
-                                        try:
-                                            import yt_dlp
-                                            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                                                info = ydl.extract_info(video_url, download=False)
-                                                english_title = info.get('title', '')
-                                        except:
-                                            pass
-                                    
-                                    # Fallback: use basename if no YouTube title
-                                    if not english_title:
-                                        english_title = os.path.basename(video_path)
-                                        # Clean up common temp names
-                                        if english_title in ['source.mp4', 'output.mp4', 'final.mp4']:
-                                            english_title = video_url.split('/')[-1].split('?')[0] if video_url else english_title
-                                    
-                                    # Format as "Gujarati (English)"
-                                    formatted_title = f"{gujarati_title} ({english_title})"
-                                    print(f"[SHEET] Using formatted title: {formatted_title}")
+                                    try:
+                                        english_title = vision_data.get("main_topic", "") if 'vision_data' in locals() else ""
+                                        
+                                        # Format the Gujarati title properly
+                                        formatted_title = gujarati_title.strip()
+                                        
+                                        # Update Google Sheet
+                                        quick_update_from_publish_result(
+                                            video_path=video_path,
+                                            gujarati_title=formatted_title,
+                                            english_title=english_title,
+                                            publish_results=results
+                                        )
+                                        
+                                        log("PUBLISH", f"✅ Google Sheet updated with title: {formatted_title}")
+                                    except Exception as sheet_error:
+                                        log("PUBLISH", f"⚠️ Google Sheet update failed: {sheet_error}")
                                 else:
-                                    formatted_title = ""
+                                    log("PUBLISH", "⚠️ No Gujarati title found for Google Sheet")
                             else:
-                                formatted_title = ""
+                                log("PUBLISH", "⚠️ Captions file not found for Google Sheet")
                         except Exception as e:
-                            print(f"[SHEET] Error getting captions: {e}")
-                            formatted_title = ""
-                        
-                        # Try to get original video title from download logs or URL if no formatted title
-                        if not formatted_title:
-                            video_url = self.video_var.get().strip()
-                            video_title = ""
-                            
-                            # Extract title from YouTube URL if available
-                            if "youtube.com" in video_url or "youtu.be" in video_url:
-                                # Try to get title from yt-dlp info if available
-                                try:
-                                    import yt_dlp
-                                    with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                                        info = ydl.extract_info(video_url, download=False)
-                                        video_title = info.get('title', '')
-                                except:
-                                    # Fallback: extract from URL or use basename
-                                    pass
-                            
-                            # If still no title, use basename but clean it up
-                            if not video_title:
-                                video_title = os.path.basename(video_path)
-                                # Remove common temp names
-                                if video_title in ['source.mp4', 'output.mp4', 'final.mp4']:
-                                    video_title = video_url.split('/')[-1].split('?')[0] if video_url else video_title
-                            
-                            formatted_title = video_title
-                        
-                        # Get duration from video
-                        duration = ""
-                        import subprocess
-                        try:
-                            result = subprocess.run(
-                                ['ffprobe', '-v', 'error', '-show_entries', 
-                                 'format=duration', '-of', 
-                                 'default=noprint_wrappers=1:nokey=1', video_path],
-                                capture_output=True, text=True, timeout=10
-                            )
-                            if result.returncode == 0:
-                                secs = float(result.stdout.strip())
-                                mins, secs = divmod(int(secs), 60)
-                                duration = f"{mins:02d}:{secs:02d}"
-                        except:
-                            pass
-                        
-                        # Get languages from app state
-                        source_lang = self.src_lang_var.get()
-                        target_lang = self.tgt_lang_var.get()
-                        
-                        # Call sheet logger with formatted title and format
-                        sheet_success, sheet_msg = quick_update_from_publish_result(
-                            video_title=formatted_title,
-                            publish_results=results,
-                            duration=duration,
-                            source_lang=source_lang,
-                            target_lang=target_lang,
-                            content_format="video",  # Video dubbing
-                        )
-                        print(f"[SHEET] {sheet_msg}")
-                    except Exception as e:
-                        print(f"[SHEET] Sheet update failed: {e}")
+                            log("PUBLISH", f"⚠️ Google Sheet update error: {e}")
+                    
+                    except ImportError:
+                        log("PUBLISH", "⚠️ Google Sheet logger not available")
                 
-                # Update dialog with final result
-                self.after(0, lambda: dlg.publishing_complete(success=bool(ok), message=msg))
-                done_cb(success=bool(ok), msg=msg, pub_results=results)
+                dlg.publishing_complete(msg, results)
+                self.run_btn.config(state="normal")
+                self.progress.stop()
+                self.status_var.set(msg)
+                log("PUBLISH", f"✅ Publishing completed: {msg}")
+                
             except Exception as e:
-                error_msg = str(e)
-                self.after(0, lambda: dlg.publishing_complete(success=False, message=error_msg))
-                done_cb(success=False, msg=error_msg, pub_results={})
+                log("PUBLISH", f"❌ Publishing error: {e}")
+                dlg.publishing_complete(f"Publishing failed: {e}", {"error": str(e)})
+                self.run_btn.config(state="normal")
+                self.progress.stop()
+                self.status_var.set(f"Publishing failed: {e}")
+            finally:
+                if done_cb: done_cb()
         
         threading.Thread(target=_publish, daemon=True).start()
 
