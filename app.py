@@ -172,201 +172,324 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Video Dubber v24")
-        self.geometry("600x500")  # More compact
-        self.resizable(False, False)
+        self.geometry("920x740")
+        self.minsize(840, 660)
+        self.resizable(True, True)
         self._env         = _load_env()
         self._image_paths = []
+        self._init_theme()
         self._build_ui()
 
+    def _init_theme(self):
+        self._colors = {
+            "bg": "#f3f6fb",
+            "panel": "#ffffff",
+            "muted": "#6a7688",
+            "text": "#1f2937",
+            "border": "#d7deea",
+            "primary": "#0f5cc0",
+            "success": "#17803d",
+            "danger": "#c43d3d",
+        }
+        self.configure(bg=self._colors["bg"])
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        style.configure("Modern.TNotebook", background=self._colors["bg"], borderwidth=0)
+        style.configure("Modern.TNotebook.Tab", padding=(18, 8), font=("Segoe UI", 10, "bold"))
+        style.map("Modern.TNotebook.Tab", background=[("selected", "#ffffff")], foreground=[("selected", self._colors["primary"])])
+        style.configure("Modern.Horizontal.TProgressbar", troughcolor="#e6ecf5", background=self._colors["primary"], bordercolor="#e6ecf5", lightcolor=self._colors["primary"], darkcolor=self._colors["primary"])
+
+    def _style_text_area(self, widget):
+        widget.configure(
+            bg="#fbfcff",
+            fg=self._colors["text"],
+            insertbackground=self._colors["text"],
+            relief="solid",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+            highlightcolor=self._colors["primary"],
+            padx=8,
+            pady=8,
+            wrap="word",
+        )
+
+    def _create_scrollable_tab(self, tab_frame):
+        """Create a vertically scrollable area inside a notebook tab."""
+        tab_frame.grid_rowconfigure(0, weight=1)
+        tab_frame.grid_columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            tab_frame,
+            bg=self._colors["panel"],
+            highlightthickness=0,
+            bd=0,
+        )
+        v_scroll = ttk.Scrollbar(tab_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=v_scroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+
+        body = tk.Frame(canvas, bg=self._colors["panel"])
+        window_id = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _on_body_configure(_event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas.itemconfigure(window_id, width=event.width)
+
+        def _on_mousewheel(event):
+            if event.delta:
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif getattr(event, "num", None) == 5:
+                canvas.yview_scroll(1, "units")
+            elif getattr(event, "num", None) == 4:
+                canvas.yview_scroll(-1, "units")
+
+        def _bind_mousewheel(_event):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.bind_all("<Button-4>", _on_mousewheel)
+            canvas.bind_all("<Button-5>", _on_mousewheel)
+
+        def _unbind_mousewheel(_event):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+
+        body.bind("<Configure>", _on_body_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        body.bind("<Enter>", _bind_mousewheel)
+        body.bind("<Leave>", _unbind_mousewheel)
+
+        return body
+
+    def _set_panel_bg(self, parent):
+        for child in parent.winfo_children():
+            if isinstance(child, tk.Frame):
+                child.configure(bg=self._colors["panel"])
+                self._set_panel_bg(child)
+            elif isinstance(child, tk.Label):
+                child.configure(bg=self._colors["panel"], fg=self._colors["text"])
+            elif isinstance(child, (tk.Checkbutton, tk.Radiobutton)):
+                child.configure(
+                    bg=self._colors["panel"],
+                    fg=self._colors["text"],
+                    activebackground=self._colors["panel"],
+                    activeforeground=self._colors["text"],
+                    selectcolor="#eef3fb",
+                )
+
     def _build_ui(self):
-        pad = {"padx":10,"pady":4}
+        pad = {"padx": 12, "pady": 6}
 
-        # Bottom buttons frame - create first but pack after notebook
-        bot = tk.Frame(self, padx=15, pady=8, relief="groove", bd=1)
-        
-        # Left side: Clean button
-        self.cleanup_btn = tk.Button(bot, text="🧹 Clean", width=10,
-                                     bg="#dc3545", fg="white",
-                                     font=("Helvetica",9,"bold"), 
-                                     command=self._manual_cleanup,
-                                     relief="raised", bd=1)
-        self.cleanup_btn.pack(side="left", padx=5, pady=4)
-        
-        # Center: Process Flyer and Publish Generated buttons
-        center_frame = tk.Frame(bot)
-        center_frame.pack(side="left", expand=True, fill="x", padx=10)
-        
-        self.process_flyer_btn = tk.Button(center_frame, text="Process Flyer", command=self._process_flyer, 
-                                           bg="#007bff", fg="white", width=12,
-                                           font=("Helvetica",9,"bold"),
-                                           relief="raised", bd=1)
-        self.process_flyer_btn.pack(side="left", padx=3, pady=4)
-        
-        self.publish_flyer_btn = tk.Button(center_frame, text="Publish Generated", command=self._publish_flyer_content, 
-                                           bg="#28a745", fg="white", width=14,
-                                           font=("Helvetica",9,"bold"),
-                                           relief="raised", bd=1)
-        self.publish_flyer_btn.pack(side="left", padx=3, pady=4)
-        
-        # Right side: Run Pipeline button (only for Dub tab functionality)
-        self.run_btn = tk.Button(bot, text="Run Full Pipeline", width=14,
-                                 bg="#17a2b8", fg="white",
-                                 font=("Helvetica",9,"bold"), command=self._run,
-                                 relief="raised", bd=1)
-        self.run_btn.pack(side="right", padx=5, pady=4)
-        
-        # Status bar - separate frame at bottom
-        status_frame = tk.Frame(self, relief="sunken", bd=1)
-        self.status_var = tk.StringVar(value="Ready.")
-        status_label = tk.Label(status_frame, textvariable=self.status_var, fg="#333", 
-                               font=("Helvetica",9), anchor="w")
-        status_label.pack(side="left", padx=5, pady=2, fill="x", expand=True)
-        status_frame.pack(side="bottom", fill="x", padx=15, pady=(0,8))
-        
-        # Progress bar - above status bar
-        self.progress = ttk.Progressbar(self, mode="indeterminate", length=400)
-        self.progress.pack(fill="x", padx=15, pady=(0,5))
+        header = tk.Frame(self, bg=self._colors["panel"], relief="solid", bd=1)
+        header.pack(fill="x", padx=16, pady=(14, 8))
+        tk.Label(
+            header,
+            text="AutoDub Studio",
+            bg=self._colors["panel"],
+            fg=self._colors["text"],
+            font=("Segoe UI Semibold", 16),
+        ).pack(anchor="w", padx=14, pady=(10, 0))
+        tk.Label(
+            header,
+            text="Dub videos and publish multilingual content with a guided review flow.",
+            bg=self._colors["panel"],
+            fg=self._colors["muted"],
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=14, pady=(2, 10))
 
-        # Set initial button visibility - Dub tab is default
-        self.process_flyer_btn.pack_forget()
-        self.publish_flyer_btn.pack_forget()
-        # run_btn is already packed, so it should be visible
-
-        # Now pack the bot frame at the bottom
-        bot.pack(side="bottom", fill="x")
-        self.update()  # Force window update to get proper size
-
-        self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=8, pady=6)
+        self.nb = ttk.Notebook(self, style="Modern.TNotebook")
+        self.nb.pack(fill="both", expand=True, padx=16, pady=6)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
-        self.t_dub = tk.Frame(self.nb, padx=14, pady=10)
-        self.nb.add(self.t_dub, text="  Dub  ")
+        self.t_dub_tab = tk.Frame(self.nb, bg=self._colors["panel"], padx=0, pady=0)
+        self.nb.add(self.t_dub_tab, text="  Dub Video  ")
+        self.t_dub = self._create_scrollable_tab(self.t_dub_tab)
+        self.t_dub.configure(padx=16, pady=12)
+        self.t_dub.grid_columnconfigure(1, weight=1)
 
-        tk.Label(self.t_dub, text="Video / URL:").grid(row=0,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="1) Source Input", font=("Segoe UI Semibold", 11)).grid(row=0, column=0, sticky="w", **pad)
+        tk.Label(self.t_dub, text="Video / URL:", font=("Segoe UI", 10)).grid(row=1,column=0,sticky="w",**pad)
         self.video_var = tk.StringVar()
-        tk.Entry(self.t_dub, textvariable=self.video_var, width=42).grid(row=0,column=1,**pad)
-        tk.Button(self.t_dub, text="Browse", command=self._browse_video).grid(row=0,column=2,**pad)
+        tk.Entry(self.t_dub, textvariable=self.video_var, width=54, relief="solid", bd=1).grid(row=1,column=1,**pad)
+        tk.Button(self.t_dub, text="Browse", command=self._browse_video, width=10, bg="#eef3fb", fg=self._colors["text"], relief="solid", bd=1).grid(row=1,column=2,**pad)
 
-        tk.Label(self.t_dub, text="Voice:").grid(row=1,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="2) Language & Voice", font=("Segoe UI Semibold", 11)).grid(row=2, column=0, sticky="w", **pad)
+        tk.Label(self.t_dub, text="Voice:", font=("Segoe UI", 10)).grid(row=3,column=0,sticky="w",**pad)
         self.voice_var = tk.StringVar(value=list(VOICES.keys())[0])
         ttk.Combobox(self.t_dub, textvariable=self.voice_var, values=list(VOICES.keys()),
-                     width=32, state="readonly").grid(row=1,column=1,columnspan=2,**pad)
+                     width=46, state="readonly").grid(row=3,column=1,columnspan=2,sticky="ew",**pad)
 
-        tk.Label(self.t_dub, text="Whisper model:").grid(row=2,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Whisper model:", font=("Segoe UI", 10)).grid(row=4,column=0,sticky="w",**pad)
         self.model_var = tk.StringVar(value="medium")
         ttk.Combobox(self.t_dub, textvariable=self.model_var, values=WHISPER_MODELS,
-                     width=12, state="readonly").grid(row=2,column=1,sticky="w",**pad)
+                     width=16, state="readonly").grid(row=4,column=1,sticky="w",**pad)
 
-        tk.Label(self.t_dub, text="Source lang:").grid(row=3,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Source lang:", font=("Segoe UI", 10)).grid(row=5,column=0,sticky="w",**pad)
         self.src_lang_var = tk.StringVar(value="English")
         ttk.Combobox(self.t_dub, textvariable=self.src_lang_var,
-                     values=list(LANGUAGES.keys()), width=14,
-                     state="readonly").grid(row=3,column=1,sticky="w",**pad)
+                     values=list(LANGUAGES.keys()), width=16,
+                     state="readonly").grid(row=5,column=1,sticky="w",**pad)
 
-        tk.Label(self.t_dub, text="Target lang:").grid(row=4,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Target lang:", font=("Segoe UI", 10)).grid(row=6,column=0,sticky="w",**pad)
         self.tgt_lang_var = tk.StringVar(value="Gujarati")
         ttk.Combobox(self.t_dub, textvariable=self.tgt_lang_var,
-                     values=list(LANGUAGES.keys()), width=14,
-                     state="readonly").grid(row=4,column=1,sticky="w",**pad)
+                     values=list(LANGUAGES.keys()), width=16,
+                     state="readonly").grid(row=6,column=1,sticky="w",**pad)
 
-        ttk.Separator(self.t_dub,orient="horizontal").grid(row=5,column=0,columnspan=3,sticky="ew",pady=6)
+        ttk.Separator(self.t_dub,orient="horizontal").grid(row=7,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_dub, text="3) Audio Blend & Platforms", font=("Segoe UI Semibold", 11)).grid(row=8, column=0, sticky="w", **pad)
         self.bgm_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(self.t_dub, text="Preserve background music (demucs)",
+        tk.Checkbutton(self.t_dub, text="Preserve background music (Demucs)",
                        variable=self.bgm_var, command=self._toggle_bgm
-                       ).grid(row=6,column=0,columnspan=2,sticky="w",**pad)
-        tk.Label(self.t_dub, text="Music volume:").grid(row=7,column=0,sticky="w",**pad)
+                       ).grid(row=9,column=0,columnspan=2,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Music volume:", font=("Segoe UI", 10)).grid(row=10,column=0,sticky="w",**pad)
         self.bgm_vol_var = tk.DoubleVar(value=0.35)
         self.bgm_scale = tk.Scale(self.t_dub, variable=self.bgm_vol_var,
                                   from_=0.0, to=1.0, resolution=0.05,
-                                  orient="horizontal", length=150)
-        self.bgm_scale.grid(row=7,column=1,sticky="w",**pad)
+                                  orient="horizontal", length=220,
+                                  bg=self._colors["panel"], fg=self._colors["text"], highlightthickness=0)
+        self.bgm_scale.grid(row=10,column=1,sticky="w",**pad)
 
-        # Platform Selection for Dub tab
-        ttk.Separator(self.t_dub,orient="horizontal").grid(row=8,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_dub, text="Platforms to Publish:", font=("Helvetica",10,"bold")).grid(row=9,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Platforms to publish:", font=("Segoe UI", 10)).grid(row=11,column=0,sticky="w",**pad)
         self._plat_vars = {}
-        pf = tk.Frame(self.t_dub); pf.grid(row=9,column=1,columnspan=2,sticky="w")
+        pf = tk.Frame(self.t_dub, bg=self._colors["panel"]); pf.grid(row=11,column=1,columnspan=2,sticky="w")
         for i,p in enumerate(PLATFORMS):
             v = tk.BooleanVar(value=True); self._plat_vars[p] = v
-            tk.Checkbutton(pf,text=p.capitalize(),variable=v).grid(row=i//3,column=i%3,sticky="w",padx=4)
+            tk.Checkbutton(pf,text=p.capitalize(),variable=v, font=("Segoe UI", 9)).grid(row=i//4,column=i%4,sticky="w",padx=6)
         
-        # Publish Options for Dub tab
-        ttk.Separator(self.t_dub,orient="horizontal").grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
+        ttk.Separator(self.t_dub,orient="horizontal").grid(row=12,column=0,columnspan=3,sticky="ew",pady=8)
         self.dub_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(self.t_dub, text="Publish immediately",
-                       variable=self.dub_publish_now_var, value=True).grid(row=11,column=0,columnspan=2,sticky="w",**pad)
-        # Future: Schedule post option will be added here
+                       variable=self.dub_publish_now_var, value=True, font=("Segoe UI", 9)).grid(row=13,column=0,columnspan=2,sticky="w",**pad)
 
-        # Results Display for Dub tab
-        ttk.Separator(self.t_dub,orient="horizontal").grid(row=12,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_dub, text="Results:", font=("Helvetica",10,"bold")).grid(row=13,column=0,sticky="w",**pad)
-        self.dub_results = tk.Text(self.t_dub, width=60, height=8, font=("Helvetica",9))
-        self.dub_results.grid(row=14,column=0,columnspan=3,padx=10,pady=4)
+        ttk.Separator(self.t_dub,orient="horizontal").grid(row=14,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_dub, text="Pipeline activity", font=("Segoe UI Semibold", 11)).grid(row=15,column=0,sticky="w",**pad)
+        self.dub_results = tk.Text(self.t_dub, width=84, height=8, font=("Consolas",9))
+        self.dub_results.grid(row=16,column=0,columnspan=3,padx=12,pady=(0,8), sticky="nsew")
+        self.t_dub.grid_rowconfigure(16, weight=1)
+        self._style_text_area(self.dub_results)
 
-        self.t_media = tk.Frame(self.nb, padx=14, pady=10)
-        self.nb.add(self.t_media, text="  Flyer/Image  ")
+        self.t_media_tab = tk.Frame(self.nb, bg=self._colors["panel"], padx=0, pady=0)
+        self.nb.add(self.t_media_tab, text="  Flyer / Image  ")
+        self.t_media = self._create_scrollable_tab(self.t_media_tab)
+        self.t_media.configure(padx=16, pady=12)
+        self.t_media.grid_columnconfigure(1, weight=1)
 
         tk.Label(self.t_media, text="Flyer/Image Processing", 
-                 font=("Helvetica",12,"bold")).grid(row=0,column=0,columnspan=3,sticky="w",**pad)
+                 font=("Segoe UI Semibold",12)).grid(row=0,column=0,columnspan=3,sticky="w",**pad)
         tk.Label(self.t_media, text="Upload flyers/posters to extract text and generate Gujarati content",
-                 fg="#666", font=("Helvetica",9)).grid(row=1,column=0,columnspan=3,sticky="w",padx=10,pady=2)
+                 fg=self._colors["muted"], font=("Segoe UI",9)).grid(row=1,column=0,columnspan=3,sticky="w",padx=12,pady=(0,6))
 
         ttk.Separator(self.t_media,orient="horizontal").grid(row=2,column=0,columnspan=3,sticky="ew",pady=8)
         
-        # Flyer/Image Upload Section
-        tk.Label(self.t_media, text="Select Flyer/Images:", font=("Helvetica",10,"bold")).grid(row=3,column=0,sticky="w",**pad)
+        tk.Label(self.t_media, text="Select Flyer/Images:", font=("Segoe UI Semibold",10)).grid(row=3,column=0,sticky="w",**pad)
         self.flyer_var = tk.StringVar()
-        tk.Entry(self.t_media, textvariable=self.flyer_var, width=42).grid(row=3,column=1,**pad)
-        tk.Button(self.t_media, text="Browse", command=self._browse_flyer).grid(row=3,column=2,**pad)
+        tk.Entry(self.t_media, textvariable=self.flyer_var, width=54, relief="solid", bd=1).grid(row=3,column=1,**pad)
+        tk.Button(self.t_media, text="Browse", command=self._browse_flyer, width=10, bg="#eef3fb", fg=self._colors["text"], relief="solid", bd=1).grid(row=3,column=2,**pad)
         
-        # Multiple images support
-        self.flyer_paths = []  # Store multiple image paths
-        self.flyer_count_label = tk.Label(self.t_media, text="", fg="#666", font=("Helvetica",8))
-        self.flyer_count_label.grid(row=4,column=0,columnspan=3,sticky="w",padx=10)
+        self.flyer_paths = []
+        self.flyer_count_label = tk.Label(self.t_media, text="", fg=self._colors["muted"], font=("Segoe UI",8))
+        self.flyer_count_label.grid(row=4,column=0,columnspan=3,sticky="w",padx=12)
         
-        # Processing Options
         ttk.Separator(self.t_media,orient="horizontal").grid(row=5,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_media, text="Processing Options:", font=("Helvetica",10,"bold")).grid(row=6,column=0,sticky="w",**pad)
+        tk.Label(self.t_media, text="Processing Options:", font=("Segoe UI Semibold",10)).grid(row=6,column=0,sticky="w",**pad)
         
         self.extract_text_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_media, text="Extract text from flyer/image",
-                       variable=self.extract_text_var).grid(row=7,column=0,columnspan=3,sticky="w",padx=10)
+                       variable=self.extract_text_var, font=("Segoe UI", 9)).grid(row=7,column=0,columnspan=3,sticky="w",padx=12)
         
         self.generate_captions_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_media, text="Generate Gujarati captions",
-                       variable=self.generate_captions_var).grid(row=8,column=0,columnspan=3,sticky="w",padx=10)
+                       variable=self.generate_captions_var, font=("Segoe UI", 9)).grid(row=8,column=0,columnspan=3,sticky="w",padx=12)
         
         self.generate_teaser_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_media, text="Create teaser content",
-                       variable=self.generate_teaser_var).grid(row=9,column=0,columnspan=3,sticky="w",padx=10)
+                       variable=self.generate_teaser_var, font=("Segoe UI", 9)).grid(row=9,column=0,columnspan=3,sticky="w",padx=12)
         
-        # Action Buttons
         ttk.Separator(self.t_media,orient="horizontal").grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
-        bf = tk.Frame(self.t_media); bf.grid(row=11,column=0,columnspan=3,sticky="w",padx=10)
-        tk.Button(bf,text="Clear",command=self._clear_flyer).pack(side="left",padx=4)
+        bf = tk.Frame(self.t_media, bg=self._colors["panel"]); bf.grid(row=11,column=0,columnspan=3,sticky="w",padx=12)
+        tk.Button(bf,text="Clear Selection",command=self._clear_flyer, bg="#eef3fb", fg=self._colors["text"], relief="solid", bd=1).pack(side="left",padx=4)
         
-        # Results Display
-        tk.Label(self.t_media, text="Results:", font=("Helvetica",10,"bold")).grid(row=12,column=0,sticky="w",**pad)
-        self.flyer_results = tk.Text(self.t_media, width=60, height=8, font=("Helvetica",9))
-        self.flyer_results.grid(row=13,column=0,columnspan=3,padx=10,pady=4)
+        tk.Label(self.t_media, text="Processing activity", font=("Segoe UI Semibold",10)).grid(row=12,column=0,sticky="w",**pad)
+        self.flyer_results = tk.Text(self.t_media, width=84, height=8, font=("Consolas",9))
+        self.flyer_results.grid(row=13,column=0,columnspan=3,padx=12,pady=(0,8), sticky="nsew")
+        self.t_media.grid_rowconfigure(13, weight=1)
+        self._style_text_area(self.flyer_results)
         
-        # Platform Selection for Flyer/Image tab
         ttk.Separator(self.t_media,orient="horizontal").grid(row=14,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_media, text="Platforms to Publish:", font=("Helvetica",10,"bold")).grid(row=15,column=0,sticky="w",**pad)
+        tk.Label(self.t_media, text="Platforms to Publish:", font=("Segoe UI Semibold",10)).grid(row=15,column=0,sticky="w",**pad)
         self._flyer_plat_vars = {}
-        pf = tk.Frame(self.t_media); pf.grid(row=15,column=1,columnspan=2,sticky="w")
+        pf = tk.Frame(self.t_media, bg=self._colors["panel"]); pf.grid(row=15,column=1,columnspan=2,sticky="w")
         for i,p in enumerate(PLATFORMS):
-            if p not in ["youtube", "tiktok"]:  # Exclude video-only platforms for image publishing
+            if p not in ["youtube", "tiktok"]:
                 v = tk.BooleanVar(value=True); self._flyer_plat_vars[p] = v
-                tk.Checkbutton(pf,text=p.capitalize(),variable=v).grid(row=i//3,column=i%3,sticky="w",padx=4)
+                tk.Checkbutton(pf,text=p.capitalize(),variable=v, font=("Segoe UI", 9)).grid(row=i//4,column=i%4,sticky="w",padx=6)
         
-        # Publish Options
         ttk.Separator(self.t_media,orient="horizontal").grid(row=16,column=0,columnspan=3,sticky="ew",pady=8)
         self.flyer_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(self.t_media, text="Publish immediately",
-                       variable=self.flyer_publish_now_var, value=True).grid(row=17,column=0,columnspan=2,sticky="w",**pad)
-        
+                       variable=self.flyer_publish_now_var, value=True, font=("Segoe UI", 9)).grid(row=17,column=0,columnspan=2,sticky="w",**pad)
+
+        # Bottom action bar
+        bot = tk.Frame(self, bg=self._colors["panel"], relief="solid", bd=1, padx=10, pady=8)
+        bot.pack(side="bottom", fill="x", padx=16, pady=(6, 10))
+
+        self.cleanup_btn = tk.Button(
+            bot, text="Clean Workspace", width=14,
+            bg=self._colors["danger"], fg="white",
+            font=("Segoe UI Semibold", 9), command=self._manual_cleanup,
+            relief="flat", bd=0, padx=10, pady=6
+        )
+        self.cleanup_btn.pack(side="left", padx=6)
+
+        center_frame = tk.Frame(bot, bg=self._colors["panel"])
+        center_frame.pack(side="left", expand=True, fill="x", padx=12)
+
+        self.process_flyer_btn = tk.Button(
+            center_frame, text="Process Flyer", command=self._process_flyer,
+            bg=self._colors["primary"], fg="white", width=14,
+            font=("Segoe UI Semibold", 9), relief="flat", bd=0, padx=10, pady=6
+        )
+        self.process_flyer_btn.pack(side="left", padx=4)
+
+        self.publish_flyer_btn = tk.Button(
+            center_frame, text="Publish Content", command=self._publish_flyer_content,
+            bg=self._colors["success"], fg="white", width=14,
+            font=("Segoe UI Semibold", 9), relief="flat", bd=0, padx=10, pady=6
+        )
+        self.publish_flyer_btn.pack(side="left", padx=4)
+
+        self.run_btn = tk.Button(
+            bot, text="Run Dub Pipeline", width=16,
+            bg=self._colors["primary"], fg="white",
+            font=("Segoe UI Semibold", 9), command=self._run,
+            relief="flat", bd=0, padx=10, pady=6
+        )
+        self.run_btn.pack(side="right", padx=6)
+
+        self.process_flyer_btn.pack_forget()
+        self.publish_flyer_btn.pack_forget()
+
+        self.progress = ttk.Progressbar(self, mode="indeterminate", style="Modern.Horizontal.TProgressbar")
+        self.progress.pack(fill="x", padx=16, pady=(0, 6))
+
+        status_frame = tk.Frame(self, bg=self._colors["panel"], relief="solid", bd=1)
+        self.status_var = tk.StringVar(value="Ready.")
+        status_label = tk.Label(
+            status_frame, textvariable=self.status_var, fg=self._colors["text"],
+            bg=self._colors["panel"], font=("Segoe UI", 9), anchor="w"
+        )
+        status_label.pack(side="left", padx=8, pady=5, fill="x", expand=True)
+        status_frame.pack(side="bottom", fill="x", padx=16, pady=(0, 12))
+
         # Store flyer path
         self.flyer_path = ""
 
@@ -379,6 +502,8 @@ class App(tk.Tk):
         self.topic_var = tk.StringVar()
         self.pub_teaser_var = tk.StringVar()
         self._image_paths = []
+        self._set_panel_bg(self.t_dub)
+        self._set_panel_bg(self.t_media)
 
     def _on_tab_changed(self, event):
         """Handle tab changes - hide/show buttons based on selected tab"""
