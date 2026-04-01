@@ -18,7 +18,7 @@ def _auth(api_key):
     return {"Authorization": f"Bearer {api_key}"}
 
 def _json_headers(api_key):
-    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json; charset=utf-8"}
 
 def _extract_str(val):
     if isinstance(val, str): return val

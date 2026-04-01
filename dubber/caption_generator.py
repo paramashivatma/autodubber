@@ -164,7 +164,7 @@ def _call_mistral(api_key, prompt, max_retries=3):
     url = "https://api.mistral.ai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
     }
     payload = {
         "model": "mistral-large-latest",
