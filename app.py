@@ -1,4 +1,5 @@
 import os, shutil, threading, tkinter as tk
+import re
 from tkinter import filedialog, ttk, messagebox
 
 import json
@@ -10,6 +11,7 @@ except Exception:
     ImageTk = None
 from dubber import (
     transcribe_audio, merge_short_segments, translate_segments,
+    get_translation_runtime_meta,
     generate_tts_audio, build_dubbed_video,
     extract_vision, generate_all_captions,
     generate_teaser, generate_teasers, log,  # Removed legacy publish_to_platforms
@@ -42,6 +44,30 @@ LANGUAGES = {
     "English":"en","Hindi":"hi","Gujarati":"gu",
     "Tamil":"ta","Telugu":"te","Kannada":"kn","Malayalam":"ml","Bengali":"bn",
 }
+
+DUB_TOTAL_STAGES = 11
+
+def _stage_text(step, label, total=DUB_TOTAL_STAGES):
+    return f"Stage {step}/{total} - {label}"
+
+def _is_quota_reason(reason):
+    s = str(reason or "").lower()
+    tokens = (
+        "quota", "429", "resource_exhausted", "rate limit", "limit: 0",
+        "too many requests", "exceeded", "daily"
+    )
+    return any(t in s for t in tokens)
+
+def _backup_warning(provider, reason, backup_label):
+    if _is_quota_reason(reason):
+        return (
+            f"⚠️ {provider} quota/rate limit reached. "
+            f"Using backup: {backup_label}. Reason: {reason}"
+        )
+    return (
+        f"⚠️ {provider} unavailable. "
+        f"Using backup: {backup_label}. Reason: {reason}"
+    )
 
 def _load_env():
     env = {}
@@ -118,35 +144,54 @@ def run_dub_pipeline(video_input, voice, model_size, src_lang, tgt_lang,
             status_cb("Separating background music ...")
             bgm_path = separate_background(video_path, WORKSPACE)
 
-        status_cb("Stage 1/5 - Transcribing ...")
+        status_cb(_stage_text(1, "Transcribe"))
         segs = transcribe_audio(video_path, WORKSPACE, model_size, src_lang)
-        status_cb("Stage 2/5 - Merging segments ...")
+        status_cb(_stage_text(2, "Merge segments"))
         segs = merge_short_segments(segs)
-        status_cb("Stage 3/5 - Translating ...")
+        status_cb(_stage_text(3, "Translate"))
         segs = translate_segments(segs, tgt_lang, WORKSPACE)
-        status_cb("Stage 4/5 - Generating TTS ...")
+        translate_meta = get_translation_runtime_meta()
+        if translate_meta.get("used_fallback"):
+            status_cb(
+                _backup_warning(
+                    "Gemini Translate",
+                    translate_meta.get("reason", "unknown"),
+                    "Google Translate"
+                )
+            )
+        status_cb(_stage_text(4, "Generate TTS"))
         segs = generate_tts_audio(segs, voice=voice, output_dir=WORKSPACE)
-        status_cb("Stage 5/5 - Building video ...")
+        status_cb(_stage_text(5, "Build video"))
         build_dubbed_video(video_path=video_path, segments=segs,
                            output_path=OUTPUT_FILE, bgm_path=bgm_path,
                            bgm_volume=bgm_volume, output_dir=WORKSPACE)
 
-        status_cb("Extracting content intelligence ...")
-        vision   = extract_vision(segs, gemini_vision_key, WORKSPACE)
-        status_cb("Generating captions ...")
-        captions = generate_all_captions(vision, mistral_key, WORKSPACE, segments=segs)
+        status_cb(_stage_text(6, "Extract insights"))
+        vision, vision_meta = extract_vision(segs, gemini_vision_key, WORKSPACE, return_meta=True)
+        if vision_meta.get("used_fallback"):
+            status_cb(_backup_warning("Gemini Vision", vision_meta.get("reason", "unknown"), "rule-based intelligence"))
+
+        status_cb(_stage_text(7, "Generate captions"))
+        captions, caption_meta = generate_all_captions(
+            vision, mistral_key, WORKSPACE, segments=segs, return_meta=True
+        )
+        if caption_meta.get("used_fallback"):
+            status_cb(_backup_warning("Mistral Caption API", caption_meta.get("reason", "unknown"), "template captions"))
 
         teaser_path  = None
         teaser_paths = {}
         if manual_teaser_path and os.path.exists(manual_teaser_path):
+            status_cb(_stage_text(8, "Use manual teaser"))
             teaser_path  = manual_teaser_path
             teaser_paths = {p: manual_teaser_path for p in PLATFORMS}
         elif auto_teaser:
-            status_cb("Generating per-platform teaser clips ...")
+            status_cb(_stage_text(8, "Generate teasers"))
             teaser_paths = generate_teasers(OUTPUT_FILE, segs, captions, WORKSPACE)
             teaser_path  = teaser_paths.get("instagram")
+        else:
+            status_cb(_stage_text(8, "Skip teasers"))
 
-        status_cb("Waiting for caption review ...")
+        status_cb(_stage_text(9, "Review captions"))
         caption_ready_cb(
             captions=captions, teaser_path=teaser_path,
             teaser_paths=teaser_paths,
@@ -178,7 +223,9 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
                 "date":              "None",
                 "theme":             "teaching",
             }
-            captions = generate_all_captions(vision, mistral_key, WORKSPACE)
+            captions, caption_meta = generate_all_captions(vision, mistral_key, WORKSPACE, return_meta=True)
+            if caption_meta.get("used_fallback"):
+                status_cb(_backup_warning("Mistral Caption API", caption_meta.get("reason", "unknown"), "template captions"))
         else:
             status_cb("Opening caption review for manual entry ...")
             captions = {p: {"caption":""} for p in PLATFORMS}
@@ -394,14 +441,32 @@ class App(tk.Tk):
         """Trim caption to platform character limits when needed."""
         limit = PLATFORM_LIMITS.get(platform)
         if limit is None:
-            return caption, False, None
-        text = str(caption or "").strip()
+            return self._normalize_caption_text(caption), False, None
+        text = self._normalize_caption_text(caption)
         if len(text) <= limit:
             return text, False, limit
         ellipsis = "..."
         cut = max(0, limit - len(ellipsis))
         trimmed = text[:cut].rstrip() + ellipsis
         return trimmed, True, limit
+
+    def _normalize_caption_text(self, caption):
+        """Remove stray quote artifacts and keep hashtags on a new line."""
+        text = str(caption or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        text = re.sub(r'^[\s"“”\'‘’`]+', "", text)
+        text = re.sub(r'[\s"“”\'‘’`]+$', "", text)
+        if "#" in text:
+            i = text.find("#")
+            if i > 0:
+                head = text[:i].rstrip()
+                tags = text[i:].lstrip()
+                if head and not head.endswith("\n"):
+                    text = f"{head}\n\n{tags}"
+                elif head:
+                    text = f"{head}\n{tags}"
+                else:
+                    text = tags
+        return re.sub(r"\n{3,}", "\n\n", text)
 
     def _translate_title_to_english(self, text):
         """Best-effort Gujarati->English translation for sheet title formatting."""
@@ -1288,7 +1353,12 @@ class App(tk.Tk):
         
         # Create custom status callback for dub results
         def dub_status_callback(message):
-            self.after(0, lambda: self._update_dub_results(message))
+            def _apply():
+                self._update_dub_results(message)
+                # Keep status bar aligned with pipeline activity stages/warnings.
+                if str(message).startswith("Stage ") or str(message).startswith("⚠"):
+                    self.status_var.set(message)
+            self.after(0, _apply)
         
         # Test callback immediately
         dub_status_callback("🔄 Initializing dub pipeline...")
@@ -1334,7 +1404,9 @@ class App(tk.Tk):
                     except Exception:
                         pass
 
-        self.progress.start(12); self.status_var.set("Publishing ...")
+        self.progress.start(12)
+        self._update_dub_results(_stage_text(10, "Publish"))
+        self.status_var.set(_stage_text(10, "Publish"))
 
         # Thread-safe progress callback for status bar updates
         def _thread_safe_progress(done, total, platform, status):
@@ -1379,6 +1451,8 @@ class App(tk.Tk):
                 # Log to Google Sheet after successful or unconfirmed publish
                 if ok > 0 or unconfirmed > 0:
                     try:
+                        self._queue_ui(lambda: self._update_dub_results(_stage_text(11, "Log to Google Sheet")))
+                        self._queue_ui(lambda: self.status_var.set(_stage_text(11, "Log to Google Sheet")))
                         from dubber.sheet_logger import quick_update_from_publish_result
                         formatted_title = self._build_video_sheet_title(approved, video_path)
                         sheet_success, sheet_msg = quick_update_from_publish_result(
@@ -1390,9 +1464,17 @@ class App(tk.Tk):
                             content_format="",  # keep blank for videos in sheet
                         )
                         log("PUBLISH", f"✅ Google Sheet update: {sheet_msg}")
+                        self._queue_ui(lambda: self._update_dub_results(f"✅ {_stage_text(11, 'Log to Google Sheet')} {sheet_msg}"))
                     
                     except ImportError:
                         log("PUBLISH", "⚠️ Google Sheet logger not available")
+                        self._queue_ui(lambda: self._update_dub_results("⚠️ Stage 11/11 - Google Sheet logger not available; skipped."))
+                else:
+                    self._queue_ui(
+                        lambda: self._update_dub_results(
+                            "⚠️ Stage 11/11 - Recording on Google Sheet skipped (no confirmed/unconfirmed publish results)."
+                        )
+                    )
                 
                 self._queue_ui(lambda: self.run_btn.config(state="normal"))
                 self._queue_ui(self.progress.stop)
