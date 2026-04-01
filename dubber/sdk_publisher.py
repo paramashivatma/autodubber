@@ -119,33 +119,75 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         log("PUBLISH", f"🚀 Creating post for {len(platform_list)} platforms...")
         log("PUBLISH", f"  Content: {default_content[:100]}...")
         log("PUBLISH", f"  Media: {len(media_urls)} files")
+        log("PUBLISH", f"  Platforms: {[p['platform'] for p in platform_list]}")
+        log("PUBLISH", f"  Publish Now: {publish_now}")
+        
+        # Debug: Print the exact SDK call
+        if media_urls:
+            log("PUBLISH", f"  SDK Call: client.posts.create(media_urls={len(media_urls)} files, content={len(default_content)} chars, platforms={len(platform_list)} platforms)")
+        else:
+            log("PUBLISH", f"  SDK Call: client.posts.create(content={len(default_content)} chars, platforms={len(platform_list)} platforms)")
         
         # Create the post - media_urls passed as separate parameter
-        if media_urls:
-            post_result = client.posts.create(media_urls=media_urls, **post_data)
-        else:
-            post_result = client.posts.create(**post_data)
+        try:
+            if media_urls:
+                post_result = client.posts.create(media_urls=media_urls, **post_data)
+            else:
+                post_result = client.posts.create(**post_data)
+            log("PUBLISH", f"  ✅ SDK call successful: {type(post_result)}")
+        except Exception as sdk_error:
+            log("PUBLISH", f"  ❌ SDK call failed: {sdk_error}")
+            raise sdk_error
         
         if progress_cb:
             progress_cb(len(platforms), len(platforms), "sdk", "completed")
         
-        # Extract results
-        post = post_result.get("post", {})
-        published_platforms = post.get("platforms", [])
+        # Extract results - handle SDK response objects
+        try:
+            # SDK returns response objects, not plain dicts
+            if hasattr(post_result, 'post'):
+                post = post_result.post
+            else:
+                post = post_result.get("post", {})
+            
+            # Get platforms list
+            if hasattr(post, 'platforms'):
+                published_platforms = post.platforms
+            elif isinstance(post, dict):
+                published_platforms = post.get("platforms", [])
+            else:
+                published_platforms = []
+                
+            log("PUBLISH", f"  📊 Response type: {type(post_result)}")
+            log("PUBLISH", f"  📊 Platforms in response: {len(published_platforms)}")
+            
+        except Exception as e:
+            log("PUBLISH", f"  ❌ Error parsing response: {e}")
+            published_platforms = []
         
         results = {}
         for platform_info in published_platforms:
-            platform_name = platform_info.get("platform", "unknown")
-            post_id = platform_info.get("id", "unknown")
-            status = "ok" if post_id != "unknown" else "error"
-            
-            results[platform_name] = {
-                "status": status,
-                "post_id": post_id,
-                "platform": platform_name
-            }
-            
-            log("PUBLISH", f"  ✅ {platform_name}: {status} (ID: {post_id})")
+            try:
+                # Handle both object and dict formats
+                if isinstance(platform_info, dict):
+                    platform_name = platform_info.get("platform", "unknown")
+                    post_id = platform_info.get("id", platform_info.get("_id", "unknown"))
+                else:
+                    platform_name = getattr(platform_info, 'platform', 'unknown')
+                    post_id = getattr(platform_info, 'id', getattr(platform_info, '_id', 'unknown'))
+                
+                status = "ok" if post_id and post_id != "unknown" else "error"
+                
+                results[platform_name] = {
+                    "status": status,
+                    "post_id": post_id,
+                    "platform": platform_name
+                }
+                
+                log("PUBLISH", f"  ✅ {platform_name}: {status} (ID: {post_id})")
+                
+            except Exception as e:
+                log("PUBLISH", f"  ❌ Error processing platform {platform_info}: {e}")
         
         log("PUBLISH", f"🎉 SDK publishing completed! {len(results)} platforms")
         return results
