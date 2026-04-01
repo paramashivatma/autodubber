@@ -374,11 +374,14 @@ def publish_with_preuploaded_urls_sync(api_key, captions, platforms, upload_resu
                                       progress_cb=None, fallback_files=None):
     """
     Sync wrapper for publish_with_preuploaded_urls to work in GUI context
+    Uses threading to avoid blocking the GUI thread
     """
     import threading
+    import time
     
     result_container = {}
     exception_container = {}
+    thread_done = threading.Event()
     
     def run_in_thread():
         try:
@@ -390,12 +393,24 @@ def publish_with_preuploaded_urls_sync(api_key, captions, platforms, upload_resu
             result_container['result'] = result
         except Exception as e:
             exception_container['exception'] = e
+        finally:
+            thread_done.set()  # Signal that thread is done
     
-    # Run in separate thread to avoid asyncio.run() in event loop
+    # Start thread in background (don't block GUI)
     thread = threading.Thread(target=run_in_thread)
+    thread.daemon = True  # Allow main program to exit even if thread is running
     thread.start()
-    thread.join()
     
+    # Wait for thread to complete but allow GUI to remain responsive
+    while not thread_done.is_set():
+        if progress_cb:
+            # Keep GUI responsive by yielding control
+            time.sleep(0.1)
+        else:
+            # If no progress callback, just wait efficiently
+            thread_done.wait(timeout=0.1)
+    
+    # Check for exceptions
     if 'exception' in exception_container:
         raise exception_container['exception']
     
