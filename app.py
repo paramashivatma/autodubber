@@ -64,10 +64,24 @@ def _count_successful_results(results):
         return 0
     if "error" in results and len(results) == 1:
         return 0
-    return sum(
-        1 for v in results.values()
-        if isinstance(v, dict) and "error" not in v and v.get("status", "ok") != "error"
-    )
+    ok = 0
+    for v in results.values():
+        if isinstance(v, bool):
+            ok += 1 if v else 0
+            continue
+        if not isinstance(v, dict):
+            continue
+        status = str(v.get("status", "")).lower()
+        if status in {"ok", "published", "success", "submitted", "queued", "processing"}:
+            ok += 1
+            continue
+        if status in {"error", "failed", "fail"} or "error" in v:
+            continue
+        # Fallback: some providers may only return IDs for success.
+        post_id = v.get("post_id") or v.get("_id") or v.get("id") or v.get("platformPostId")
+        if post_id:
+            ok += 1
+    return ok
 
 
 def run_dub_pipeline(video_input, voice, model_size, src_lang, tgt_lang,
@@ -183,6 +197,9 @@ class App(tk.Tk):
         self._env         = _load_env()
         self._image_paths = []
         self._header_photo = None
+        self._publish_state_lock = threading.Lock()
+        self._dub_publish_active = False
+        self._flyer_publish_active = False
         self._init_theme()
         self._build_ui()
 
@@ -324,15 +341,23 @@ class App(tk.Tk):
         )
 
         def _on_enter(_event):
+            if str(button.cget("state")) == "disabled":
+                return
             button.configure(bg=hover)
 
         def _on_leave(_event):
+            if str(button.cget("state")) == "disabled":
+                return
             button.configure(bg=normal)
 
         def _on_press(_event):
+            if str(button.cget("state")) == "disabled":
+                return
             button.configure(bg=pressed)
 
         def _on_release(_event):
+            if str(button.cget("state")) == "disabled":
+                return
             inside = button.winfo_containing(button.winfo_pointerx(), button.winfo_pointery()) == button
             button.configure(bg=hover if inside else normal)
 
@@ -340,6 +365,17 @@ class App(tk.Tk):
         button.bind("<Leave>", _on_leave)
         button.bind("<ButtonPress-1>", _on_press)
         button.bind("<ButtonRelease-1>", _on_release)
+
+    def _set_flyer_publish_ready(self, ready, reason=""):
+        """Enable Publish Content only after successful flyer processing."""
+        self._flyer_publish_ready = bool(ready)
+        if hasattr(self, "publish_flyer_btn"):
+            if ready:
+                self.publish_flyer_btn.config(state="normal", bg=self._colors["success"], disabledforeground="#f3f4f6")
+            else:
+                self.publish_flyer_btn.config(state="disabled", bg="#9ca3af", disabledforeground="#f3f4f6")
+        if reason and hasattr(self, "status_var"):
+            self.status_var.set(reason)
 
     def _fit_caption_for_platform(self, platform, caption):
         """Trim caption to platform character limits when needed."""
@@ -386,6 +422,28 @@ class App(tk.Tk):
             return True
         except RuntimeError:
             return False
+
+    def _try_begin_publish(self, kind):
+        """Return True only for the first active publish of a given kind."""
+        with self._publish_state_lock:
+            if kind == "dub":
+                if self._dub_publish_active:
+                    return False
+                self._dub_publish_active = True
+                return True
+            if kind == "flyer":
+                if self._flyer_publish_active:
+                    return False
+                self._flyer_publish_active = True
+                return True
+            return False
+
+    def _end_publish(self, kind):
+        with self._publish_state_lock:
+            if kind == "dub":
+                self._dub_publish_active = False
+            elif kind == "flyer":
+                self._flyer_publish_active = False
 
     def _build_ui(self):
         pad = {"padx": 12, "pady": 6}
@@ -559,6 +617,7 @@ class App(tk.Tk):
         self.flyer_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(self.t_media, text="Publish immediately",
                        variable=self.flyer_publish_now_var, value=True, font=("Segoe UI", 9)).grid(row=17,column=0,columnspan=2,sticky="w",**pad)
+        self._flyer_publish_ready = False
 
         # Bottom action bar
         bot = tk.Frame(self, bg=self._colors["panel"], relief="solid", bd=1, padx=10, pady=8)
@@ -627,6 +686,7 @@ class App(tk.Tk):
 
         self.process_flyer_btn.pack_forget()
         self.publish_flyer_btn.pack_forget()
+        self._set_flyer_publish_ready(False)
 
         self.progress = ttk.Progressbar(self, mode="indeterminate", style="Modern.Horizontal.TProgressbar")
         self.progress.pack(fill="x", padx=16, pady=(0, 6))
@@ -686,6 +746,7 @@ class App(tk.Tk):
         self.flyer_paths = []  # Clear multiple images
         self.flyer_count_label.config(text="")
         self.flyer_results.delete(1.0, tk.END)
+        self._set_flyer_publish_ready(False, "Flyer cleared. Process flyer to enable publishing.")
     
     def _clear_dub_results(self):
             """Clear dub results"""
@@ -732,6 +793,7 @@ class App(tk.Tk):
             
             # Store single path for compatibility
             self.flyer_path = file_paths[0]
+            self._set_flyer_publish_ready(False, "Flyer selected. Process flyer to enable publishing.")
     
     def _process_flyer(self):
         """Process flyer to extract text and generate content"""
@@ -744,6 +806,7 @@ class App(tk.Tk):
             return
         
         try:
+            self._set_flyer_publish_ready(False, "Processing flyer...")
             self.flyer_results.delete(1.0, tk.END)
             self.flyer_results.insert(tk.END, "🔄 Processing flyer...\n\n")
             
@@ -827,17 +890,31 @@ class App(tk.Tk):
                     self.after(30000, lambda: self._delayed_cleanup(workspace_dir))
                 else:
                     self.flyer_results.insert(tk.END, f"💡 Files will remain - use '🧹 Clean' button when ready\n")
+
+            captions_ok = isinstance(captions, dict) and bool(captions) and "error" not in captions
+            if captions_ok:
+                self._set_flyer_publish_ready(True, "Flyer ready. You can publish now.")
+            else:
+                self._set_flyer_publish_ready(False, "Captions not ready. Fix processing issues before publishing.")
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to process flyer: {str(e)}")
             self.flyer_results.insert(tk.END, f"❌ Error: {str(e)}\n")
+            self._set_flyer_publish_ready(False, "Processing failed. Publish remains disabled.")
 
     def _publish_flyer_content(self):
         """Publish the generated flyer content"""
         try:
+            if not getattr(self, "_flyer_publish_ready", False):
+                messagebox.showwarning("Not Ready", "Process flyer first. Publish is enabled only after successful processing.")
+                return
+            if not self._try_begin_publish("flyer"):
+                messagebox.showwarning("Already Publishing", "A flyer publish is already in progress. Please wait.")
+                return
             # Check if captions exist
             captions_file = os.path.join("workspace", "flyer_captions.json")
             if not os.path.exists(captions_file):
+                self._end_publish("flyer")
                 messagebox.showerror("No Content", "Please process the flyer first to generate captions!")
                 return
             
@@ -847,6 +924,7 @@ class App(tk.Tk):
             
             # Check if flyer image exists
             if not self.flyer_path or not os.path.exists(self.flyer_path):
+                self._end_publish("flyer")
                 messagebox.showerror("No Image", "Please select a flyer image first!")
                 return
             
@@ -855,6 +933,7 @@ class App(tk.Tk):
             print(f"DEBUG: Selected flyer platforms: {selected}")
             
             if not selected:
+                self._end_publish("flyer")
                 messagebox.showwarning("No Platforms", 
                     "Please select at least one image-compatible platform (Instagram, Facebook, X, Threads, Bluesky)!\n\nNote: YouTube and TikTok don't support image publishing.")
                 return
@@ -862,6 +941,7 @@ class App(tk.Tk):
             # Get API keys
             zernio_key = self.zernio_key_var.get().strip()
             if not zernio_key:
+                self._end_publish("flyer")
                 messagebox.showerror("No API Key", "Please enter Zernio API key in AI & Publish tab!")
                 return
             
@@ -901,6 +981,7 @@ class App(tk.Tk):
                 f"Publish flyer to {len(selected)} platform(s):\n{', '.join(selected)}\n\nImage: {os.path.basename(self.flyer_path)}\n\nClick YES to publish, NO to test mode (no actual posting)")
             if not result:  # User clicked NO = test mode
                 # Test mode - show what would be published without actually posting
+                self._end_publish("flyer")
                 self._test_flyer_publish(selected, publish_captions)
                 return
             
@@ -939,10 +1020,13 @@ class App(tk.Tk):
                     
                 except Exception as e:
                     self._queue_ui(lambda: self._flyer_publish_done(0, 1, {"error": str(e)}))
+                finally:
+                    self._end_publish("flyer")
             
             threading.Thread(target=_publish_thread, daemon=True).start()
             
         except Exception as e:
+            self._end_publish("flyer")
             messagebox.showerror("Error", f"Failed to publish: {str(e)}")
 
     def _test_flyer_publish(self, platforms, captions):
@@ -985,7 +1069,7 @@ class App(tk.Tk):
             if isinstance(result, dict):
                 status = str(result.get("status", "")).lower()
                 post_id = result.get("post_id") or result.get("_id") or "n/a"
-                if status == "ok":
+                if status in {"ok", "published", "success", "submitted", "queued", "processing"}:
                     success_lines.append(f"✅ {platform}: {post_id}")
                 else:
                     err_msg = result.get("error") or result.get("error_message") or "Unknown error"
@@ -1178,6 +1262,9 @@ class App(tk.Tk):
             self.run_btn.config(state="normal")
             self.status_var.set("Publishing cancelled."); return
         approved = dlg.result
+        if not self._try_begin_publish("dub"):
+            self.status_var.set("A publish is already in progress. Please wait.")
+            return
 
         def _safe_done(success, msg, pub_results=None):
             if done_cb:
@@ -1212,7 +1299,8 @@ class App(tk.Tk):
                 )
                 
                 ok = _count_successful_results(results)
-                msg = f"Published {ok} post(s)." if ok else "All posts failed — check log."
+                total = len(selected_platforms or [])
+                msg = f"Published {ok}/{total} platform(s)." if ok else f"Published 0/{total} platform(s)."
                 
                 # Log to Google Sheet after successful publish
                 if ok > 0:
@@ -1244,6 +1332,8 @@ class App(tk.Tk):
                 self._queue_ui(self.progress.stop)
                 self._queue_ui(lambda: self.status_var.set(f"Publishing failed: {e}"))
                 _safe_done(success=False, msg=f"Publishing failed: {e}", pub_results={"error": str(e)})
+            finally:
+                self._end_publish("dub")
         
         threading.Thread(target=_publish, daemon=True).start()
 
