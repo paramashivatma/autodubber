@@ -8,7 +8,9 @@ from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConn
 from dubber.utils import log, PLATFORM_ACCOUNTS
 
 def upload_large_file(client, file_path):
-    """Upload large file using Zernio SDK's built-in upload_large method"""
+    """Upload large file using multiple smart approaches"""
+    
+    # Method 1: Try native Zernio SDK with Vercel Blob token
     try:
         # Get Vercel Blob token from environment or config
         vercel_token = os.environ.get('VERCEL_BLOB_TOKEN')
@@ -22,29 +24,85 @@ def upload_large_file(client, file_path):
                             vercel_token = line.split('=', 1)[1].strip()
                             break
         
-        if not vercel_token:
-            raise Exception("VERCEL_BLOB_TOKEN not found in environment or .env file. Add it to your .env file: VERCEL_BLOB_TOKEN=vercel_blob_rw_your_token_here")
+        if vercel_token:
+            log("PUBLISH", f"  📤 Using Zernio SDK upload_large with Vercel token...")
+            
+            def progress_callback(progress):
+                log("PUBLISH", f"  📊 Upload progress: {progress.percentage:.1f}%")
+            
+            result = client.media.upload_large(
+                file_path,
+                vercel_token=vercel_token,
+                on_progress=progress_callback
+            )
+            
+            public_url = result.url
+            log("PUBLISH", f"  ✅ Large file uploaded: {public_url[:50]}...")
+            return public_url
+            
+    except Exception as e:
+        log("PUBLISH", f"  ⚠️ Vercel upload failed: {e}")
+    
+    # Method 2: Try generate upload token (browser-based)
+    try:
+        log("PUBLISH", f"  🔄 Trying upload token method...")
+        token_response = client.media.generate_upload_token()
         
-        log("PUBLISH", f"  📤 Using Zernio SDK upload_large for large file...")
+        log("PUBLISH", f"  🌐 Upload URL generated: {token_response.uploadUrl}")
+        log("PUBLISH", f"  ⏳ Please upload your file manually at: {token_response.uploadUrl}")
+        log("PUBLISH", f"  🔍 Token: {token_response.token}")
         
-        # Use Zernio's built-in upload_large method
-        def progress_callback(progress):
-            log("PUBLISH", f"  📊 Upload progress: {progress.percentage:.1f}%")
+        # For now, we'll wait a bit and check if file was uploaded
+        import time
+        log("PUBLISH", f"  ⏱️ Waiting 30 seconds for manual upload...")
         
-        result = client.media.upload_large(
-            file_path,
-            vercel_token=vercel_token,
-            on_progress=progress_callback
-        )
+        # In a real implementation, you'd want to:
+        # 1. Open the URL in browser automatically
+        # 2. Show a dialog to user
+        # 3. Poll for upload completion
         
-        # Get the public URL from the response
-        public_url = result.url
-        log("PUBLISH", f"  ✅ Large file uploaded: {public_url[:50]}...")
-        return public_url
+        for i in range(30):
+            time.sleep(1)
+            try:
+                files_response = client.media.check_upload_token(token_response.token)
+                if hasattr(files_response, 'files') and files_response.files:
+                    # Get first uploaded file
+                    uploaded_file = files_response.files[0]
+                    public_url = uploaded_file.url
+                    log("PUBLISH", f"  ✅ File uploaded via browser: {public_url[:50]}...")
+                    return public_url
+            except:
+                continue
+        
+        log("PUBLISH", f"  ⏰ Timeout waiting for manual upload")
         
     except Exception as e:
-        log("PUBLISH", f"  ❌ Large file upload failed: {e}")
-        raise e
+        log("PUBLISH", f"  ⚠️ Upload token method failed: {e}")
+    
+    # Method 3: Last resort - try direct upload (will likely fail for large files)
+    try:
+        log("PUBLISH", f"  🔄 Trying direct upload (may fail for large files)...")
+        result = client.media.upload(file_path)
+        if hasattr(result, 'files') and result.files:
+            public_url = result.files[0].url
+            log("PUBLISH", f"  ✅ Direct upload worked: {public_url[:50]}...")
+            return public_url
+            
+    except Exception as e:
+        log("PUBLISH", f"  ⚠️ Direct upload failed: {e}")
+    
+    # All methods failed
+    error_msg = """All upload methods failed. Options:
+    
+1. 🌐 ADD VERCEL_BLOB_TOKEN to .env file for automatic upload
+   Get token at: https://vercel.com/docs/storage/vercel-blob
+   
+2. 🌐 Use browser upload method (manual upload required)
+   
+3. 📏 Reduce video file size to under 4MB for direct upload"""
+    
+    log("PUBLISH", f"  ❌ {error_msg}")
+    raise Exception(error_msg)
 
 def publish_with_sdk(api_key, captions, platforms, upload_results=None, 
                     scheduled_for=None, publish_now=True, teaser_captions=None, 
