@@ -21,39 +21,6 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         if progress_cb:
             progress_cb(0, len(platforms), "sdk", "initializing")
         
-        # Prepare platform list
-        platform_list = []
-        for platform in platforms:
-            account_id = PLATFORM_ACCOUNTS.get(platform)
-            if account_id:
-                platform_entry = {
-                    "platform": platform,
-                    "accountId": account_id
-                }
-                
-                # Add platform-specific content if available
-                platform_caption = captions.get(platform, {})
-                if isinstance(platform_caption, dict):
-                    caption_text = platform_caption.get("caption", "")
-                    if caption_text:
-                        platform_entry["platformSpecificContent"] = caption_text
-                
-                # Add YouTube-specific fields
-                if platform == "youtube":
-                    yt_data = captions.get("youtube", {})
-                    if isinstance(yt_data, dict) and yt_data.get("title"):
-                        platform_entry["youtubeTitle"] = yt_data["title"]
-                
-                platform_list.append(platform_entry)
-                log("PUBLISH", f"  ✅ {platform}: {account_id}")
-            else:
-                log("PUBLISH", f"  ❌ {platform}: No account ID configured")
-        
-        if not platform_list:
-            error_msg = "No valid platform accounts configured"
-            log("PUBLISH", f"❌ {error_msg}")
-            return {"error": error_msg}
-        
         # Prepare media URLs - upload video if needed
         media_urls = []
         if upload_results:
@@ -82,18 +49,55 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                     log("PUBLISH", f"  ❌ Upload failed: {e}")
                     return {"error": f"Media upload failed: {e}"}
         
-        # Get default content (use first available caption)
+        # Get default content (use first available caption as fallback)
         default_content = ""
-        for platform_data in captions.values():
+        platform_specific_contents = {}
+        
+        for platform, platform_data in captions.items():
             if isinstance(platform_data, dict) and platform_data.get("caption"):
-                default_content = platform_data["caption"]
-                break
+                caption_text = platform_data["caption"]
+                if not default_content:
+                    default_content = caption_text  # First one becomes default
+                # Store platform-specific content (will be used if different from default)
+                platform_specific_contents[platform] = caption_text
             elif isinstance(platform_data, str):
-                default_content = platform_data
-                break
+                if not default_content:
+                    default_content = platform_data  # First one becomes default
+                platform_specific_contents[platform] = platform_data
         
         if not default_content:
             default_content = "Published via AutoDubber"
+        
+        # Prepare platform list
+        platform_list = []
+        for platform in platforms:
+            account_id = PLATFORM_ACCOUNTS.get(platform)
+            if account_id:
+                platform_entry = {
+                    "platform": platform,
+                    "accountId": account_id
+                }
+                
+                # Add platform-specific content if different from default
+                platform_content = platform_specific_contents.get(platform, "")
+                if platform_content and platform_content != default_content:
+                    platform_entry["platformSpecificContent"] = platform_content
+                
+                # Add YouTube-specific fields
+                if platform == "youtube":
+                    yt_data = captions.get("youtube", {})
+                    if isinstance(yt_data, dict) and yt_data.get("title"):
+                        platform_entry["youtubeTitle"] = yt_data["title"]
+                
+                platform_list.append(platform_entry)
+                log("PUBLISH", f"  ✅ {platform}: {account_id}")
+            else:
+                log("PUBLISH", f"  ❌ {platform}: No account ID configured")
+        
+        if not platform_list:
+            error_msg = "No valid platform accounts configured"
+            log("PUBLISH", f"❌ {error_msg}")
+            return {"error": error_msg}
         
         if progress_cb:
             progress_cb(1, len(platforms), "sdk", "uploading_media")
