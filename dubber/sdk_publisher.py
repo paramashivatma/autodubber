@@ -149,49 +149,60 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         if progress_cb:
             progress_cb(len(platforms), len(platforms), "sdk", "completed")
         
-        # Extract results - handle SDK response objects
+        # Extract results - handle actual SDK response format
         try:
-            # SDK returns response objects, not plain dicts
-            if hasattr(post_result, 'post'):
-                post = post_result.post
-            else:
-                post = post_result.get("post", {})
+            # The SDK returns PostCreateResponse objects with complex structure
+            published_platforms = []
             
-            # Get platforms list
-            if hasattr(post, 'platforms'):
-                published_platforms = post.platforms
-            elif isinstance(post, dict):
-                published_platforms = post.get("platforms", [])
+            if hasattr(post_result, 'post'):
+                post_obj = post_result.post
+                if hasattr(post_obj, 'platforms'):
+                    published_platforms = post_obj.platforms
+                    log("PUBLISH", f"  📊 Got platforms from post.platforms: {len(published_platforms)}")
+                else:
+                    log("PUBLISH", f"  ❌ No platforms attribute on post object")
+            elif isinstance(post_result, dict):
+                post = post_result.get('post', {})
+                published_platforms = post.get('platforms', [])
+                log("PUBLISH", f"  📊 Got platforms from dict: {len(published_platforms)}")
             else:
-                published_platforms = []
+                log("PUBLISH", f"  ❌ Unknown response format: {type(post_result)}")
                 
             log("PUBLISH", f"  📊 Response type: {type(post_result)}")
             log("PUBLISH", f"  📊 Platforms in response: {len(published_platforms)}")
             
         except Exception as e:
             log("PUBLISH", f"  ❌ Error parsing response: {e}")
+            import traceback
+            traceback.print_exc()
             published_platforms = []
         
         results = {}
         for platform_info in published_platforms:
             try:
-                # Handle both object and dict formats
-                if isinstance(platform_info, dict):
+                # Handle SDK PlatformTarget objects
+                if hasattr(platform_info, 'platform'):
+                    platform_name = platform_info.platform
+                    post_id = getattr(platform_info, 'platformPostId', 'unknown')
+                    status = getattr(platform_info, 'status', 'unknown')
+                elif isinstance(platform_info, dict):
                     platform_name = platform_info.get("platform", "unknown")
-                    post_id = platform_info.get("id", platform_info.get("_id", "unknown"))
+                    post_id = platform_info.get("platformPostId", platform_info.get("id", platform_info.get("_id", "unknown")))
+                    status = platform_info.get("status", "unknown")
                 else:
-                    platform_name = getattr(platform_info, 'platform', 'unknown')
-                    post_id = getattr(platform_info, 'id', getattr(platform_info, '_id', 'unknown'))
+                    platform_name = "unknown"
+                    post_id = "unknown"
+                    status = "error"
                 
-                status = "ok" if post_id and post_id != "unknown" else "error"
+                success = status == 'published' or (post_id and post_id != "unknown")
                 
                 results[platform_name] = {
-                    "status": status,
+                    "status": "ok" if success else "error",
                     "post_id": post_id,
                     "platform": platform_name
                 }
                 
-                log("PUBLISH", f"  ✅ {platform_name}: {status} (ID: {post_id})")
+                log("PUBLISH", f"  ✅ {platform_name}: {'ok' if success else 'error'} (ID: {post_id})")
                 
             except Exception as e:
                 log("PUBLISH", f"  ❌ Error processing platform {platform_info}: {e}")
