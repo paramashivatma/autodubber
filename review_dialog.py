@@ -143,39 +143,67 @@ class ReviewDialog(tk.Toplevel):
 
     def update_progress(self, message, platform=None, status=None):
         """Update the progress display with publishing status"""
-        if not self._publishing:
-            return
-            
-        if platform and status:
-            if status == "started":
-                self._progress_text.insert(tk.END, f"🔄 Publishing to {platform}...\n")
-            elif status == "success":
-                self._progress_text.insert(tk.END, f"✅ Published to {platform}\n")
-            elif status == "error":
-                self._progress_text.insert(tk.END, f"❌ Failed on {platform}: {message}\n")
+        try:
+            # Check if widget still exists before trying to use it
+            if not hasattr(self, '_progress_text') or not self._progress_text.winfo_exists():
+                return
+                
+            if not self._publishing:
+                return
+                
+            if platform and status:
+                if status == "started":
+                    self._progress_text.insert(tk.END, f"🔄 Publishing to {platform}...\n")
+                elif status == "success":
+                    self._progress_text.insert(tk.END, f"✅ Published to {platform}\n")
+                elif status == "error":
+                    self._progress_text.insert(tk.END, f"❌ Failed on {platform}: {message}\n")
+                else:
+                    self._progress_text.insert(tk.END, f"{message}\n")
             else:
                 self._progress_text.insert(tk.END, f"{message}\n")
-        else:
-            self._progress_text.insert(tk.END, f"{message}\n")
+                
+            self._progress_text.see(tk.END)
+            self.update_idletasks()
             
-        self._progress_text.see(tk.END)
-        self.update_idletasks()
+        except tk.TclError as e:
+            # Widget was destroyed, ignore the error
+            print(f"[PROGRESS] Widget destroyed: {e}")
+        except Exception as e:
+            # Other errors, print but don't crash
+            print(f"[PROGRESS] Error: {e}")
 
     def publishing_complete(self, success=True, message=""):
         """Call when publishing is complete"""
-        self._publishing = False
-        
-        if success:
-            self._status_lbl.config(text=f"✅ {message}", fg="#2e7d32")
-            self._progress_text.insert(tk.END, f"\n🎉 {message}\n")
-        else:
-            self._status_lbl.config(text=f"❌ {message}", fg="#c62828")
-            self._progress_text.insert(tk.END, f"\n❌ {message}\n")
+        try:
+            self._publishing = False
             
-        self._progress_text.see(tk.END)
-        self._approve_btn.pack_forget()
-        self._cancel_btn.pack_forget()
-        self._close_btn.pack(side="left", padx=6)
+            # Check if widgets still exist
+            if hasattr(self, '_status_lbl') and self._status_lbl.winfo_exists():
+                if success:
+                    self._status_lbl.config(text=f"✅ {message}", fg="#2e7d32")
+                else:
+                    self._status_lbl.config(text=f"❌ {message}", fg="#c62828")
+            
+            if hasattr(self, '_progress_text') and self._progress_text.winfo_exists():
+                if success:
+                    self._progress_text.insert(tk.END, f"\n🎉 {message}\n")
+                else:
+                    self._progress_text.insert(tk.END, f"\n❌ {message}\n")
+                self._progress_text.see(tk.END)
+            
+            # Update buttons
+            if hasattr(self, '_approve_btn') and self._approve_btn.winfo_exists():
+                self._approve_btn.pack_forget()
+            if hasattr(self, '_cancel_btn') and self._cancel_btn.winfo_exists():
+                self._cancel_btn.pack_forget()
+            if hasattr(self, '_close_btn') and self._close_btn.winfo_exists():
+                self._close_btn.pack(side="left", padx=6)
+                
+        except tk.TclError as e:
+            print(f"[COMPLETE] Widget destroyed: {e}")
+        except Exception as e:
+            print(f"[COMPLETE] Error: {e}")
         
     def _cancel(self):
         if self._publishing:

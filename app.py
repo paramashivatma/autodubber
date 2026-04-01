@@ -824,7 +824,8 @@ class App(tk.Tk):
                     teaser_paths=teaser_paths,
                     image_paths=image_paths,
                     output_dir=WORKSPACE,
-                    progress_cb=_thread_safe_progress
+                    progress_cb=_thread_safe_progress,
+                    fallback_files={"main_video": video_path}  # Pass video for upload
                 )
                 
                 ok = sum(1 for v in results.values() if not (isinstance(v,dict) and "error" in v))

@@ -54,7 +54,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             log("PUBLISH", f"❌ {error_msg}")
             return {"error": error_msg}
         
-        # Prepare media URLs
+        # Prepare media URLs - upload video if needed
         media_urls = []
         if upload_results:
             # Add main video
@@ -68,6 +68,19 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 if platform.startswith("teaser_") and teaser_url:
                     media_urls.append(teaser_url)
                     log("PUBLISH", f"  ✅ Teaser {platform}: {teaser_url[:50]}...")
+        
+        # If no media URLs, we need to upload the video
+        if not media_urls and fallback_files:
+            log("PUBLISH", "🔄 Uploading media files...")
+            main_video_path = fallback_files.get("main_video")
+            if main_video_path and os.path.exists(main_video_path):
+                try:
+                    result = client.media.upload(main_video_path)
+                    media_urls.append(result["publicUrl"])
+                    log("PUBLISH", f"  ✅ Uploaded main video: {result['publicUrl'][:50]}...")
+                except Exception as e:
+                    log("PUBLISH", f"  ❌ Upload failed: {e}")
+                    return {"error": f"Media upload failed: {e}"}
         
         # Get default content (use first available caption)
         default_content = ""
@@ -85,18 +98,6 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         if progress_cb:
             progress_cb(1, len(platforms), "sdk", "uploading_media")
         
-        # Upload media if we have local files and no URLs
-        if not media_urls and fallback_files:
-            log("PUBLISH", "🔄 Uploading media files...")
-            main_video_path = fallback_files.get("main_video")
-            if main_video_path and os.path.exists(main_video_path):
-                try:
-                    result = client.media.upload(main_video_path)
-                    media_urls.append(result["publicUrl"])
-                    log("PUBLISH", f"  ✅ Uploaded main video: {result['publicUrl'][:50]}...")
-                except Exception as e:
-                    log("PUBLISH", f"  ❌ Upload failed: {e}")
-        
         if progress_cb:
             progress_cb(2, len(platforms), "sdk", "creating_post")
         
@@ -107,10 +108,6 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             "publish_now": publish_now,
         }
         
-        # Add media if available
-        if media_urls:
-            post_data["media_urls"] = media_urls
-        
         # Add scheduling if provided
         if scheduled_for:
             post_data["scheduled_for"] = scheduled_for
@@ -119,8 +116,11 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         log("PUBLISH", f"  Content: {default_content[:100]}...")
         log("PUBLISH", f"  Media: {len(media_urls)} files")
         
-        # Create the post
-        post_result = client.posts.create(**post_data)
+        # Create the post - media_urls passed as separate parameter
+        if media_urls:
+            post_result = client.posts.create(media_urls=media_urls, **post_data)
+        else:
+            post_result = client.posts.create(**post_data)
         
         if progress_cb:
             progress_cb(len(platforms), len(platforms), "sdk", "completed")
