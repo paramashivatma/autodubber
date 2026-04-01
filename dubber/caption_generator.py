@@ -350,7 +350,15 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
             if "#kailasa" not in caption.lower() or "#nithyananda" not in caption.lower():
                 log("CAPTION",f"Missing required tags for {p} — regenerating...")
                 try:
-                    new_captions = _call_mistral(vision_data, mistral_key)
+                    # Build regeneration prompt
+                    retry_prompt = (
+                        f"{prompt}\n\nCRITICAL: The previous caption for {p} was missing required hashtags. "
+                        f"Must include both #KAILASA and #Nithyananda hashtags. "
+                        f"Regenerate the caption for {p} with proper hashtags. "
+                        f"Return full JSON for all 7 platforms."
+                    )
+                    raw = _call_mistral(mistral_key, retry_prompt)
+                    new_captions = _parse_raw(raw)
                     if new_captions.get(p) and new_captions[p].get("caption"):
                         captions[p] = new_captions[p]
                         log("CAPTION",f"Regenerated caption for {p}")
@@ -362,7 +370,15 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
             if not _contains_gujarati(caption):
                 log("CAPTION",f"No Gujarati characters in {p} caption — regenerating...")
                 try:
-                    new_captions = _call_mistral(vision_data, mistral_key)
+                    # Build regeneration prompt
+                    retry_prompt = (
+                        f"{prompt}\n\nCRITICAL: The previous caption for {p} had no Gujarati characters. "
+                        f"Must be written in Gujarati language with Sanskritized terms. "
+                        f"Regenerate the caption for {p} in proper Gujarati. "
+                        f"Return full JSON for all 7 platforms."
+                    )
+                    raw = _call_mistral(mistral_key, retry_prompt)
+                    new_captions = _parse_raw(raw)
                     if new_captions.get(p) and new_captions[p].get("caption"):
                         captions[p] = new_captions[p]
                         log("CAPTION",f"Regenerated caption for {p}")
