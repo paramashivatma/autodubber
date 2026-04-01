@@ -3,6 +3,11 @@ from tkinter import filedialog, ttk, messagebox
 
 import json
 import os
+try:
+    from PIL import Image, ImageTk
+except Exception:
+    Image = None
+    ImageTk = None
 from dubber import (
     transcribe_audio, merge_short_segments, translate_segments,
     generate_tts_audio, build_dubbed_video,
@@ -177,6 +182,7 @@ class App(tk.Tk):
         self.resizable(True, True)
         self._env         = _load_env()
         self._image_paths = []
+        self._header_photo = None
         self._init_theme()
         self._build_ui()
 
@@ -386,20 +392,40 @@ class App(tk.Tk):
 
         header = tk.Frame(self, bg=self._colors["panel"], relief="solid", bd=1)
         header.pack(fill="x", padx=16, pady=(14, 8))
+        header_left = tk.Frame(header, bg=self._colors["panel"])
+        header_left.pack(side="left", fill="both", expand=True, padx=14, pady=10)
         tk.Label(
-            header,
+            header_left,
             text="AutoDub Studio",
             bg=self._colors["panel"],
             fg=self._colors["text"],
             font=("Segoe UI Semibold", 16),
-        ).pack(anchor="w", padx=14, pady=(10, 0))
+        ).pack(anchor="w")
         tk.Label(
-            header,
+            header_left,
             text="Dub videos and publish multilingual content with a guided review flow.",
             bg=self._colors["panel"],
             fg=self._colors["muted"],
             font=("Segoe UI", 10),
-        ).pack(anchor="w", padx=14, pady=(2, 10))
+        ).pack(anchor="w", pady=(2, 0))
+
+        header_right = tk.Frame(header, bg=self._colors["panel"])
+        header_right.pack(side="right", padx=12, pady=8)
+        img_path = r"C:\Users\Sri Paramashivatma\Pictures\swamijiprofile_picture-bg removed.png"
+        if Image is not None and ImageTk is not None and os.path.exists(img_path):
+            try:
+                img = Image.open(img_path).convert("RGBA")
+                img.thumbnail((88, 88), Image.Resampling.LANCZOS)
+                self._header_photo = ImageTk.PhotoImage(img)
+                tk.Label(
+                    header_right,
+                    image=self._header_photo,
+                    bg=self._colors["panel"],
+                    bd=0,
+                    highlightthickness=0,
+                ).pack()
+            except Exception:
+                pass
 
         self.nb = ttk.Notebook(self, style="Modern.TNotebook")
         self.nb.pack(fill="both", expand=True, padx=16, pady=6)
