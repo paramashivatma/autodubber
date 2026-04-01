@@ -155,7 +155,16 @@ def _is_success_result(result) -> bool:
         return False
     if "error" in result:
         return False
-    return str(result.get("status", "")).lower() == "ok"
+    return str(result.get("status", "")).lower() in {
+        "ok", "published", "success", "submitted", "queued", "processing"
+    }
+
+def _is_unconfirmed_result(result) -> bool:
+    if not isinstance(result, dict):
+        return False
+    return str(result.get("status", "")).lower() in {
+        "unconfirmed", "submitted_unconfirmed", "timeout-unconfirmed"
+    }
 
 
 
@@ -338,11 +347,23 @@ def quick_update_from_publish_result(
             for platform, result in (publish_results or {}).items()
             if _is_success_result(result)
         }
-        failed_count = max(0, len((publish_results or {}).keys()) - len(successful_results.keys()))
+        unconfirmed_results = {
+            platform: result
+            for platform, result in (publish_results or {}).items()
+            if _is_unconfirmed_result(result)
+        }
+        failed_count = max(
+            0,
+            len((publish_results or {}).keys()) - len(successful_results.keys()) - len(unconfirmed_results.keys())
+        )
 
-        if successful_results and failed_count == 0:
+        if successful_results and failed_count == 0 and not unconfirmed_results:
             status_text = "Published ✅"
-        elif successful_results and failed_count > 0:
+        elif successful_results and (failed_count > 0 or unconfirmed_results):
+            status_text = "Partial ⚠️"
+        elif unconfirmed_results and failed_count == 0:
+            status_text = "Unconfirmed ⏳"
+        elif unconfirmed_results and failed_count > 0:
             status_text = "Partial ⚠️"
         else:
             status_text = "Failed ❌"
@@ -363,7 +384,10 @@ def quick_update_from_publish_result(
             "duration": duration,
             "source_lang": source_lang,
             "target_lang": target_lang,
-            "platforms": list(successful_results.keys()),
+            "platforms": [
+                p for p in (publish_results or {}).keys()
+                if p in successful_results or p in unconfirmed_results
+            ],
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         
@@ -423,7 +447,14 @@ def quick_update_from_publish_result(
             # else: will append new row at end
         
         platforms_str = _format_platforms_list(data["platforms"])
-        post_ids_str = _format_post_ids(successful_results)
+        post_ids_payload = dict(successful_results)
+        for platform, result in unconfirmed_results.items():
+            if platform not in post_ids_payload:
+                pid = ""
+                if isinstance(result, dict):
+                    pid = result.get("post_id") or result.get("_id") or result.get("id") or "unconfirmed"
+                post_ids_payload[platform] = {"post_id": f"{pid} (unconfirmed)"}
+        post_ids_str = _format_post_ids(post_ids_payload)
         
         row_data = [
             data["title"], data["status"], data["attempts"],

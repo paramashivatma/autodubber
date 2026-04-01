@@ -1,5 +1,6 @@
 import os, json, time, re
 from .utils import log
+from .runtime_config import is_economy_mode
 
 VISION_PROMPT = (
     "You are a content intelligence engine. Analyze this transcript and extract the core message.\n\n"
@@ -26,7 +27,8 @@ def _call_gemini(api_key, prompt, max_retries=6):
     from google import genai
     from google.genai import types
     client = genai.Client(api_key=api_key)
-    for attempt in range(1, max_retries + 1):
+    retries = min(max_retries, 2) if is_economy_mode() else max_retries
+    for attempt in range(1, retries + 1):
         try:
             resp = client.models.generate_content(
                 model   = "gemini-2.5-flash-lite",
@@ -43,30 +45,49 @@ def _call_gemini(api_key, prompt, max_retries=6):
             err = str(e)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
                 # Daily quota exhausted (limit: 0) — no point retrying
-                if "limit: 0" in err:
+                err_l = err.lower()
+                if (
+                    "limit: 0" in err_l
+                    or "quota exceeded for metric" in err_l
+                    or "free_tier_requests" in err_l
+                    or "generaterequestsperday" in err_l
+                ):
                     log("VISION", "  Daily quota exhausted — skipping retries, using fallback.")
                     raise RuntimeError("Daily Gemini quota exhausted. Add billing or use a second key.")
-                wait = 20 * attempt
+                wait = 5 * attempt if is_economy_mode() else 20 * attempt
                 m = re.search(r"retryDelay.*?(\d+)s", err)
                 if m: wait = int(m.group(1)) + 5
-                log("VISION", f"  429 rate limit — waiting {wait}s (attempt {attempt}/{max_retries}) ...")
+                log("VISION", f"  429 rate limit — waiting {wait}s (attempt {attempt}/{retries}) ...")
                 time.sleep(wait)
                 continue
             raise
-    raise RuntimeError(f"Gemini rate-limited after {max_retries} retries.")
+    raise RuntimeError(f"Gemini rate-limited after {retries} retries.")
 
 
-def extract_vision(segments, api_key, output_dir="workspace"):
+def extract_vision(segments, api_key, output_dir="workspace", return_meta=False):
     os.makedirs(output_dir, exist_ok=True)
+    meta = {
+        "used_fallback": False,
+        "reason": "",
+        "provider": "gemini_vision",
+    }
     transcript = " ".join(
         (s.get("translated") or s.get("text","")).strip()
         for s in segments
     ).strip()
     log("VISION", f"Transcript ({len(transcript)} chars) preview: {transcript[:120]}")
     if not transcript:
-        log("VISION", "Empty transcript — fallback."); return _fallback_extract(segments)
+        log("VISION", "Empty transcript — fallback.")
+        meta["used_fallback"] = True
+        meta["reason"] = "Empty transcript"
+        data = _fallback_extract(segments)
+        return (data, meta) if return_meta else data
     if not api_key:
-        log("VISION", "No key — fallback."); return _fallback_extract(segments)
+        log("VISION", "No key — fallback.")
+        meta["used_fallback"] = True
+        meta["reason"] = "No Gemini Vision API key"
+        data = _fallback_extract(segments)
+        return (data, meta) if return_meta else data
     prompt = VISION_PROMPT.replace("TRANSCRIPT_HERE", transcript)
     try:
         raw = _call_gemini(api_key, prompt)
@@ -79,10 +100,13 @@ def extract_vision(segments, api_key, output_dir="workspace"):
         log("VISION", f"Topic: {data.get('main_topic','?')} | Theme: {data.get('theme','?')}")
         with open(os.path.join(output_dir,"vision.json"),"w",encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        return data
+        return (data, meta) if return_meta else data
     except Exception as e:
         log("VISION", f"Failed: {e} — fallback.")
-        return _fallback_extract(segments)
+        meta["used_fallback"] = True
+        meta["reason"] = str(e)
+        data = _fallback_extract(segments)
+        return (data, meta) if return_meta else data
 
 
 def _fallback_extract(segments):

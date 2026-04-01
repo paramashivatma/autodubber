@@ -1,5 +1,6 @@
 import os, json, time
 import httpx
+import re
 from dotenv import load_dotenv
 from .utils import log, PLATFORM_LIMITS, SHORT_MINIMUMS, REQUIRED_PLATFORMS
 
@@ -158,6 +159,28 @@ def _smart_trim(text, limit):
     return (t[:idx].strip() + "…") if idx > 0 else t + "…"
 
 
+def _sanitize_caption_text(text, newline_before_tags=True):
+    """Normalize generated caption text for publishing."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    # Remove stray leading/trailing quotes occasionally produced by LLM output.
+    s = re.sub(r'^[\s"“”\'‘’`]+', "", s)
+    s = re.sub(r'[\s"“”\'‘’`]+$', "", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+
+    if newline_before_tags and "#" in s:
+        tag_idx = s.find("#")
+        if tag_idx > 0:
+            head = s[:tag_idx].rstrip()
+            tags = s[tag_idx:].lstrip()
+            if head and not head.endswith("\n"):
+                s = f"{head}\n\n{tags}"
+            elif head:
+                s = f"{head}\n{tags}"
+            else:
+                s = tags
+    return s
+
+
 def _is_gujarati(text):
     if not text: return False
     return sum(1 for c in text if "\u0a80" <= c <= "\u0aff") / len(text) > 0.6
@@ -276,8 +299,13 @@ def _strict_validate(captions):
     return True, "ok"
 
 
-def generate_all_captions(vision_data, api_key=None, output_dir="workspace", segments=None):
+def generate_all_captions(vision_data, api_key=None, output_dir="workspace", segments=None, return_meta=False):
     os.makedirs(output_dir, exist_ok=True)
+    meta = {
+        "used_fallback": False,
+        "reason": "",
+        "provider": "mistral_caption",
+    }
     main_topic  = vision_data.get("main_topic","")
     conflict    = vision_data.get("core_conflict","")
     prov        = vision_data.get("provocative_angle","")
@@ -335,14 +363,21 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
         
         except Exception as e:
             log("CAPTION", f"Error: {e} — fallback.")
+            meta["used_fallback"] = True
+            meta["reason"] = str(e)
             captions = _fallback_captions(vision_data)
     else:
         log("CAPTION", "No key — fallback.")
+        meta["used_fallback"] = True
+        meta["reason"] = "No Mistral API key"
         captions = _fallback_captions(vision_data)
 
     # Ensure we have captions (fallback if empty)
     if not captions:
         log("CAPTION", "Empty captions — using fallback.")
+        meta["used_fallback"] = True
+        if not meta.get("reason"):
+            meta["reason"] = "Caption generation produced empty output"
         captions = _fallback_captions(vision_data)
 
     # Additional validation for required tags and character limits
@@ -417,9 +452,16 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
     
     for p, data in captions.items():
         lim = PLATFORM_LIMITS.get(p, 2000)
-        data["caption"] = _smart_trim(_extract_str(data.get("caption","")), lim)
+        cleaned_caption = _sanitize_caption_text(_extract_str(data.get("caption", "")), newline_before_tags=True)
+        cleaned_caption = _smart_trim(cleaned_caption, lim)
+        # One more pass after trim to remove any clipped quote artifacts.
+        cleaned_caption = _sanitize_caption_text(cleaned_caption, newline_before_tags=True)
+        if len(cleaned_caption) > lim:
+            cleaned_caption = _smart_trim(cleaned_caption, lim)
+        data["caption"] = cleaned_caption
         if p == "youtube":
-            data["title"] = _smart_trim(_extract_str(data.get("title","")), 80)
+            title = _sanitize_caption_text(_extract_str(data.get("title", "")), newline_before_tags=False)
+            data["title"] = _smart_trim(title, 80)
     
     with open(os.path.join(output_dir,"captions.json"),"w",encoding="utf-8") as f:
         json.dump(captions, f, ensure_ascii=False, indent=2)
@@ -428,7 +470,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
         with open(os.path.join(output_dir,f"caption_{p}.txt"),"w",encoding="utf-8") as f:
             f.write(prefix + data.get("caption",""))
     log("CAPTION","All captions saved.")
-    return captions
+    return (captions, meta) if return_meta else captions
 
 def _contains_gujarati(text):
     """Check if text contains Gujarati characters"""

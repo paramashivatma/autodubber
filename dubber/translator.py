@@ -1,5 +1,6 @@
 import os, json, time
 from .utils import log
+from .runtime_config import is_economy_mode
 
 GUJARATI_RANGE = (0x0A80, 0x0AFF)
 
@@ -15,6 +16,83 @@ NON_GUJARATI_SCRIPTS = [
 # Translation cache
 _cache_file = "translation_cache.json"
 _translation_cache = {}
+
+# Runtime state for a single translate_segments invocation.
+_gemini_quota_exhausted = False
+_gemini_quota_reason = ""
+_gemini_skip_logged = False
+_last_runtime_meta = {
+    "used_fallback": False,
+    "reason": "",
+}
+
+
+def _reset_runtime_state():
+    global _gemini_quota_exhausted, _gemini_quota_reason, _gemini_skip_logged, _last_runtime_meta
+    _gemini_quota_exhausted = False
+    _gemini_quota_reason = ""
+    _gemini_skip_logged = False
+    _last_runtime_meta = {"used_fallback": False, "reason": ""}
+
+
+def get_translation_runtime_meta():
+    """Return metadata from the latest translate_segments run."""
+    return dict(_last_runtime_meta)
+
+
+def _is_quota_exhausted_error(err_text):
+    s = str(err_text or "").lower()
+    # Daily free-tier exhaustion patterns from Gemini responses.
+    quota_tokens = (
+        "resource_exhausted",
+        "quota exceeded",
+        "free_tier_requests",
+        "generaterequestsperday",
+        "perdayperproject",
+        "limit: 20",
+    )
+    return any(t in s for t in quota_tokens)
+
+
+def _mark_quota_exhausted(reason):
+    global _gemini_quota_exhausted, _gemini_quota_reason
+    if not _gemini_quota_exhausted:
+        _gemini_quota_exhausted = True
+        _gemini_quota_reason = str(reason or "")
+        log(
+            "TRANSLATE",
+            "  Gemini quota exhausted. Switching to Google Translate fallback for remaining segments in this run."
+        )
+
+
+def _log_skip_once():
+    global _gemini_skip_logged
+    if _gemini_quota_exhausted and not _gemini_skip_logged:
+        _gemini_skip_logged = True
+        reason = _gemini_quota_reason or "quota exhausted"
+        log("TRANSLATE", f"  Gemini disabled for this run ({reason}); skipping further Gemini calls.")
+
+
+def _google_translate_text(text, target_language, source_hint="auto", use_pivot=True):
+    """Google Translate helper with optional English pivot for Gujarati quality."""
+    from deep_translator import GoogleTranslator
+
+    direct = GoogleTranslator(source="auto", target=target_language).translate(text)
+    if target_language != "gu":
+        return direct
+
+    if direct and _is_gujarati_script(direct) and not _has_foreign_script(direct):
+        return direct
+
+    if use_pivot and source_hint != "en":
+        try:
+            english = GoogleTranslator(source="auto", target="en").translate(text)
+            pivoted = GoogleTranslator(source="en", target="gu").translate(english)
+            if pivoted:
+                return pivoted
+        except Exception as e:
+            log("TRANSLATE", f"  Pivot error: {e}")
+    return direct
 
 def _load_cache():
     """Load translation cache from file."""
@@ -77,6 +155,9 @@ def _gemini_translate(text, source_hint="auto", target_language="gu"):
     from google import genai
     from google.genai import types
 
+    if _gemini_quota_exhausted:
+        raise RuntimeError(f"Gemini disabled for this run: {_gemini_quota_reason or 'quota exhausted'}")
+
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("No Gemini API key found.")
@@ -98,7 +179,8 @@ Return ONLY the translation, no explanations or extra text.
 Text to translate:
 {text}"""
 
-    for attempt in range(1, 4):
+    max_attempts = 1 if is_economy_mode() else 3
+    for attempt in range(1, max_attempts + 1):
         try:
             response = client.models.generate_content(
                 model="gemini-2.5-flash-lite",
@@ -114,11 +196,14 @@ Text to translate:
                 return result
         except Exception as e:
             log("TRANSLATE", f"  Gemini attempt {attempt} failed: {e}")
-            if attempt == 3:
-                raise RuntimeError(f"Gemini translation failed after 3 attempts: {e}")
-            time.sleep(3 * attempt)
+            if _is_quota_exhausted_error(e):
+                _mark_quota_exhausted(e)
+                raise RuntimeError(f"Gemini quota exhausted: {e}")
+            if attempt == max_attempts:
+                raise RuntimeError(f"Gemini translation failed after {max_attempts} attempts: {e}")
+            time.sleep((1 if is_economy_mode() else 3) * attempt)
 
-    raise RuntimeError("Gemini translation failed after 3 attempts.")
+    raise RuntimeError(f"Gemini translation failed after {max_attempts} attempts.")
 
 
 def _gemini_translate_batch(texts, source_hint, target_language):
@@ -126,6 +211,9 @@ def _gemini_translate_batch(texts, source_hint, target_language):
     from google import genai
     from google.genai import types
     
+    if _gemini_quota_exhausted:
+        raise RuntimeError(f"Gemini disabled for this run: {_gemini_quota_reason or 'quota exhausted'}")
+
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError("No Gemini API key found.")
@@ -157,7 +245,8 @@ No explanations, no notes, no extra text.
 Texts to translate:
 {numbered_texts}"""
 
-    for attempt in range(1, 4):
+    max_attempts = 1 if is_economy_mode() else 3
+    for attempt in range(1, max_attempts + 1):
         try:
             response = client.models.generate_content(
                 model="gemini-2.5-flash-lite",
@@ -178,9 +267,12 @@ Texts to translate:
                     return None
         except Exception as e:
             log("TRANSLATE", f"  Gemini batch attempt {attempt} failed: {e}")
-            time.sleep(3 * attempt)
+            if _is_quota_exhausted_error(e):
+                _mark_quota_exhausted(e)
+                raise RuntimeError(f"Gemini batch quota exhausted: {e}")
+            time.sleep((1 if is_economy_mode() else 3) * attempt)
 
-    raise RuntimeError("Gemini batch translation failed after 3 attempts.")
+    raise RuntimeError(f"Gemini batch translation failed after {max_attempts} attempts.")
 
 
 def _translate_segments_per_segment(texts, source_hint, target_language):
@@ -239,19 +331,28 @@ def _translate_to_gujarati(text, source_hint="auto"):
     if cached:
         log("TRANSLATE", "[CACHE_HIT] Using cached translation")
         return cached
+
+    if is_economy_mode():
+        result = _google_translate_text(text, "gu", source_hint=source_hint, use_pivot=True)
+        _set_cached(text, result or text, "gu")
+        return result or text
     
-    try:
-        result = _gemini_translate(text, source_hint, "gu")
-        if result and _is_gujarati_script(result) and not _has_foreign_script(result):
-            _set_cached(text, result, "gu")
-            return result
-        log("TRANSLATE", "  Gemini output not clean Gujarati — falling back to Google Translate ...")
-    except Exception as e:
-        log("TRANSLATE", f"  Gemini failed: {e} — falling back to Google Translate ...")
+    result = None
+    if _gemini_quota_exhausted:
+        _log_skip_once()
+    else:
+        try:
+            result = _gemini_translate(text, source_hint, "gu")
+            if result and _is_gujarati_script(result) and not _has_foreign_script(result):
+                _set_cached(text, result, "gu")
+                return result
+            log("TRANSLATE", "  Gemini output not clean Gujarati — falling back to Google Translate ...")
+        except Exception as e:
+            if _is_quota_exhausted_error(e):
+                _mark_quota_exhausted(e)
+            log("TRANSLATE", f"  Gemini failed: {e} — falling back to Google Translate ...")
 
-    from deep_translator import GoogleTranslator
-
-    result = GoogleTranslator(source="auto", target="gu").translate(text)
+    result = _google_translate_text(text, "gu", source_hint=source_hint, use_pivot=False)
     if result and _is_gujarati_script(result) and not _has_foreign_script(result):
         _set_cached(text, result, "gu")
         return result
@@ -259,8 +360,7 @@ def _translate_to_gujarati(text, source_hint="auto"):
     if source_hint != "en":
         log("TRANSLATE", "  Trying English pivot ...")
         try:
-            english = GoogleTranslator(source="auto", target="en").translate(text)
-            result2 = GoogleTranslator(source="en", target="gu").translate(english)
+            result2 = _google_translate_text(text, "gu", source_hint=source_hint, use_pivot=True)
             if result2 and _is_gujarati_script(result2) and not _has_foreign_script(result2):
                 _set_cached(text, result2, "gu")
                 return result2
@@ -274,6 +374,10 @@ def _translate_to_gujarati(text, source_hint="auto"):
 
 def _translate_to_gujarati_batch(texts, source_hint="auto"):
     """Batch translate multiple texts to Gujarati"""
+    if is_economy_mode():
+        log("TRANSLATE", "  Economy mode: using Google Translate-first routing for batch.")
+        return [_translate_to_gujarati(t, source_hint) for t in texts]
+
     try:
         translations = _gemini_translate_batch(texts, source_hint, "gu")
         if translations is None:
@@ -324,21 +428,34 @@ def _translate_generic(text, target_language):
     if cached:
         log("TRANSLATE", "[CACHE_HIT] Using cached translation")
         return cached
+
+    if is_economy_mode():
+        result = _google_translate_text(text, target_language, source_hint="auto", use_pivot=False)
+        _set_cached(text, result or text, target_language)
+        return result or text
     
-    try:
-        result = _gemini_translate(text, "auto", target_language)
-        _set_cached(text, result, target_language)
-        return result
-    except Exception as e:
-        log("TRANSLATE", f"  Gemini failed for {target_language}: {e} — using Google Translate")
-        from deep_translator import GoogleTranslator
-        result = GoogleTranslator(source="auto", target=target_language).translate(text)
-        _set_cached(text, result, target_language)
-        return result
+    if _gemini_quota_exhausted:
+        _log_skip_once()
+    else:
+        try:
+            result = _gemini_translate(text, "auto", target_language)
+            _set_cached(text, result, target_language)
+            return result
+        except Exception as e:
+            if _is_quota_exhausted_error(e):
+                _mark_quota_exhausted(e)
+            log("TRANSLATE", f"  Gemini failed for {target_language}: {e} — using Google Translate")
+    result = _google_translate_text(text, target_language, source_hint="auto", use_pivot=False)
+    _set_cached(text, result, target_language)
+    return result
 
 
 def _translate_generic_batch(texts, target_language):
     """Batch translate multiple texts to generic language"""
+    if is_economy_mode():
+        log("TRANSLATE", f"  Economy mode: Google Translate-first for target={target_language}.")
+        return [_translate_generic(t, target_language) for t in texts]
+
     try:
         translations = _gemini_translate_batch(texts, "auto", target_language)
         if translations is None:
@@ -352,6 +469,7 @@ def _translate_generic_batch(texts, target_language):
 
 def translate_segments(segments, target_language="gu", output_dir="workspace"):
     os.makedirs(output_dir, exist_ok=True)
+    _reset_runtime_state()
 
     source_hint = "auto"
     if segments:
@@ -395,6 +513,14 @@ def translate_segments(segments, target_language="gu", output_dir="workspace"):
 
     with open(os.path.join(output_dir, "translation_log.json"), "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
+
+    if _gemini_quota_exhausted:
+        global _last_runtime_meta
+        _last_runtime_meta = {
+            "used_fallback": True,
+            "reason": _gemini_quota_reason or "Gemini quota exhausted",
+        }
+        log("TRANSLATE", "Summary: Gemini quota exhausted in this run; Google Translate fallback was used.")
     
     # Save translation cache
     _save_cache()

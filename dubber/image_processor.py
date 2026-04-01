@@ -6,6 +6,7 @@ import json
 import time
 import re
 from .utils import log
+from .runtime_config import is_economy_mode
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -238,6 +239,29 @@ def generate_gujarati_captions(extracted_text, api_key=None):
 
 def generate_teaser_content(extracted_text, captions, api_key=None):
     """Generate teaser content from extracted text and captions"""
+    if is_economy_mode():
+        # Save one Gemini call in Economy mode: build deterministic teaser locally.
+        sample_caption = ""
+        if isinstance(captions, dict):
+            sample_caption = captions.get("instagram") or captions.get("facebook") or ""
+            if isinstance(sample_caption, dict):
+                sample_caption = sample_caption.get("caption", "")
+        sample_caption = str(sample_caption or "").strip()
+        if not sample_caption:
+            sample_caption = str(extracted_text or "").strip()
+
+        # Keep teaser concise and operator-friendly.
+        brief = sample_caption.split("\n")[0][:160].strip() or "દિવ્ય માર્ગદર્શન હવે તમારી સાથે."
+        teaser = {
+            "hook": brief,
+            "main_content": "ભગવાન શ્રી નિત્યાનંદ પરમશિવમની કૃપાથી આધ્યાત્મિક માર્ગદર્શન હવે સહેલાઈથી મેળવો.",
+            "call_to_action": "હવે જ જુઓ, ડાઉનલોડ કરો અને અન્ય ભક્તો સાથે શેર કરો.",
+            "hashtags": "#KAILASA #Nithyananda",
+            "duration_estimate": "15-30 seconds",
+        }
+        log("TEASER", "Economy mode: generated local teaser (Gemini skipped)")
+        return teaser
+
     if not api_key:
         return "No API key available for teaser generation"
     

@@ -21,6 +21,7 @@ from dubber.utils import PLATFORMS, PLATFORM_LIMITS
 from dubber.downloader    import is_url, download_video
 from dubber.bgm_separator import separate_background
 from dubber.sdk_publisher import publish_to_platforms_sdk
+from dubber.runtime_config import is_economy_mode
 from review_dialog        import ReviewDialog
 
 WORKSPACE   = "workspace"
@@ -149,6 +150,10 @@ def run_dub_pipeline(video_input, voice, model_size, src_lang, tgt_lang,
         status_cb(_stage_text(2, "Merge segments"))
         segs = merge_short_segments(segs)
         status_cb(_stage_text(3, "Translate"))
+        if is_economy_mode():
+            status_cb("ℹ Economy mode: translation uses Google-first routing.")
+        else:
+            status_cb("ℹ Quality mode: translation uses Gemini-first routing.")
         segs = translate_segments(segs, tgt_lang, WORKSPACE)
         translate_meta = get_translation_runtime_meta()
         if translate_meta.get("used_fallback"):
