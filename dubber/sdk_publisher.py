@@ -8,10 +8,8 @@ from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConn
 from dubber.utils import log, PLATFORM_ACCOUNTS
 
 def upload_large_file(client, file_path):
-    """Upload large file using Vercel Blob"""
+    """Upload large file using Zernio SDK's built-in upload_large method"""
     try:
-        import vercel_blob
-        
         # Get Vercel Blob token from environment or config
         vercel_token = os.environ.get('VERCEL_BLOB_TOKEN')
         if not vercel_token:
@@ -27,38 +25,23 @@ def upload_large_file(client, file_path):
         if not vercel_token:
             raise Exception("VERCEL_BLOB_TOKEN not found in environment or .env file. Add it to your .env file: VERCEL_BLOB_TOKEN=vercel_blob_rw_your_token_here")
         
-        log("PUBLISH", f"  📤 Using Vercel Blob for large file upload...")
+        log("PUBLISH", f"  📤 Using Zernio SDK upload_large for large file...")
         
-        # Read file and upload
-        with open(file_path, 'rb') as f:
-            file_data = f.read()
+        # Use Zernio's built-in upload_large method
+        def progress_callback(progress):
+            log("PUBLISH", f"  📊 Upload progress: {progress.percentage:.1f}%")
         
-        # Generate unique filename
-        import uuid
-        file_ext = os.path.splitext(file_path)[1]
-        unique_filename = f"videos/{uuid.uuid4()}{file_ext}"
-        
-        # Upload with multipart for large files
-        result = vercel_blob.put(
-            unique_filename,
-            file_data,
-            {
-                "token": vercel_token,
-                "addRandomSuffix": "false",
-                "allowOverwrite": "true"
-            },
-            multipart=True,
-            verbose=True
+        result = client.media.upload_large(
+            file_path,
+            vercel_token=vercel_token,
+            on_progress=progress_callback
         )
         
-        # Get the public URL
-        public_url = result.get('url', '')
+        # Get the public URL from the response
+        public_url = result.url
         log("PUBLISH", f"  ✅ Large file uploaded: {public_url[:50]}...")
         return public_url
         
-    except ImportError:
-        log("PUBLISH", f"  ❌ vercel-blob package not available - install with: pip install vercel-blob")
-        raise Exception("vercel-blob package not available for large file uploads. Install with: pip install vercel-blob")
     except Exception as e:
         log("PUBLISH", f"  ❌ Large file upload failed: {e}")
         raise e
