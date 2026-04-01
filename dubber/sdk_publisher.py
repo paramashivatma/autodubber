@@ -8,76 +8,51 @@ from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConn
 from dubber.utils import log, PLATFORM_ACCOUNTS
 
 def upload_large_file(client, file_path):
-    """Upload large file using SDK methods"""
+    """Upload large file using upload token flow (per Zernio support - 20-50MB)"""
     
-    # Get Vercel Blob token from environment or config
-    vercel_token = os.environ.get('VERCEL_BLOB_TOKEN')
-    if not vercel_token:
-        # Try to load from .env file
-        env_file = ".env"
-        if os.path.exists(env_file):
-            with open(env_file, 'r') as f:
-                for line in f:
-                    if line.startswith('VERCEL_BLOB_TOKEN=') and not line.startswith('#'):
-                        vercel_token = line.split('=', 1)[1].strip()
-                        break
+    # Check file size
+    file_size = os.path.getsize(file_path)
+    log("PUBLISH", f"  📏 File size: {file_size:,} bytes ({file_size/1024/1024:.1f} MB)")
     
-    # Method 1: Use SDK's built-in large file upload (multipart) - requires Vercel token
-    if vercel_token:
-        try:
-            log("PUBLISH", f"  📤 Using SDK upload_large (multipart) with Vercel token...")
-            result = client.media.upload_large(file_path, vercel_token=vercel_token)
-            media_url = result["publicUrl"]
-            log("PUBLISH", f"  ✅ Large file uploaded: {media_url[:50]}...")
-            return media_url
-        except Exception as e:
-            log("PUBLISH", f"  ⚠️ upload_large failed: {e}")
-    else:
-        log("PUBLISH", f"  ⚠️ No VERCEL_BLOB_TOKEN found - skipping upload_large method")
-    
-    # Method 2: Fall back to regular upload (will fail for large files)
     try:
-        log("PUBLISH", f"  🔄 Trying regular upload...")
-        result = client.media.upload(file_path)
-        media_url = result["publicUrl"]
-        log("PUBLISH", f"  ✅ Regular upload worked: {media_url[:50]}...")
-        return media_url
-    except Exception as e:
-        log("PUBLISH", f"  ⚠️ Regular upload failed: {e}")
-
-    # Method 3: Try upload from bytes as last resort
-    try:
-        log("PUBLISH", f"  🔄 Trying upload from bytes...")
-        filename = os.path.basename(file_path)
-        ext = os.path.splitext(filename)[1].lower()
-        mime = {
-            ".mp4": "video/mp4", ".mov": "video/quicktime",
-            ".avi": "video/x-msvideo", ".webm": "video/webm",
-            ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-            ".png": "image/png", ".gif": "image/gif",
-        }.get(ext, "application/octet-stream")
+        # Step 1: Generate upload token
+        log("PUBLISH", f"  🔄 Generating upload token for {os.path.basename(file_path)}...")
+        token_response = client.media.generate_upload_token()
         
-        with open(file_path, "rb") as f:
-            file_bytes = f.read()
-        result = client.media.upload_bytes(file_bytes, filename, mime)
-        media_url = result["publicUrl"]
-        log("PUBLISH", f"  ✅ Bytes upload worked: {media_url[:50]}...")
-        return media_url
+        log("PUBLISH", f"  ✅ Upload token generated: {token_response.token[:20]}...")
+        log("PUBLISH", f"  📍 Upload URL: {str(token_response.uploadUrl)[:50]}...")
+        
+        # Step 2: Upload file bytes to upload URL with correct headers
+        log("PUBLISH", f"  📤 Uploading to upload URL...")
+        import requests
+        
+        with open(file_path, 'rb') as f:
+            response = requests.put(
+                str(token_response.uploadUrl),
+                data=f,
+                headers={"Content-Type": "video/mp4"},
+            )
+            response.raise_for_status()
+        
+        log("PUBLISH", f"  ✅ File uploaded successfully to upload URL")
+        
+        # Step 3: Check upload status and get public URL
+        log("PUBLISH", f"  🔍 Checking upload status...")
+        files_response = client.media.check_upload_token(token_response.token)
+        
+        if hasattr(files_response, 'files') and files_response.files:
+            uploaded_file = files_response.files[0]
+            public_url = str(uploaded_file.url)
+            log("PUBLISH", f"  🔗 Public URL: {public_url[:50]}...")
+            return public_url
+        else:
+            raise Exception("No files found in upload response")
+        
     except Exception as e:
-        log("PUBLISH", f"  ⚠️ Bytes upload failed: {e}")
-
-    # All methods failed - provide clear options
-    error_msg = """All upload methods failed. Options:
-    
-1. 🌐 ADD VERCEL_BLOB_TOKEN to .env file for automatic upload
-   Get token at: https://vercel.com/docs/storage/vercel-blob
-   
-2. 📏 Reduce video file size to under 4MB for direct upload
-   
-3. 🌐 Try manual upload via Zernio website"""
-    
-    log("PUBLISH", f"  ❌ {error_msg}")
-    raise Exception(error_msg)
+        log("PUBLISH", f"  ❌ Upload token flow failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise e
 
 def publish_with_sdk(api_key, captions, platforms, upload_results=None, 
                     scheduled_for=None, publish_now=True, teaser_captions=None, 
@@ -134,16 +109,16 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 try:
                     # Check file size
                     file_size = os.path.getsize(main_video_path)
-                    log("PUBLISH", f"  📏 Video file size: {file_size:,} bytes")
+                    log("PUBLISH", f"  📏 Video file size: {file_size:,} bytes ({file_size/1024/1024:.1f} MB)")
                     
-                    if file_size > 4 * 1024 * 1024:  # 4MB limit
-                        log("PUBLISH", f"  📤 File too large for direct upload, using Vercel Blob...")
+                    if file_size > 4 * 1024 * 1024:  # 4MB limit - use presigned upload
+                        log("PUBLISH", f"  📤 File too large for direct upload, using presigned URL...")
                         video_url = upload_large_file(client, main_video_path)
                     else:
                         result = client.media.upload(main_video_path)
                         video_url = result["publicUrl"]
                     
-                    media_urls.append(video_url)
+                    media_urls.append(video_url)  # Add single URL to list
                     log("PUBLISH", f"  ✅ Main video uploaded: {video_url[:50]}...")
                 except Exception as e:
                     log("PUBLISH", f"  ❌ Upload failed: {e}")
@@ -269,12 +244,13 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 log("PUBLISH", f"🚀 Starting SDK call...")
                 log("PUBLISH", f"  📱 Platforms: {[p['platform'] for p in platform_list]}")
                 log("PUBLISH", f"  🎬 Media URLs: {len(media_urls)} items")
+                log("PUBLISH", f"  📄 Media URLs: {media_urls}")
                 log("PUBLISH", f"  ⏰ Publish now: {publish_now}")
                 log("PUBLISH", f"  📞 Calling client.posts.create()...")
                 
                 post_result = client.posts.create(
                     content=default_content,
-                    media_urls=media_urls,
+                    media_urls=media_urls,  # Use list format: [public_url]
                     platforms=platform_list,
                     publish_now=publish_now
                 )
