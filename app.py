@@ -316,7 +316,7 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.04")
+        self.title("Video Dubber v1.05")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -1298,14 +1298,18 @@ class App(tk.Tk):
                 self.flyer_results.insert(tk.END, "\n")
                 self.flyer_results.see(tk.END)
             
-            # Show confirmation dialog with test option
-            result = messagebox.askyesno("Confirm Publish", 
-                f"Publish flyer to {len(selected)} platform(s):\n{', '.join(selected)}\n\nImage: {os.path.basename(self.flyer_path)}\n\nClick YES to publish, NO to test mode (no actual posting)")
-            if not result:  # User clicked NO = test mode
-                # Test mode - show what would be published without actually posting
+            self.progress.stop()
+            self.status_var.set("Review flyer captions — edit if needed, then approve.")
+            flyer_dialog_captions = {
+                platform: publish_captions.get(platform, {"caption": ""})
+                for platform in selected
+            }
+            dlg = ReviewDialog(self, flyer_dialog_captions, upload_manager=None, platforms=selected)
+            if dlg.result is None:
                 self._end_publish("flyer")
-                self._test_flyer_publish(selected, publish_captions)
+                self.status_var.set("Flyer publishing cancelled.")
                 return
+            publish_captions = dlg.result
             
             # Start publishing
             self.status_var.set("Publishing flyer...")

@@ -93,7 +93,7 @@ def _probe_video_duration_seconds(path):
         return None
 
 
-def _publish_direct_bluesky(content, progress_cb=None, total_platforms=1):
+def _publish_direct_bluesky(content, progress_cb=None, total_platforms=1, image_paths=None):
     """Publish directly to Bluesky using env-based credentials."""
     if progress_cb:
         progress_cb(0, total_platforms, "bluesky", "posting")
@@ -114,7 +114,7 @@ def _publish_direct_bluesky(content, progress_cb=None, total_platforms=1):
         }
 
     try:
-        response = poster.post(content)
+        response = poster.post(content, image_paths=image_paths, image_alt="Flyer image")
         post_id = getattr(response, "uri", None) or getattr(response, "cid", None) or "posted"
         log("BLUESKY", f"Direct post successful: {post_id}")
         if progress_cb:
@@ -493,7 +493,7 @@ def upload_large_file(client, file_path):
         log("PUBLISH", f"  ✅ Presigned URL received: {upload_url[:50]}...")
         log("PUBLISH", f"  📍 Public URL will be: {public_url[:50]}...")
         
-        # Step 2: Upload file bytes directly to storage (bypasses Vercel limits)
+        # Step 2: Upload file bytes directly to object storage
         log("PUBLISH", f"  📤 Uploading to direct storage URL...")
         with open(file_path, 'rb') as f:
             upload_response = requests.put(
@@ -523,7 +523,7 @@ def upload_large_file(client, file_path):
 ✅ ALTERNATIVE SOLUTIONS:
 
 1. 🌐 EXTERNAL HOSTING (Immediate workaround):
-   • Upload to: YouTube, Vimeo, S3, R2, or Vercel Blob
+   • Upload to: YouTube, Vimeo, S3, R2, or another public CDN/storage provider
    • Get public URL
    • Use: media_urls=[https://your-cdn.com/video.mp4]
 
@@ -542,7 +542,8 @@ def upload_large_file(client, file_path):
 
 def publish_with_sdk(api_key, captions, platforms, upload_results=None, 
                     scheduled_for=None, publish_now=True, teaser_captions=None, 
-                    output_dir="workspace", progress_cb=None, fallback_files=None):
+                    output_dir="workspace", progress_cb=None, fallback_files=None,
+                    image_paths=None):
     """
     Publish to all platforms using official Zernio SDK
     """
@@ -579,6 +580,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 bluesky_content,
                 progress_cb=progress_cb,
                 total_platforms=len(selected_platforms) or 1,
+                image_paths=image_paths,
             )
 
         if not zernio_platforms:
@@ -900,7 +902,8 @@ def publish_to_platforms_sdk(api_key, video_path, captions, platforms,
             publish_now=publish_now,
             output_dir=output_dir,
             progress_cb=progress_cb,
-            fallback_files=fallback_files  # Pass through fallback files
+            fallback_files=fallback_files,  # Pass through fallback files
+            image_paths=image_paths,
         )
         if isinstance(result, dict) and "error" in result and len(result) == 1:
             log("PUBLISH", f"❌ publish_to_platforms_sdk FAILED: {result.get('error')}")

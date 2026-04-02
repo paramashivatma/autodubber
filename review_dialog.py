@@ -3,13 +3,14 @@ from tkinter import ttk
 from dubber.utils import PLATFORMS, PLATFORM_LIMITS
 
 class ReviewDialog(tk.Toplevel):
-    def __init__(self, parent, captions, upload_manager=None):
+    def __init__(self, parent, captions, upload_manager=None, platforms=None):
         super().__init__(parent)
         self.title("Review Captions Before Publishing")
         self.grab_set()
         self.resizable(True, True)
         self.result    = None
         self._captions = captions
+        self._platforms = list(platforms or PLATFORMS)
         self._widgets  = {}
         self._publishing = False
         self._upload_manager = upload_manager
@@ -26,7 +27,7 @@ class ReviewDialog(tk.Toplevel):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=False, padx=12, pady=6)  # Reduced padding
 
-        for p in PLATFORMS:
+        for p in self._platforms:
             data  = captions.get(p, {})
             frame = tk.Frame(nb, padx=6, pady=4)
             nb.add(frame, text=f"  {p.capitalize()}  ")
@@ -116,7 +117,7 @@ class ReviewDialog(tk.Toplevel):
 
     def _approve(self):
         result = {}
-        for p in PLATFORMS:
+        for p in self._platforms:
             data = dict(self._captions.get(p,{}))
             if p in self._widgets:
                 data["caption"] = self._widgets[p].get("1.0",tk.END).strip()

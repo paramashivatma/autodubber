@@ -39,10 +39,24 @@ class BlueskyPoster:
         except Exception as exc:
             log("BLUESKY", f"Login failed — skipping direct Bluesky publish: {exc}")
 
-    def post(self, text):
+    def post(self, text, image_paths=None, image_alt=""):
         if not self.enabled or not self.client:
             raise RuntimeError("BlueskyPoster is not available")
-        return self.client.send_post(text=str(text or "").strip())
+        text = str(text or "").strip()
+        valid_images = [path for path in (image_paths or []) if path and os.path.exists(path)]
+        if not valid_images:
+            return self.client.send_post(text=text)
+
+        image_bytes = []
+        for path in valid_images[:4]:
+            with open(path, "rb") as f:
+                image_bytes.append(f.read())
+
+        if len(image_bytes) == 1:
+            return self.client.send_image(text=text, image=image_bytes[0], image_alt=image_alt or "Flyer image")
+
+        image_alts = [(image_alt or "Flyer image")] * len(image_bytes)
+        return self.client.send_images(text=text, images=image_bytes, image_alts=image_alts)
 
 
 _BLUESKY_POSTER = None
