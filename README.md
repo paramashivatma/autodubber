@@ -101,6 +101,7 @@ Edit `.env`:
 | `GEMINI_API_KEY` | Recommended | Translation, vision extraction, flyer AI steps |
 | `MISTRAL_API_KEY` | Recommended | Caption generation |
 | `GROQ_API_KEY` | Optional | Fast cloud transcription |
+| `ZERNIO_*_ACCOUNT_ID` | Required for each platform you publish to | Your own Zernio-connected social account IDs |
 | `GOOGLE_SHEET_ID` | Optional | Sheet logging |
 | `GOOGLE_CREDENTIALS_FILE` | Optional | Service account JSON path for Sheets |
 | `PIPELINE_MODE` (`economy`/`quality`) | Optional | Cost/performance behavior |
@@ -109,12 +110,16 @@ Legacy aliases still supported:
 - `GOOGLE_API_KEY`, `GEMINI_VISION_KEY`, `OPENROUTER_API_KEY`, `SHEET_ID`
 
 ### 4) Configure platform account IDs (important)
-Publishing uses `PLATFORM_ACCOUNTS` in:
-- `dubber/utils.py`
+Publishing reads platform account IDs from `.env`, for example:
+- `ZERNIO_INSTAGRAM_ACCOUNT_ID`
+- `ZERNIO_FACEBOOK_ACCOUNT_ID`
+- `ZERNIO_YOUTUBE_ACCOUNT_ID`
+- `ZERNIO_THREADS_ACCOUNT_ID`
+- `ZERNIO_TWITTER_ACCOUNT_ID`
+- `ZERNIO_TIKTOK_ACCOUNT_ID`
+- `ZERNIO_BLUESKY_ACCOUNT_ID`
 
-The IDs currently shown in the code are for the maintainer's own Zernio-connected social media accounts and are not reusable by other users.
-
-If you are setting up this project for yourself, you must replace them with your own Zernio platform account IDs. If IDs are wrong, publishing will fail with "No valid platform accounts configured" or per-platform account errors.
+These must be your own Zernio-connected social account IDs. The public repo does not ship publishable account IDs. If IDs are missing or wrong, publishing will fail with "No valid platform accounts configured" or per-platform account errors.
 
 ### 5) Run the app
 ```bash

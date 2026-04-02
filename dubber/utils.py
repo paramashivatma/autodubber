@@ -1,5 +1,6 @@
 import datetime
 import sys
+from dubber.config import get_platform_accounts
 
 def log(tag, msg):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
@@ -33,16 +34,9 @@ SHORT_MINIMUMS = {
 
 REQUIRED_PLATFORMS = {"instagram", "facebook", "tiktok", "twitter", "youtube", "threads", "bluesky"}
 
-# Zernio platform account IDs
-PLATFORM_ACCOUNTS = {
-    "instagram": "69a1f238dc8cab9432ab26d2",
-    "threads":   "69a33549dc8cab9432ad4e6b",
-    "facebook":  "69a2f595dc8cab9432acd000",
-    "bluesky":   "699df2e18ab8ae478b417ca5",
-    "youtube":   "699df35d8ab8ae478b417d7a",
-    "twitter":   "69a97969dc8cab9432ba5005",
-    "tiktok":    "69a34ee1dc8cab9432ad86d1",
-}
+# Zernio platform account IDs come from environment variables.
+# Public repo defaults intentionally remain empty.
+PLATFORM_ACCOUNTS = get_platform_accounts()
 
 # Platform-specific teaser generation specs
 PLATFORM_SPECS = {

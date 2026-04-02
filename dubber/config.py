@@ -6,6 +6,16 @@ from typing import Dict
 
 ENV_FILE = ".env"
 
+PLATFORM_ACCOUNT_ENV_MAP = {
+    "instagram": "ZERNIO_INSTAGRAM_ACCOUNT_ID",
+    "facebook": "ZERNIO_FACEBOOK_ACCOUNT_ID",
+    "youtube": "ZERNIO_YOUTUBE_ACCOUNT_ID",
+    "threads": "ZERNIO_THREADS_ACCOUNT_ID",
+    "twitter": "ZERNIO_TWITTER_ACCOUNT_ID",
+    "tiktok": "ZERNIO_TIKTOK_ACCOUNT_ID",
+    "bluesky": "ZERNIO_BLUESKY_ACCOUNT_ID",
+}
+
 
 def _clean(value):
     if value is None:
@@ -105,3 +115,15 @@ def get_sheet_id(explicit=None) -> str:
 
 def get_credentials_file(default="credentials.json") -> str:
     return first_env("GOOGLE_CREDENTIALS_FILE", default=default)
+
+
+def get_platform_accounts(explicit=None) -> Dict[str, str]:
+    accounts = {}
+    provided = explicit or {}
+    for platform, env_name in PLATFORM_ACCOUNT_ENV_MAP.items():
+        explicit_value = _clean(provided.get(platform))
+        env_value = first_env(env_name)
+        value = explicit_value or env_value
+        if value:
+            accounts[platform] = value
+    return accounts

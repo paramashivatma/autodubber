@@ -6,7 +6,8 @@ Replaces complex custom publishing with official SDK
 import os
 import mimetypes
 from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConnectionError, ZernioRateLimitError, ZernioTimeoutError
-from dubber.utils import log, PLATFORM_ACCOUNTS, PLATFORM_LIMITS
+from dubber.config import get_platform_accounts
+from dubber.utils import log, PLATFORM_LIMITS
 
 def _extract_public_url(upload_result):
     """Handle SDK upload responses returned as dicts or typed objects."""
@@ -473,9 +474,10 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 default_content = _fit_platform_content(strictest, default_content)
         
         # Prepare platform list
+        platform_accounts = get_platform_accounts()
         platform_list = []
         for platform in platforms:
-            account_id = PLATFORM_ACCOUNTS.get(platform)
+            account_id = platform_accounts.get(platform)
             if account_id:
                 platform_entry = {
                     "platform": platform,
