@@ -1,4 +1,4 @@
-# AutoDub Studio (Video Dubber v1.02)
+# AutoDub Studio (Video Dubber v1.03)
 Desktop GUI tool to:
 - Dub videos into Indian languages with voice synthesis.
 - Generate platform-aware captions/teasers.

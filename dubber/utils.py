@@ -2,6 +2,19 @@ import datetime
 import sys
 from dubber.config import get_platform_accounts
 
+_LOG_SUBSCRIBERS = []
+
+
+def add_log_subscriber(callback):
+    if callback and callback not in _LOG_SUBSCRIBERS:
+        _LOG_SUBSCRIBERS.append(callback)
+
+
+def remove_log_subscriber(callback):
+    if callback in _LOG_SUBSCRIBERS:
+        _LOG_SUBSCRIBERS.remove(callback)
+
+
 def log(tag, msg):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     line = f"[{ts}] [{tag:<12}] {msg}"
@@ -11,6 +24,11 @@ def log(tag, msg):
         enc = sys.stdout.encoding or "utf-8"
         safe = line.encode(enc, errors="replace").decode(enc, errors="replace")
         print(safe, flush=True)
+    for callback in list(_LOG_SUBSCRIBERS):
+        try:
+            callback(line=line, tag=tag, msg=msg)
+        except Exception:
+            continue
 
 # Standardized platform definitions
 PLATFORMS = ["instagram", "facebook", "youtube", "threads", "twitter", "tiktok", "bluesky"]

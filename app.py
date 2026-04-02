@@ -16,7 +16,7 @@ from dubber import (
     generate_teasers, log,  # Removed legacy publish_to_platforms
     find_ambiguous_repost_blocks, record_ambiguous_publish_results,
 )
-from dubber.utils import PLATFORMS, PLATFORM_LIMITS
+from dubber.utils import PLATFORMS, PLATFORM_LIMITS, add_log_subscriber, remove_log_subscriber
 from dubber.downloader    import is_url, download_video
 from dubber.bgm_separator import separate_background
 from dubber.sdk_publisher import publish_to_platforms_sdk
@@ -316,7 +316,7 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.02")
+        self.title("Video Dubber v1.03")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -955,6 +955,8 @@ class App(tk.Tk):
 
         # Store flyer path
         self.flyer_path = ""
+        self._dub_log_listener = None
+        self._flyer_log_listener = None
 
         # Initialize API key variables (hidden from GUI)
         self.gemini_vision_key_var = tk.StringVar(value=get_gemini_api_key())
@@ -1038,6 +1040,40 @@ class App(tk.Tk):
             """Update dub results with new message"""
             self.dub_results.insert(tk.END, f"{message}\n")
             self.dub_results.see(tk.END)  # Auto-scroll to bottom
+
+    def _update_flyer_results(self, message):
+            """Update flyer results with new message"""
+            self.flyer_results.insert(tk.END, f"{message}\n")
+            self.flyer_results.see(tk.END)
+
+    def _start_activity_mirror(self, target):
+            """Mirror shared terminal logs into the requested activity box."""
+            self._stop_activity_mirror(target)
+
+            def _listener(line, tag, msg):
+                if target == "dub":
+                    self._queue_ui(lambda: self._update_dub_results(line))
+                elif target == "flyer":
+                    self._queue_ui(lambda: self._update_flyer_results(line))
+
+            add_log_subscriber(_listener)
+            if target == "dub":
+                self._dub_log_listener = _listener
+            elif target == "flyer":
+                self._flyer_log_listener = _listener
+
+    def _stop_activity_mirror(self, target):
+            """Detach mirrored log stream from the requested activity box."""
+            if target == "dub":
+                listener = getattr(self, "_dub_log_listener", None)
+                if listener:
+                    remove_log_subscriber(listener)
+                    self._dub_log_listener = None
+            elif target == "flyer":
+                listener = getattr(self, "_flyer_log_listener", None)
+                if listener:
+                    remove_log_subscriber(listener)
+                    self._flyer_log_listener = None
     
     def _browse_video(self):
         """Browse for video file"""
@@ -1091,6 +1127,7 @@ class App(tk.Tk):
             self._set_flyer_publish_ready(False, "Processing flyer...")
             self.flyer_results.delete(1.0, tk.END)
             self.flyer_results.insert(tk.END, "🔄 Processing flyer...\n\n")
+            self._start_activity_mirror("flyer")
             _save_env({"PIPELINE_MODE": self.pipeline_mode_var.get().strip().lower() or "economy"})
             
             # Get API keys
@@ -1184,6 +1221,8 @@ class App(tk.Tk):
             messagebox.showerror("Error", f"Failed to process flyer: {str(e)}")
             self.flyer_results.insert(tk.END, f"❌ Error: {str(e)}\n")
             self._set_flyer_publish_ready(False, "Processing failed. Publish remains disabled.")
+        finally:
+            self._stop_activity_mirror("flyer")
 
     def _publish_flyer_content(self):
         """Publish the generated flyer content"""
@@ -1271,6 +1310,7 @@ class App(tk.Tk):
             # Start publishing
             self.status_var.set("Publishing flyer...")
             self.progress.start(12)
+            self._start_activity_mirror("flyer")
             _save_env({"PIPELINE_MODE": self.pipeline_mode_var.get().strip().lower() or "economy"})
             publish_now_flag = bool(self.flyer_publish_now_var.get())
             flyer_paths = list(self.flyer_paths)
@@ -1311,6 +1351,7 @@ class App(tk.Tk):
             
         except Exception as e:
             self._end_publish("flyer")
+            self._stop_activity_mirror("flyer")
             messagebox.showerror("Error", f"Failed to publish: {str(e)}")
 
     def _test_flyer_publish(self, platforms, captions):
@@ -1344,6 +1385,7 @@ class App(tk.Tk):
 
     def _flyer_publish_done(self, successful, total, results):
         """Handle flyer publishing completion"""
+        self._stop_activity_mirror("flyer")
         self.progress.stop()
         self.flyer_results.insert(tk.END, "\n📊 Publish Results:\n")
         self.flyer_results.insert(tk.END, "=" * 40 + "\n")
@@ -1541,6 +1583,7 @@ class App(tk.Tk):
         self.run_btn.config(state="disabled")
         self._clear_dub_results()  # Clear previous results
         self.dub_results.insert(tk.END, "🔄 Starting dub pipeline...\n\n")
+        self._start_activity_mirror("dub")
         self.progress.start(12); self.status_var.set("Starting dub pipeline ...")
         
         selected = [p for p,v in self._plat_vars.items() if v.get()]
@@ -1597,6 +1640,7 @@ class App(tk.Tk):
         # Show review dialog (simplified without parallel uploads for now)
         dlg = ReviewDialog(self, captions, upload_manager=None)
         if dlg.result is None:
+            self._stop_activity_mirror("dub")
             self.run_btn.config(state="normal")
             self.status_var.set("Publishing cancelled."); return
         approved = dlg.result
@@ -1606,6 +1650,7 @@ class App(tk.Tk):
 
         missing_account_envs = get_missing_platform_account_envs(selected_platforms)
         if missing_account_envs:
+            self._stop_activity_mirror("dub")
             self._end_publish("dub")
             missing_lines = "\n".join(
                 f"- {platform}: {env_name}"
@@ -1624,6 +1669,7 @@ class App(tk.Tk):
 
         repost_blocks = find_ambiguous_repost_blocks(video_path, approved, selected_platforms)
         if repost_blocks:
+            self._stop_activity_mirror("dub")
             self._end_publish("dub")
             lines = "\n".join(
                 f"- {item['platform']}: previous {item['status']} at {item['timestamp']}"
@@ -1779,6 +1825,7 @@ class App(tk.Tk):
         threading.Thread(target=_publish, daemon=True).start()
 
     def _done_cb(self, success, msg, pub_results=None):
+        self._stop_activity_mirror("dub")
         self.progress.stop()
         self.status_var.set(msg)
         self.run_btn.config(state="normal")

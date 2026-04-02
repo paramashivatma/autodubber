@@ -6,6 +6,7 @@ Replaces complex custom publishing with official SDK
 import os
 import mimetypes
 import subprocess
+import threading
 from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConnectionError, ZernioRateLimitError, ZernioTimeoutError
 from dubber.config import get_platform_accounts
 from dubber.utils import log, PLATFORM_LIMITS
@@ -127,6 +128,105 @@ def _publish_single_platform(
         log("PUBLISH", f"⚠️ Scheduling not fully implemented - using immediate publish")
 
     return post_result
+
+
+def _run_single_platform_publish(
+    api_key,
+    platform_entry,
+    media_items,
+    platform_specific_contents,
+    default_content,
+    publish_now,
+    scheduled_for,
+    results,
+    processed_count,
+    total_platforms,
+    progress_cb=None,
+):
+    """Publish a single platform and normalize the result using existing handlers."""
+    platform_name = platform_entry["platform"]
+
+    try:
+        post_result = _publish_single_platform(
+            api_key,
+            platform_entry,
+            media_items,
+            platform_specific_contents,
+            default_content,
+            publish_now,
+            scheduled_for,
+        )
+        parsed = _extract_publish_results(
+            post_result,
+            [platform_name],
+            progress_cb=progress_cb,
+            done=processed_count,
+            total=total_platforms,
+        )
+        results.update(parsed)
+    except ZernioAuthenticationError as exc:
+        log("PUBLISH", f"  ❌ Authentication failed: Invalid API key - {exc}")
+        raise ZernioAuthenticationError("Invalid Zernio API key. Please check your API key in the settings.")
+    except ZernioRateLimitError as exc:
+        log("PUBLISH", f"  ❌ Rate limit exceeded: {exc}")
+        raise ZernioRateLimitError("Rate limit exceeded. Please wait before trying again.")
+    except ZernioTimeoutError as exc:
+        reason = (
+            "Publish status unconfirmed: request timed out while the platform may still be processing. "
+            "Verify dashboard before retrying."
+        )
+        log("PUBLISH", f"  ⚠️ Timeout for {platform_name}: {exc}")
+        results.update(
+            _make_unconfirmed_results(
+                [platform_name], reason, progress_cb=progress_cb,
+                done=processed_count, total=total_platforms
+            )
+        )
+    except ZernioConnectionError as exc:
+        reason = (
+            "Publish status unconfirmed: connection dropped after submit may have reached the server. "
+            "Verify dashboard before retrying."
+        )
+        log("PUBLISH", f"  ⚠️ Connection error for {platform_name}: {exc}")
+        results.update(
+            _make_unconfirmed_results(
+                [platform_name], reason, progress_cb=progress_cb,
+                done=processed_count, total=total_platforms
+            )
+        )
+    except ZernioAPIError as exc:
+        log("PUBLISH", f"  ❌ API error for {platform_name}: {exc}")
+        if progress_cb:
+            progress_cb(processed_count + 1, total_platforms, platform_name, "error")
+        results[platform_name] = {
+            "status": "error",
+            "platform": platform_name,
+            "error": f"Zernio API error: {exc}",
+            "error_message": f"Zernio API error: {exc}",
+        }
+    except Exception as exc:
+        if _is_unconfirmed_publish_error(exc):
+            reason = (
+                "Publish status unconfirmed: SDK connection closed after submit. "
+                "Verify dashboard before retrying."
+            )
+            log("PUBLISH", f"  ⚠️ Unconfirmed publish outcome for {platform_name}: {exc}")
+            results.update(
+                _make_unconfirmed_results(
+                    [platform_name], reason, progress_cb=progress_cb,
+                    done=processed_count, total=total_platforms
+                )
+            )
+        else:
+            log("PUBLISH", f"  ❌ Unexpected SDK error for {platform_name}: {exc}")
+            if progress_cb:
+                progress_cb(processed_count + 1, total_platforms, platform_name, "error")
+            results[platform_name] = {
+                "status": "error",
+                "platform": platform_name,
+                "error": str(exc),
+                "error_message": str(exc),
+            }
 
 def _extract_publish_results(post_result, requested_platforms, progress_cb=None, done=0, total=None):
     """Normalize SDK response into the app's publish result format."""
@@ -647,97 +747,87 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         results = dict(preflight_results)
         total_platforms = len(platforms)
         processed_count = 0
-
+        bluesky_entry = None
+        remaining_entries = []
         for platform_entry in platform_list:
+            if str(platform_entry.get("platform", "")).lower() == "bluesky" and bluesky_entry is None:
+                bluesky_entry = platform_entry
+            else:
+                remaining_entries.append(platform_entry)
+
+        bluesky_results = {}
+        bluesky_exception = {}
+
+        if bluesky_entry is not None:
+            if progress_cb:
+                progress_cb(processed_count, total_platforms, "bluesky", "posting")
+
+            def _bluesky_worker():
+                try:
+                    _run_single_platform_publish(
+                        api_key,
+                        bluesky_entry,
+                        media_items,
+                        platform_specific_contents,
+                        default_content,
+                        publish_now,
+                        scheduled_for,
+                        bluesky_results,
+                        processed_count=len(preflight_results),
+                        total_platforms=total_platforms,
+                        progress_cb=None,
+                    )
+                except Exception as exc:
+                    bluesky_exception["exc"] = exc
+
+            bluesky_thread = threading.Thread(target=_bluesky_worker, daemon=True)
+            bluesky_thread.start()
+        else:
+            bluesky_thread = None
+
+        for platform_entry in remaining_entries:
             platform_name = platform_entry["platform"]
 
             if progress_cb:
                 progress_cb(processed_count, total_platforms, platform_name, "posting")
 
-            try:
-                post_result = _publish_single_platform(
-                    api_key,
-                    platform_entry,
-                    media_items,
-                    platform_specific_contents,
-                    default_content,
-                    publish_now,
-                    scheduled_for,
-                )
-                parsed = _extract_publish_results(
-                    post_result,
-                    [platform_name],
-                    progress_cb=progress_cb,
-                    done=processed_count,
-                    total=total_platforms,
-                )
-                results.update(parsed)
-
-            except ZernioAuthenticationError as exc:
-                log("PUBLISH", f"  ❌ Authentication failed: Invalid API key - {exc}")
-                raise ZernioAuthenticationError("Invalid Zernio API key. Please check your API key in the settings.")
-            except ZernioRateLimitError as exc:
-                log("PUBLISH", f"  ❌ Rate limit exceeded: {exc}")
-                raise ZernioRateLimitError("Rate limit exceeded. Please wait before trying again.")
-            except ZernioTimeoutError as exc:
-                reason = (
-                    "Publish status unconfirmed: request timed out while the platform may still be processing. "
-                    "Verify dashboard before retrying."
-                )
-                log("PUBLISH", f"  ⚠️ Timeout for {platform_name}: {exc}")
-                results.update(
-                    _make_unconfirmed_results(
-                        [platform_name], reason, progress_cb=progress_cb,
-                        done=processed_count, total=total_platforms
-                    )
-                )
-            except ZernioConnectionError as exc:
-                reason = (
-                    "Publish status unconfirmed: connection dropped after submit may have reached the server. "
-                    "Verify dashboard before retrying."
-                )
-                log("PUBLISH", f"  ⚠️ Connection error for {platform_name}: {exc}")
-                results.update(
-                    _make_unconfirmed_results(
-                        [platform_name], reason, progress_cb=progress_cb,
-                        done=processed_count, total=total_platforms
-                    )
-                )
-            except ZernioAPIError as exc:
-                log("PUBLISH", f"  ❌ API error for {platform_name}: {exc}")
-                if progress_cb:
-                    progress_cb(processed_count + 1, total_platforms, platform_name, "error")
-                results[platform_name] = {
-                    "status": "error",
-                    "platform": platform_name,
-                    "error": f"Zernio API error: {exc}",
-                    "error_message": f"Zernio API error: {exc}",
-                }
-            except Exception as exc:
-                if _is_unconfirmed_publish_error(exc):
-                    reason = (
-                        "Publish status unconfirmed: SDK connection closed after submit. "
-                        "Verify dashboard before retrying."
-                    )
-                    log("PUBLISH", f"  ⚠️ Unconfirmed publish outcome for {platform_name}: {exc}")
-                    results.update(
-                        _make_unconfirmed_results(
-                            [platform_name], reason, progress_cb=progress_cb,
-                            done=processed_count, total=total_platforms
-                        )
-                    )
-                else:
-                    log("PUBLISH", f"  ❌ Unexpected SDK error for {platform_name}: {exc}")
-                    if progress_cb:
-                        progress_cb(processed_count + 1, total_platforms, platform_name, "error")
-                    results[platform_name] = {
-                        "status": "error",
-                        "platform": platform_name,
-                        "error": str(exc),
-                        "error_message": str(exc),
-                    }
-
+            _run_single_platform_publish(
+                api_key,
+                platform_entry,
+                media_items,
+                platform_specific_contents,
+                default_content,
+                publish_now,
+                scheduled_for,
+                results,
+                processed_count=processed_count,
+                total_platforms=total_platforms,
+                progress_cb=progress_cb,
+            )
             processed_count += 1
+
+        if bluesky_thread is not None:
+            log("PUBLISH", "⏳ Waiting for Bluesky to finish...")
+            bluesky_thread.join()
+            if "exc" in bluesky_exception:
+                raise bluesky_exception["exc"]
+            if bluesky_results:
+                parsed_bluesky = {}
+                bluesky_result_value = bluesky_results.get("bluesky")
+                if isinstance(bluesky_result_value, dict):
+                    status = str(bluesky_result_value.get("status", "")).lower()
+                    if progress_cb:
+                        if status in {"ok", "published", "success", "submitted", "queued", "processing", "likely_live", "duplicate_live"}:
+                            progress_cb(min(processed_count + 1, total_platforms), total_platforms, "bluesky", "ok" if status != "likely_live" else "likely_live")
+                        elif status in {"unconfirmed", "submitted_unconfirmed", "timeout-unconfirmed"}:
+                            progress_cb(min(processed_count + 1, total_platforms), total_platforms, "bluesky", "unconfirmed")
+                        elif status in {"skipped", "skip"}:
+                            progress_cb(min(processed_count + 1, total_platforms), total_platforms, "bluesky", "skipped")
+                        else:
+                            progress_cb(min(processed_count + 1, total_platforms), total_platforms, "bluesky", "error")
+                    parsed_bluesky = bluesky_results
+                results.update(parsed_bluesky)
+                processed_count += 1
 
         if progress_cb:
             progress_cb(len(platforms), len(platforms), "sdk", "completed")

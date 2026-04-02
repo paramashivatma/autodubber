@@ -153,6 +153,85 @@ def _format_publish_platforms(successful_results: Dict[str, Dict], unconfirmed_r
         formatted.append(f"{_platform_display_name(platform)} (unconfirmed)")
     return ",".join(formatted) if formatted else ""
 
+
+def _format_publish_platforms_extended(
+    successful_results: Dict[str, Dict],
+    likely_live_results: Dict[str, Dict],
+    unconfirmed_results: Dict[str, Dict],
+    skipped_results: Dict[str, Dict],
+) -> str:
+    """Format publish targets for column H with clearer status labeling."""
+    formatted = []
+    for platform in successful_results.keys():
+        formatted.append(_platform_display_name(platform))
+    for platform in likely_live_results.keys():
+        formatted.append(f"{_platform_display_name(platform)} (likely live)")
+    for platform in unconfirmed_results.keys():
+        formatted.append(f"{_platform_display_name(platform)} (unconfirmed)")
+    for platform in skipped_results.keys():
+        formatted.append(f"{_platform_display_name(platform)} (skipped)")
+    return ",".join(formatted) if formatted else ""
+
+
+def _short_status_reason(platform: str, result: Dict) -> str:
+    """Build a short human-readable reason for status text."""
+    if not isinstance(result, dict):
+        return _platform_display_name(platform)
+
+    platform_name = _platform_display_name(platform)
+    raw = str(result.get("error") or result.get("error_message") or "").strip()
+    lower = raw.lower()
+
+    if not raw:
+        return platform_name
+    if "quota" in lower and "youtube" in str(platform).lower():
+        return f"{platform_name}: upload quota exceeded"
+    if "2 minute" in lower or "2-minute" in lower:
+        return f"{platform_name}: over length limit"
+    if "duplicate content" in lower:
+        return f"{platform_name}: duplicate/already live"
+    if "unconfirmed" in lower:
+        return f"{platform_name}: unconfirmed"
+
+    cleaned = re.sub(r"\s+", " ", raw).strip(" .")
+    if len(cleaned) > 48:
+        cleaned = cleaned[:47].rstrip() + "…"
+    return f"{platform_name}: {cleaned}"
+
+
+def _build_status_text(
+    successful_results: Dict[str, Dict],
+    likely_live_results: Dict[str, Dict],
+    unconfirmed_results: Dict[str, Dict],
+    skipped_results: Dict[str, Dict],
+    failed_results: Dict[str, Dict],
+) -> str:
+    """Build a descriptive status label for column B."""
+    issue_parts = []
+    for platform, result in failed_results.items():
+        issue_parts.append(_short_status_reason(platform, result))
+    for platform, result in skipped_results.items():
+        issue_parts.append(_short_status_reason(platform, result))
+    for platform, result in unconfirmed_results.items():
+        issue_parts.append(_short_status_reason(platform, result))
+    for platform, result in likely_live_results.items():
+        issue_parts.append(_short_status_reason(platform, result))
+
+    issue_parts = issue_parts[:3]
+
+    if (successful_results or likely_live_results) and not failed_results and not unconfirmed_results and not skipped_results:
+        return "Published ✅"
+    if successful_results or likely_live_results:
+        suffix = f" — {'; '.join(issue_parts)}" if issue_parts else ""
+        return f"Partial ⚠️{suffix}"
+    if unconfirmed_results and not failed_results:
+        suffix = f" — {'; '.join(issue_parts)}" if issue_parts else ""
+        return f"Unconfirmed ⏳{suffix}"
+    if failed_results or skipped_results:
+        suffix = f" — {'; '.join(issue_parts)}" if issue_parts else ""
+        return f"Failed ❌{suffix}"
+    return "Failed ❌"
+
 def _format_post_ids(publish_results: Dict[str, Dict]) -> str:
     """Build a comma-separated list of platform:post_id values."""
     parts = []
@@ -181,6 +260,22 @@ def _is_unconfirmed_result(result) -> bool:
         return False
     return str(result.get("status", "")).lower() in {
         "unconfirmed", "submitted_unconfirmed", "timeout-unconfirmed"
+    }
+
+
+def _is_likely_live_result(result) -> bool:
+    if not isinstance(result, dict):
+        return False
+    return str(result.get("status", "")).lower() in {
+        "likely_live", "duplicate_live"
+    }
+
+
+def _is_skipped_result(result) -> bool:
+    if not isinstance(result, dict):
+        return False
+    return str(result.get("status", "")).lower() in {
+        "skipped", "skip"
     }
 
 
@@ -380,21 +475,40 @@ def quick_update_from_publish_result(
             for platform, result in (publish_results or {}).items()
             if _is_unconfirmed_result(result)
         }
+        likely_live_results = {
+            platform: result
+            for platform, result in (publish_results or {}).items()
+            if _is_likely_live_result(result)
+        }
+        skipped_results = {
+            platform: result
+            for platform, result in (publish_results or {}).items()
+            if _is_skipped_result(result)
+        }
+        failed_results = {
+            platform: result
+            for platform, result in (publish_results or {}).items()
+            if isinstance(result, dict)
+            and not _is_success_result(result)
+            and not _is_unconfirmed_result(result)
+            and not _is_likely_live_result(result)
+            and not _is_skipped_result(result)
+        }
         failed_count = max(
             0,
-            len((publish_results or {}).keys()) - len(successful_results.keys()) - len(unconfirmed_results.keys())
+            len((publish_results or {}).keys())
+            - len(successful_results.keys())
+            - len(unconfirmed_results.keys())
+            - len(likely_live_results.keys())
+            - len(skipped_results.keys())
         )
-
-        if successful_results and failed_count == 0 and not unconfirmed_results:
-            status_text = "Published ✅"
-        elif successful_results and (failed_count > 0 or unconfirmed_results):
-            status_text = "Partial ⚠️"
-        elif unconfirmed_results and failed_count == 0:
-            status_text = "Unconfirmed ⏳"
-        elif unconfirmed_results and failed_count > 0:
-            status_text = "Partial ⚠️"
-        else:
-            status_text = "Failed ❌"
+        status_text = _build_status_text(
+            successful_results,
+            likely_live_results,
+            unconfirmed_results,
+            skipped_results,
+            failed_results,
+        )
 
         raw_format = str(content_format or "").strip().lower()
         if raw_format == "video":
@@ -471,8 +585,19 @@ def quick_update_from_publish_result(
                 log("SHEET", f"Using empty row {row_index}")
             # else: will append new row at end
         
-        platforms_str = _format_platforms_list(data["platforms"])
+        platforms_str = _format_publish_platforms_extended(
+            successful_results,
+            likely_live_results,
+            unconfirmed_results,
+            skipped_results,
+        )
         post_ids_payload = dict(successful_results)
+        for platform, result in likely_live_results.items():
+            if platform not in post_ids_payload:
+                pid = ""
+                if isinstance(result, dict):
+                    pid = result.get("post_id") or result.get("_id") or result.get("id") or "likely_live"
+                post_ids_payload[platform] = {"post_id": f"{pid} (likely_live)"}
         for platform, result in unconfirmed_results.items():
             if platform not in post_ids_payload:
                 pid = ""
