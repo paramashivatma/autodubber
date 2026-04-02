@@ -11,6 +11,9 @@ TAGS2  = "#KAILASA"
 BULLET = "•"
 
 MAX_TRANSCRIPT_CHARS = 3000
+SAFE_CAPTION_LIMITS = {
+    "twitter": 250,
+}
 
 LANGUAGE_META = {
     "gu": {
@@ -138,11 +141,11 @@ THREADS (max 350 chars including hashtags):
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - Minimum 200 chars. Maximum 350 chars. Count carefully.
 
-TWITTER (max 260 chars including hashtags):
+TWITTER (target 180-240 chars; hard ceiling 250 including hashtags):
 - Hook + one follow-up sentence. Both complete, declarative, and devotional, reflecting Guru's guidance and blessings.
 - Prioritize conveying the spiritual essence concisely.
 - End with: #KAILASA #Nithyananda
-- Minimum 180 chars. Maximum 260 chars. Count carefully.
+- Minimum 180 chars. Maximum 240 chars preferred. Never exceed 250 chars. Count carefully.
 
 TIKTOK (max 180 chars including hashtags):
 - ONE complete punchy devotional sentence directly from transcript; spiritually uplifting, recitable aloud, and energetic.
@@ -223,6 +226,10 @@ def _smart_trim(text, limit):
         if idx > limit * 0.5: return t[:idx+1].strip()
     idx = t.rfind(" ")
     return (t[:idx].strip() + "…") if idx > 0 else t + "…"
+
+
+def _effective_limit(platform):
+    return SAFE_CAPTION_LIMITS.get(platform, PLATFORM_LIMITS.get(platform, 2000))
 
 
 def _sanitize_caption_text(text, newline_before_tags=True):
@@ -389,7 +396,7 @@ def _strict_validate(captions):
             log("CAPTION", f"[VALIDATION_FAIL] Empty caption for {p}")
             return False, f"empty:{p}"
         
-        limit = PLATFORM_LIMITS.get(p, 2000)
+        limit = _effective_limit(p)
         if len(caption) > limit:
             log("CAPTION", f"[VALIDATION_FAIL] Caption too long for {p}: {len(caption)} > {limit}")
             return False, f"too_long:{p}"
@@ -449,10 +456,18 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                          if len(captions.get(p, {}).get("caption", "")) < mins]
             if bad_short and is_quality_mode():
                 log("CAPTION", f"  Short captions on {bad_short} — retrying ...")
+                twitter_instruction = ""
+                if "twitter" in bad_short:
+                    twitter_instruction = (
+                        "For twitter specifically, keep the regenerated caption between 180 and 240 characters "
+                        "and never exceed 250 characters including hashtags. "
+                    )
                 retry_prompt = (
                     f"{prompt}\n\nCRITICAL: Your previous output for {bad_short} was too short. "
                     f"Minimums: TikTok=80 chars, Twitter=180 chars, Threads=200 chars, Bluesky=180 chars. "
-                    f"Write LONGER complete sentences. Fill the limit. Return full JSON for all 7 platforms."
+                    f"{twitter_instruction}"
+                    f"Write LONGER complete sentences. Fill the limit without exceeding any platform max. "
+                    f"Return full JSON for all 7 platforms."
                 )
                 try:
                     raw2      = _call_mistral(mistral_key, retry_prompt)
@@ -558,13 +573,13 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                     log("CAPTION",f"Regeneration failed for {p}: {e}")
 
         # Check character limits
-        lim = PLATFORM_LIMITS.get(p, 2000)
+        lim = _effective_limit(p)
         if len(caption) > lim:
             log("CAPTION",f"Caption too long for {p} ({len(caption)} > {lim}) — truncating...")
             captions[p]["caption"] = caption[:lim-1] + "…"
     
     for p, data in captions.items():
-        lim = PLATFORM_LIMITS.get(p, 2000)
+        lim = _effective_limit(p)
         cleaned_caption = _sanitize_caption_text(_extract_str(data.get("caption", "")), newline_before_tags=True)
         cleaned_caption = _smart_trim(cleaned_caption, lim)
         # One more pass after trim to remove any clipped quote artifacts.
@@ -600,7 +615,7 @@ def _fallback_captions(vision_data, target_language="gu"):
         "instagram": {"caption": long_cap},
         "facebook":  {"caption": long_cap},
         "tiktok":    {"caption": _smart_trim(hook + "\n\n#KAILASA #Nithyananda", 180)},
-        "twitter":   {"caption": _smart_trim(hook + " " + body1 + "\n\n#KAILASA #Nithyananda", 260)},
+        "twitter":   {"caption": _smart_trim(hook + " " + body1 + "\n\n#KAILASA #Nithyananda", _effective_limit("twitter"))},
         "threads":   {"caption": _smart_trim(hook + "\n\n" + body1 + "\n\n" + TAGS3, 350)},
         "bluesky":   {"caption": _smart_trim(hook + "\n\n" + body1 + "\n\n" + TAGS2, 260)},
         "youtube":   {"title": _smart_trim(topic or hook, 75), "caption": _smart_trim(long_cap, 4500)},

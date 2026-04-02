@@ -14,6 +14,7 @@ from dubber import (
     generate_tts_audio, build_dubbed_video,
     extract_vision, generate_all_captions,
     generate_teasers, log,  # Removed legacy publish_to_platforms
+    find_ambiguous_repost_blocks, record_ambiguous_publish_results,
 )
 from dubber.utils import PLATFORMS, PLATFORM_LIMITS
 from dubber.downloader    import is_url, download_video
@@ -163,6 +164,20 @@ def _count_likely_live_results(results):
     return likely_live
 
 
+def _count_skipped_results(results):
+    """Count platform results skipped by local preflight rules."""
+    if not isinstance(results, dict):
+        return 0
+    skipped = 0
+    for v in results.values():
+        if not isinstance(v, dict):
+            continue
+        status = str(v.get("status", "")).lower()
+        if status in {"skipped", "skip"}:
+            skipped += 1
+    return skipped
+
+
 def _extract_error_message(results):
     if isinstance(results, dict) and "error" in results:
         return str(results.get("error") or "").strip()
@@ -301,7 +316,7 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.01")
+        self.title("Video Dubber v1.02")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -1607,6 +1622,24 @@ class App(tk.Tk):
             messagebox.showerror("Missing Zernio Account IDs", msg)
             return
 
+        repost_blocks = find_ambiguous_repost_blocks(video_path, approved, selected_platforms)
+        if repost_blocks:
+            self._end_publish("dub")
+            lines = "\n".join(
+                f"- {item['platform']}: previous {item['status']} at {item['timestamp']}"
+                for item in repost_blocks
+            )
+            msg = (
+                "Publishing is blocked because this exact content was already submitted on these platforms.\n\n"
+                "Please verify the live profiles/dashboards before reposting:\n"
+                f"{lines}"
+            )
+            self._update_dub_results(f"⚠️ Duplicate-protection blocked repost. {lines.replace(chr(10), ' | ')}")
+            self.status_var.set("Duplicate-protection blocked repost.")
+            self.run_btn.config(state="normal")
+            messagebox.showwarning("Duplicate Protection", msg)
+            return
+
         def _safe_done(success, msg, pub_results=None):
             if done_cb:
                 if not self._queue_ui(lambda: done_cb(success=success, msg=msg, pub_results=pub_results)):
@@ -1645,9 +1678,27 @@ class App(tk.Tk):
                 ok = _count_successful_results(results)
                 unconfirmed = _count_unconfirmed_results(results)
                 likely_live = _count_likely_live_results(results)
+                skipped = _count_skipped_results(results)
                 total = len(selected_platforms or [])
                 if error_msg:
                     msg = f"Publishing blocked: {error_msg}"
+                elif skipped > 0 and likely_live > 0 and unconfirmed > 0:
+                    msg = (
+                        f"Published {ok}/{total} platform(s); {likely_live} likely already live, "
+                        f"{unconfirmed} unconfirmed, {skipped} skipped by platform limits."
+                    )
+                elif skipped > 0 and likely_live > 0:
+                    msg = (
+                        f"Published {ok}/{total} platform(s); {likely_live} likely already live and "
+                        f"{skipped} skipped by platform limits."
+                    )
+                elif skipped > 0 and unconfirmed > 0:
+                    msg = (
+                        f"Published {ok}/{total} platform(s); {unconfirmed} unconfirmed and "
+                        f"{skipped} skipped by platform limits."
+                    )
+                elif skipped > 0:
+                    msg = f"Published {ok}/{total} platform(s); {skipped} skipped by platform limits."
                 elif likely_live > 0 and unconfirmed > 0:
                     msg = (
                         f"Published {ok}/{total} platform(s); {likely_live} likely already live and "
@@ -1704,6 +1755,11 @@ class App(tk.Tk):
                             "⚠️ Stage 11/11 - Recording on Google Sheet skipped."
                         )
                     )
+
+                try:
+                    record_ambiguous_publish_results(video_path, approved, results)
+                except Exception as guard_error:
+                    log("PUBLISH", f"⚠️ Publish guard update failed: {guard_error}")
                 
                 self._queue_ui(lambda: self.run_btn.config(state="normal"))
                 self._queue_ui(self.progress.stop)
@@ -1737,7 +1793,9 @@ class App(tk.Tk):
                     status = v.get("status", "unknown")
                     pid = v.get("post_id") or v.get("_id") or "n/a"
                     err = v.get("error") or v.get("error_message")
-                    if err:
+                    if status in {"likely_live", "duplicate_live"}:
+                        print(f'OK   {k}: status={status} note={err or "likely already live"}')
+                    elif err:
                         print(f'FAIL {k}: status={status} error={err}')
                     else:
                         print(f'OK   {k}: status={status} id={pid}')
@@ -1768,6 +1826,8 @@ class App(tk.Tk):
             self.status_var.set(f"⏱ {platform} timed out")
         elif status == "unconfirmed":
             self.status_var.set(f"⚠ {platform} unconfirmed")
+        elif status == "likely_live":
+            self.status_var.set(f"✓ {platform} likely already live")
         elif status == "skipped":
             self.status_var.set(f"⊘ {platform} skipped")
         elif status == "initializing":
