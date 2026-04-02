@@ -112,7 +112,9 @@ Legacy aliases still supported:
 Publishing uses `PLATFORM_ACCOUNTS` in:
 - `dubber/utils.py`
 
-Set these IDs to your own Zernio-connected account IDs. If IDs are wrong, publishing will fail with "No valid platform accounts configured" or per-platform account errors.
+The IDs currently shown in the code are for the maintainer's own Zernio-connected social media accounts and are not reusable by other users.
+
+If you are setting up this project for yourself, you must replace them with your own Zernio platform account IDs. If IDs are wrong, publishing will fail with "No valid platform accounts configured" or per-platform account errors.
 
 ### 5) Run the app
 ```bash
