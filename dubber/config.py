@@ -127,3 +127,14 @@ def get_platform_accounts(explicit=None) -> Dict[str, str]:
         if value:
             accounts[platform] = value
     return accounts
+
+
+def get_missing_platform_account_envs(platforms) -> Dict[str, str]:
+    missing = {}
+    for platform in platforms or []:
+        env_name = PLATFORM_ACCOUNT_ENV_MAP.get(platform)
+        if not env_name:
+            continue
+        if not first_env(env_name):
+            missing[platform] = env_name
+    return missing

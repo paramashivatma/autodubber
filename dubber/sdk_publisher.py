@@ -163,11 +163,14 @@ def _extract_publish_results(post_result, requested_platforms, progress_cb=None,
                 or "already published" in error_text_l
                 or "being published" in error_text_l
             )
-            bluesky_unconfirmed = platform_l == "bluesky" and (timeout_like or duplicate_like)
+            bluesky_duplicate_like = platform_l == "bluesky" and duplicate_like
+            bluesky_unconfirmed = platform_l == "bluesky" and timeout_like
 
             if progress_cb:
                 log("PUBLISH", f"  📱 Updating progress: {platform_name} -> {status}")
                 if status_l == 'published':
+                    progress_cb(min(done + i + 1, total), total, platform_name, "ok")
+                elif bluesky_duplicate_like:
                     progress_cb(min(done + i + 1, total), total, platform_name, "ok")
                 elif bluesky_unconfirmed:
                     progress_cb(min(done + i + 1, total), total, platform_name, "unconfirmed")
@@ -181,15 +184,26 @@ def _extract_publish_results(post_result, requested_platforms, progress_cb=None,
                 status_l in {"published", "ok", "success", "submitted", "queued", "processing"}
                 or (post_id and post_id != "unknown")
             )
-            if bluesky_unconfirmed:
+            if bluesky_duplicate_like:
+                success = True
+            elif bluesky_unconfirmed:
                 success = False
 
             results[platform_name] = {
-                "status": "unconfirmed" if bluesky_unconfirmed else ("ok" if success else "error"),
+                "status": (
+                    "likely_live"
+                    if bluesky_duplicate_like else
+                    ("unconfirmed" if bluesky_unconfirmed else ("ok" if success else "error"))
+                ),
                 "post_id": post_id,
                 "platform": platform_name
             }
-            if bluesky_unconfirmed:
+            if bluesky_duplicate_like:
+                results[platform_name]["error"] = (
+                    "Bluesky reported duplicate content, which usually means the post is already live or still settling."
+                )
+                results[platform_name]["error_message"] = results[platform_name]["error"]
+            elif bluesky_unconfirmed:
                 if duplicate_like:
                     results[platform_name]["error"] = (
                         "Bluesky reported duplicate content. The post may already be live or still settling. "
@@ -207,6 +221,8 @@ def _extract_publish_results(post_result, requested_platforms, progress_cb=None,
 
             if success:
                 log("PUBLISH", f"  ✅ {platform_name}: ok (ID: {post_id})")
+            elif bluesky_duplicate_like:
+                log("PUBLISH", f"  ✅ {platform_name}: likely already live (duplicate response)")
             elif bluesky_unconfirmed:
                 log("PUBLISH", f"  ⚠️ {platform_name}: unconfirmed (slow processing)")
             else:
@@ -499,6 +515,9 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 log("PUBLISH", f"  ✅ {platform}: {account_id}")
             else:
                 log("PUBLISH", f"  ❌ {platform}: No account ID configured")
+
+        # Bluesky is often the slowest to settle; start it first while staying sequential.
+        platform_list.sort(key=lambda item: 0 if str(item.get("platform", "")).lower() == "bluesky" else 1)
         
         if not platform_list:
             error_msg = "No valid platform accounts configured"

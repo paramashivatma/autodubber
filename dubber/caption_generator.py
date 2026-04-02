@@ -2,6 +2,7 @@ import os, json, time
 import httpx
 import re
 from .config import get_mistral_api_key
+from .runtime_config import is_economy_mode, is_quality_mode
 from .utils import log, PLATFORM_LIMITS, SHORT_MINIMUMS, REQUIRED_PLATFORMS
 
 TAGS4  = "#KAILASA #Nithyananda"
@@ -246,6 +247,25 @@ def _sanitize_caption_text(text, newline_before_tags=True):
     return s
 
 
+def _append_required_hashtags(platform, caption):
+    text = str(caption or "").strip()
+    lower = text.lower()
+    needed = []
+    if platform in {"instagram", "facebook", "youtube", "tiktok", "twitter"}:
+        if "#kailasa" not in lower:
+            needed.append("#KAILASA")
+        if "#nithyananda" not in lower:
+            needed.append("#Nithyananda")
+    elif platform in {"threads", "bluesky"}:
+        if "#kailasa" not in lower:
+            needed.append("#KAILASA")
+
+    if not needed:
+        return text
+    sep = "\n\n" if text and "#" not in text else " "
+    return (text + sep + " ".join(needed)).strip()
+
+
 def _contains_target_script(text, target_language):
     if not text:
         return False
@@ -261,8 +281,12 @@ def _contains_target_script(text, target_language):
     return (hits / max(total, 1)) > 0.2
 
 
-def _call_mistral(api_key, prompt, max_retries=3):
+def _call_mistral(api_key, prompt, max_retries=None):
     """Use actual Mistral API instead of OpenRouter."""
+    if max_retries is None:
+        max_retries = 1 if is_economy_mode() else 3
+    max_tokens = 4096 if is_economy_mode() else 8192
+    timeout = 75 if is_economy_mode() else 120
     url = "https://api.mistral.ai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -273,11 +297,11 @@ def _call_mistral(api_key, prompt, max_retries=3):
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "top_p": 0.8,
-        "max_tokens": 8192,
+        "max_tokens": max_tokens,
     }
     for attempt in range(1, max_retries + 1):
         try:
-            r = httpx.post(url, headers=headers, json=payload, timeout=120)
+            r = httpx.post(url, headers=headers, json=payload, timeout=timeout)
             if r.status_code == 429:
                 wait = 2 ** attempt  # exponential backoff: 2s, 4s, 8s
                 log("CAPTION", f"[RETRY] 429 — waiting {wait}s (attempt {attempt}/{max_retries})")
@@ -398,6 +422,8 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
     prompt      = _build_prompt(main_topic, key_message, theme, transcript_text, target_language=target_language)
     captions    = {}
     mistral_key = get_mistral_api_key(api_key)
+    mode_name = "Economy" if is_economy_mode() else "Quality"
+    log("CAPTION", f"Mode: {mode_name}")
 
     if mistral_key:
         try:
@@ -421,7 +447,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
             # Short caption check + single retry
             bad_short = [p for p, mins in SHORT_MINIMUMS.items()
                          if len(captions.get(p, {}).get("caption", "")) < mins]
-            if bad_short:
+            if bad_short and is_quality_mode():
                 log("CAPTION", f"  Short captions on {bad_short} — retrying ...")
                 retry_prompt = (
                     f"{prompt}\n\nCRITICAL: Your previous output for {bad_short} was too short. "
@@ -438,6 +464,8 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                             captions[p] = captions2.get(p, {})
                 except Exception as e:
                     log("CAPTION",f"Regeneration failed for {p}: {e}")
+            elif bad_short:
+                log("CAPTION", f"  Economy mode: accepting short captions for {bad_short} without regeneration.")
         
         except Exception as e:
             log("CAPTION", f"Error: {e} — fallback.")
@@ -465,7 +493,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
         # Check for required hashtags per platform
         if p in ["instagram", "facebook", "youtube", "tiktok"]:
             # These platforms need both #KAILASA and #Nithyananda
-            if "#kailasa" not in caption.lower() or "#nithyananda" not in caption.lower():
+            if ("#kailasa" not in caption.lower() or "#nithyananda" not in caption.lower()) and is_quality_mode():
                 log("CAPTION",f"Missing required tags for {p} — regenerating...")
                 try:
                     # Build regeneration prompt
@@ -482,9 +510,13 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                         log("CAPTION",f"Regenerated caption for {p}")
                 except Exception as e:
                     log("CAPTION",f"Failed to regenerate {p}: {e}")
+            elif "#kailasa" not in caption.lower() or "#nithyananda" not in caption.lower():
+                captions[p]["caption"] = _append_required_hashtags(p, caption)
+                caption = captions[p]["caption"]
+                log("CAPTION", f"Economy mode: appended required hashtags for {p}.")
         elif p in ["threads", "bluesky"]:
             # These platforms only need #KAILASA
-            if "#kailasa" not in caption.lower():
+            if "#kailasa" not in caption.lower() and is_quality_mode():
                 log("CAPTION",f"Missing required #KAILASA tag for {p} — regenerating...")
                 try:
                     # Build regeneration prompt
@@ -501,10 +533,14 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                         log("CAPTION",f"Regenerated caption for {p}")
                 except Exception as e:
                     log("CAPTION",f"Failed to regenerate {p}: {e}")
+            elif "#kailasa" not in caption.lower():
+                captions[p]["caption"] = _append_required_hashtags(p, caption)
+                caption = captions[p]["caption"]
+                log("CAPTION", f"Economy mode: appended required hashtags for {p}.")
 
         # Check target-language script where detectable
         if _language_meta(target_language).get("script_ranges") and p in ["instagram", "facebook", "youtube", "threads", "bluesky"]:
-            if not _contains_target_script(caption, target_language):
+            if not _contains_target_script(caption, target_language) and is_quality_mode():
                 log("CAPTION",f"No {_language_meta(target_language)['name']} script detected in {p} caption — regenerating...")
                 try:
                     retry_prompt = (

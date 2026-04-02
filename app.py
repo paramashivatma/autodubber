@@ -19,13 +19,14 @@ from dubber.utils import PLATFORMS, PLATFORM_LIMITS
 from dubber.downloader    import is_url, download_video
 from dubber.bgm_separator import separate_background
 from dubber.sdk_publisher import publish_to_platforms_sdk
-from dubber.runtime_config import is_economy_mode
+from dubber.runtime_config import get_pipeline_mode, is_economy_mode, mode_label
 from dubber.config import (
     load_env_into_process,
     save_env_updates,
     get_gemini_api_key,
     get_mistral_api_key,
     get_zernio_api_key,
+    get_missing_platform_account_envs,
 )
 from review_dialog        import ReviewDialog
 
@@ -123,7 +124,7 @@ def _count_successful_results(results):
         if not isinstance(v, dict):
             continue
         status = str(v.get("status", "")).lower()
-        if status in {"ok", "published", "success", "submitted", "queued", "processing"}:
+        if status in {"ok", "published", "success", "submitted", "queued", "processing", "likely_live", "duplicate_live"}:
             ok += 1
             continue
         if status in {"error", "failed", "fail"} or "error" in v:
@@ -146,6 +147,26 @@ def _count_unconfirmed_results(results):
         if status in {"unconfirmed", "submitted_unconfirmed"}:
             unconfirmed += 1
     return unconfirmed
+
+
+def _count_likely_live_results(results):
+    """Count platform results that look like they were already published."""
+    if not isinstance(results, dict):
+        return 0
+    likely_live = 0
+    for v in results.values():
+        if not isinstance(v, dict):
+            continue
+        status = str(v.get("status", "")).lower()
+        if status in {"likely_live", "duplicate_live"}:
+            likely_live += 1
+    return likely_live
+
+
+def _extract_error_message(results):
+    if isinstance(results, dict) and "error" in results:
+        return str(results.get("error") or "").strip()
+    return ""
 
 
 def run_dub_pipeline(video_input, voice, model_size, src_lang, tgt_lang,
@@ -280,7 +301,7 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.0")
+        self.title("Video Dubber v1.01")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -296,6 +317,33 @@ class App(tk.Tk):
         self._flyer_publish_active = False
         self._init_theme()
         self._build_ui()
+
+    def _build_mode_selector(self, parent, row, title, hint):
+        pad = {"padx": 12, "pady": 4}
+        tk.Label(parent, text=title, font=("Segoe UI Semibold", 10)).grid(row=row, column=0, sticky="w", **pad)
+        wrap = tk.Frame(parent, bg=self._colors["panel"])
+        wrap.grid(row=row, column=1, columnspan=2, sticky="w", **pad)
+        tk.Radiobutton(
+            wrap,
+            text="Economy",
+            variable=self.pipeline_mode_var,
+            value="economy",
+            font=("Segoe UI", 9),
+        ).pack(side="left", padx=(0, 12))
+        tk.Radiobutton(
+            wrap,
+            text="Quality",
+            variable=self.pipeline_mode_var,
+            value="quality",
+            font=("Segoe UI", 9),
+        ).pack(side="left")
+        tk.Label(
+            parent,
+            text=hint,
+            fg=self._colors["muted"],
+            font=("Segoe UI", 8),
+        ).grid(row=row + 1, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 6))
+        return row + 2
 
     def _init_theme(self):
         self._colors = {
@@ -667,71 +715,78 @@ class App(tk.Tk):
         self.t_dub = self._create_scrollable_tab(self.t_dub_tab)
         self.t_dub.configure(padx=16, pady=12)
         self.t_dub.grid_columnconfigure(1, weight=1)
+        self.pipeline_mode_var = tk.StringVar(value=get_pipeline_mode())
 
         tk.Label(self.t_dub, text="1) Source Input", font=("Segoe UI Semibold", 11)).grid(row=0, column=0, sticky="w", **pad)
         tk.Label(self.t_dub, text="Video / URL:", font=("Segoe UI", 10)).grid(row=1,column=0,sticky="w",**pad)
         self.video_var = tk.StringVar()
         tk.Entry(self.t_dub, textvariable=self.video_var, width=44, relief="solid", bd=1).grid(row=1,column=1,**pad)
         tk.Button(self.t_dub, text="Browse", command=self._browse_video, width=10, bg=self._colors["input"], fg=self._colors["text"], relief="solid", bd=1).grid(row=1,column=2,**pad)
+        next_row = self._build_mode_selector(
+            self.t_dub,
+            row=2,
+            title="Pipeline mode:",
+            hint="Economy saves API cost and skips heavier retries. Quality spends more calls for better recovery.",
+        )
 
-        tk.Label(self.t_dub, text="2) Language & Voice", font=("Segoe UI Semibold", 11)).grid(row=2, column=0, sticky="w", **pad)
-        tk.Label(self.t_dub, text="Voice:", font=("Segoe UI", 10)).grid(row=3,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="2) Language & Voice", font=("Segoe UI Semibold", 11)).grid(row=next_row, column=0, sticky="w", **pad)
+        tk.Label(self.t_dub, text="Voice:", font=("Segoe UI", 10)).grid(row=next_row + 1,column=0,sticky="w",**pad)
         self.voice_var = tk.StringVar(value=LANGUAGE_DEFAULT_VOICE.get("Gujarati", list(VOICES.keys())[0]))
         self.voice_combo = ttk.Combobox(self.t_dub, textvariable=self.voice_var, values=list(VOICES.keys()),
                      width=30, state="readonly")
-        self.voice_combo.grid(row=3,column=1,sticky="w",**pad)
+        self.voice_combo.grid(row=next_row + 1,column=1,sticky="w",**pad)
 
-        tk.Label(self.t_dub, text="Whisper model:", font=("Segoe UI", 10)).grid(row=4,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Whisper model:", font=("Segoe UI", 10)).grid(row=next_row + 2,column=0,sticky="w",**pad)
         self.model_var = tk.StringVar(value="medium")
         ttk.Combobox(self.t_dub, textvariable=self.model_var, values=WHISPER_MODELS,
-                     width=16, state="readonly").grid(row=4,column=1,sticky="w",**pad)
+                     width=16, state="readonly").grid(row=next_row + 2,column=1,sticky="w",**pad)
 
-        tk.Label(self.t_dub, text="Source lang:", font=("Segoe UI", 10)).grid(row=5,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Source lang:", font=("Segoe UI", 10)).grid(row=next_row + 3,column=0,sticky="w",**pad)
         self.src_lang_var = tk.StringVar(value="English")
         ttk.Combobox(self.t_dub, textvariable=self.src_lang_var,
                      values=list(LANGUAGES.keys()), width=16,
-                     state="readonly").grid(row=5,column=1,sticky="w",**pad)
+                     state="readonly").grid(row=next_row + 3,column=1,sticky="w",**pad)
 
-        tk.Label(self.t_dub, text="Target lang:", font=("Segoe UI", 10)).grid(row=6,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Target lang:", font=("Segoe UI", 10)).grid(row=next_row + 4,column=0,sticky="w",**pad)
         self.tgt_lang_var = tk.StringVar(value="Gujarati")
         self.tgt_lang_combo = ttk.Combobox(self.t_dub, textvariable=self.tgt_lang_var,
                      values=list(LANGUAGES.keys()), width=16,
                      state="readonly")
-        self.tgt_lang_combo.grid(row=6,column=1,sticky="w",**pad)
+        self.tgt_lang_combo.grid(row=next_row + 4,column=1,sticky="w",**pad)
         self.tgt_lang_combo.bind("<<ComboboxSelected>>", self._on_target_language_changed)
         self._sync_voice_options()
 
-        ttk.Separator(self.t_dub,orient="horizontal").grid(row=7,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_dub, text="3) Audio Blend & Platforms", font=("Segoe UI Semibold", 11)).grid(row=8, column=0, sticky="w", **pad)
+        ttk.Separator(self.t_dub,orient="horizontal").grid(row=next_row + 5,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_dub, text="3) Audio Blend & Platforms", font=("Segoe UI Semibold", 11)).grid(row=next_row + 6, column=0, sticky="w", **pad)
         self.bgm_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_dub, text="Preserve background music (Demucs)",
                        variable=self.bgm_var, command=self._toggle_bgm
-                       ).grid(row=9,column=0,columnspan=2,sticky="w",**pad)
-        tk.Label(self.t_dub, text="Music volume:", font=("Segoe UI", 10)).grid(row=10,column=0,sticky="w",**pad)
+                       ).grid(row=next_row + 7,column=0,columnspan=2,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Music volume:", font=("Segoe UI", 10)).grid(row=next_row + 8,column=0,sticky="w",**pad)
         self.bgm_vol_var = tk.DoubleVar(value=0.35)
         self.bgm_scale = tk.Scale(self.t_dub, variable=self.bgm_vol_var,
                                   from_=0.0, to=1.0, resolution=0.05,
                                   orient="horizontal", length=220,
                                   bg=self._colors["panel"], fg=self._colors["text"], highlightthickness=0)
-        self.bgm_scale.grid(row=10,column=1,sticky="w",**pad)
+        self.bgm_scale.grid(row=next_row + 8,column=1,sticky="w",**pad)
 
-        tk.Label(self.t_dub, text="Platforms to publish:", font=("Segoe UI", 10)).grid(row=11,column=0,sticky="w",**pad)
+        tk.Label(self.t_dub, text="Platforms to publish:", font=("Segoe UI", 10)).grid(row=next_row + 9,column=0,sticky="w",**pad)
         self._plat_vars = {}
-        pf = tk.Frame(self.t_dub, bg=self._colors["panel"]); pf.grid(row=11,column=1,columnspan=2,sticky="w")
+        pf = tk.Frame(self.t_dub, bg=self._colors["panel"]); pf.grid(row=next_row + 9,column=1,columnspan=2,sticky="w")
         for i,p in enumerate(PLATFORMS):
             v = tk.BooleanVar(value=True); self._plat_vars[p] = v
             tk.Checkbutton(pf,text=p.capitalize(),variable=v, font=("Segoe UI", 9)).grid(row=i//4,column=i%4,sticky="w",padx=6)
         
-        ttk.Separator(self.t_dub,orient="horizontal").grid(row=12,column=0,columnspan=3,sticky="ew",pady=8)
+        ttk.Separator(self.t_dub,orient="horizontal").grid(row=next_row + 10,column=0,columnspan=3,sticky="ew",pady=8)
         self.dub_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(self.t_dub, text="Publish immediately",
-                       variable=self.dub_publish_now_var, value=True, font=("Segoe UI", 9)).grid(row=13,column=0,columnspan=2,sticky="w",**pad)
+                       variable=self.dub_publish_now_var, value=True, font=("Segoe UI", 9)).grid(row=next_row + 11,column=0,columnspan=2,sticky="w",**pad)
 
-        ttk.Separator(self.t_dub,orient="horizontal").grid(row=14,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_dub, text="Pipeline activity", font=("Segoe UI Semibold", 11)).grid(row=15,column=0,sticky="w",**pad)
+        ttk.Separator(self.t_dub,orient="horizontal").grid(row=next_row + 12,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_dub, text="Pipeline activity", font=("Segoe UI Semibold", 11)).grid(row=next_row + 13,column=0,sticky="w",**pad)
         self.dub_results = tk.Text(self.t_dub, width=84, height=8, font=("Consolas",9))
-        self.dub_results.grid(row=16,column=0,columnspan=3,padx=12,pady=(0,8), sticky="nsew")
-        self.t_dub.grid_rowconfigure(16, weight=1)
+        self.dub_results.grid(row=next_row + 14,column=0,columnspan=3,padx=12,pady=(0,8), sticky="nsew")
+        self.t_dub.grid_rowconfigure(next_row + 14, weight=1)
         self._style_text_area(self.dub_results)
 
         self.t_media_tab = tk.Frame(self.nb, bg=self._colors["panel"], padx=0, pady=0)
@@ -744,56 +799,62 @@ class App(tk.Tk):
                  font=("Segoe UI Semibold",12)).grid(row=0,column=0,columnspan=3,sticky="w",**pad)
         tk.Label(self.t_media, text="Upload flyers/posters to extract text and generate Gujarati content",
                  fg=self._colors["muted"], font=("Segoe UI",9)).grid(row=1,column=0,columnspan=3,sticky="w",padx=12,pady=(0,6))
+        media_row = self._build_mode_selector(
+            self.t_media,
+            row=2,
+            title="Pipeline mode:",
+            hint="This also affects flyer OCR/caption generation fallbacks and teaser generation cost.",
+        )
 
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=2,column=0,columnspan=3,sticky="ew",pady=8)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=media_row,column=0,columnspan=3,sticky="ew",pady=8)
         
-        tk.Label(self.t_media, text="Select Flyer/Images:", font=("Segoe UI Semibold",10)).grid(row=3,column=0,sticky="w",**pad)
+        tk.Label(self.t_media, text="Select Flyer/Images:", font=("Segoe UI Semibold",10)).grid(row=media_row + 1,column=0,sticky="w",**pad)
         self.flyer_var = tk.StringVar()
-        tk.Entry(self.t_media, textvariable=self.flyer_var, width=54, relief="solid", bd=1).grid(row=3,column=1,**pad)
-        tk.Button(self.t_media, text="Browse", command=self._browse_flyer, width=10, bg=self._colors["input"], fg=self._colors["text"], relief="solid", bd=1).grid(row=3,column=2,**pad)
+        tk.Entry(self.t_media, textvariable=self.flyer_var, width=54, relief="solid", bd=1).grid(row=media_row + 1,column=1,**pad)
+        tk.Button(self.t_media, text="Browse", command=self._browse_flyer, width=10, bg=self._colors["input"], fg=self._colors["text"], relief="solid", bd=1).grid(row=media_row + 1,column=2,**pad)
         
         self.flyer_paths = []
         self.flyer_count_label = tk.Label(self.t_media, text="", fg=self._colors["muted"], font=("Segoe UI",8))
-        self.flyer_count_label.grid(row=4,column=0,columnspan=3,sticky="w",padx=12)
+        self.flyer_count_label.grid(row=media_row + 2,column=0,columnspan=3,sticky="w",padx=12)
         
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=5,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_media, text="Processing Options:", font=("Segoe UI Semibold",10)).grid(row=6,column=0,sticky="w",**pad)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=media_row + 3,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_media, text="Processing Options:", font=("Segoe UI Semibold",10)).grid(row=media_row + 4,column=0,sticky="w",**pad)
         
         self.extract_text_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_media, text="Extract text from flyer/image",
-                       variable=self.extract_text_var, font=("Segoe UI", 9)).grid(row=7,column=0,columnspan=3,sticky="w",padx=12)
+                       variable=self.extract_text_var, font=("Segoe UI", 9)).grid(row=media_row + 5,column=0,columnspan=3,sticky="w",padx=12)
         
         self.generate_captions_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_media, text="Generate Gujarati captions",
-                       variable=self.generate_captions_var, font=("Segoe UI", 9)).grid(row=8,column=0,columnspan=3,sticky="w",padx=12)
+                       variable=self.generate_captions_var, font=("Segoe UI", 9)).grid(row=media_row + 6,column=0,columnspan=3,sticky="w",padx=12)
         
         self.generate_teaser_var = tk.BooleanVar(value=True)
         tk.Checkbutton(self.t_media, text="Create teaser content",
-                       variable=self.generate_teaser_var, font=("Segoe UI", 9)).grid(row=9,column=0,columnspan=3,sticky="w",padx=12)
+                       variable=self.generate_teaser_var, font=("Segoe UI", 9)).grid(row=media_row + 7,column=0,columnspan=3,sticky="w",padx=12)
         
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=10,column=0,columnspan=3,sticky="ew",pady=8)
-        bf = tk.Frame(self.t_media, bg=self._colors["panel"]); bf.grid(row=11,column=0,columnspan=3,sticky="w",padx=12)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=media_row + 8,column=0,columnspan=3,sticky="ew",pady=8)
+        bf = tk.Frame(self.t_media, bg=self._colors["panel"]); bf.grid(row=media_row + 9,column=0,columnspan=3,sticky="w",padx=12)
         tk.Button(bf,text="Clear Selection",command=self._clear_flyer, bg=self._colors["input"], fg=self._colors["text"], relief="solid", bd=1).pack(side="left",padx=4)
         
-        tk.Label(self.t_media, text="Processing activity", font=("Segoe UI Semibold",10)).grid(row=12,column=0,sticky="w",**pad)
+        tk.Label(self.t_media, text="Processing activity", font=("Segoe UI Semibold",10)).grid(row=media_row + 10,column=0,sticky="w",**pad)
         self.flyer_results = tk.Text(self.t_media, width=84, height=8, font=("Consolas",9))
-        self.flyer_results.grid(row=13,column=0,columnspan=3,padx=12,pady=(0,8), sticky="nsew")
-        self.t_media.grid_rowconfigure(13, weight=1)
+        self.flyer_results.grid(row=media_row + 11,column=0,columnspan=3,padx=12,pady=(0,8), sticky="nsew")
+        self.t_media.grid_rowconfigure(media_row + 11, weight=1)
         self._style_text_area(self.flyer_results)
         
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=14,column=0,columnspan=3,sticky="ew",pady=8)
-        tk.Label(self.t_media, text="Platforms to Publish:", font=("Segoe UI Semibold",10)).grid(row=15,column=0,sticky="w",**pad)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=media_row + 12,column=0,columnspan=3,sticky="ew",pady=8)
+        tk.Label(self.t_media, text="Platforms to Publish:", font=("Segoe UI Semibold",10)).grid(row=media_row + 13,column=0,sticky="w",**pad)
         self._flyer_plat_vars = {}
-        pf = tk.Frame(self.t_media, bg=self._colors["panel"]); pf.grid(row=15,column=1,columnspan=2,sticky="w")
+        pf = tk.Frame(self.t_media, bg=self._colors["panel"]); pf.grid(row=media_row + 13,column=1,columnspan=2,sticky="w")
         for i,p in enumerate(PLATFORMS):
             if p not in ["youtube", "tiktok"]:
                 v = tk.BooleanVar(value=True); self._flyer_plat_vars[p] = v
                 tk.Checkbutton(pf,text=p.capitalize(),variable=v, font=("Segoe UI", 9)).grid(row=i//4,column=i%4,sticky="w",padx=6)
         
-        ttk.Separator(self.t_media,orient="horizontal").grid(row=16,column=0,columnspan=3,sticky="ew",pady=8)
+        ttk.Separator(self.t_media,orient="horizontal").grid(row=media_row + 14,column=0,columnspan=3,sticky="ew",pady=8)
         self.flyer_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(self.t_media, text="Publish immediately",
-                       variable=self.flyer_publish_now_var, value=True, font=("Segoe UI", 9)).grid(row=17,column=0,columnspan=2,sticky="w",**pad)
+                       variable=self.flyer_publish_now_var, value=True, font=("Segoe UI", 9)).grid(row=media_row + 15,column=0,columnspan=2,sticky="w",**pad)
         self._flyer_publish_ready = False
 
         # Bottom action bar
@@ -869,7 +930,7 @@ class App(tk.Tk):
         self.progress.pack(fill="x", padx=16, pady=(0, 6))
 
         status_frame = tk.Frame(self, bg=self._colors["panel"], relief="solid", bd=1)
-        self.status_var = tk.StringVar(value="Ready.")
+        self.status_var = tk.StringVar(value=f"Ready. {mode_label()}.")
         status_label = tk.Label(
             status_frame, textvariable=self.status_var, fg=self._colors["text"],
             bg=self._colors["panel"], font=("Segoe UI", 9), anchor="w"
@@ -889,6 +950,7 @@ class App(tk.Tk):
         self.topic_var = tk.StringVar()
         self.pub_teaser_var = tk.StringVar()
         self._image_paths = []
+        self.pipeline_mode_var.trace_add("write", self._on_pipeline_mode_changed)
         self._set_panel_bg(self.t_dub)
         self._set_panel_bg(self.t_media)
 
@@ -928,6 +990,17 @@ class App(tk.Tk):
 
     def _on_target_language_changed(self, event=None):
         self._sync_voice_options()
+
+    def _on_pipeline_mode_changed(self, *_args):
+        mode = (self.pipeline_mode_var.get() or "economy").strip().lower()
+        if mode not in {"economy", "quality"}:
+            mode = "economy"
+            self.pipeline_mode_var.set(mode)
+            return
+        _save_env({"PIPELINE_MODE": mode})
+        self._env["PIPELINE_MODE"] = mode
+        if hasattr(self, "status_var"):
+            self.status_var.set(f"Pipeline mode set to {mode.capitalize()}.")
 
     def _toggle_bgm(self):
         self.bgm_scale.config(state="normal" if self.bgm_var.get() else "disabled")
@@ -1003,6 +1076,7 @@ class App(tk.Tk):
             self._set_flyer_publish_ready(False, "Processing flyer...")
             self.flyer_results.delete(1.0, tk.END)
             self.flyer_results.insert(tk.END, "🔄 Processing flyer...\n\n")
+            _save_env({"PIPELINE_MODE": self.pipeline_mode_var.get().strip().lower() or "economy"})
             
             # Get API keys
             gemini_key = self.gemini_vision_key_var.get().strip()
@@ -1182,6 +1256,7 @@ class App(tk.Tk):
             # Start publishing
             self.status_var.set("Publishing flyer...")
             self.progress.start(12)
+            _save_env({"PIPELINE_MODE": self.pipeline_mode_var.get().strip().lower() or "economy"})
             publish_now_flag = bool(self.flyer_publish_now_var.get())
             flyer_paths = list(self.flyer_paths)
             primary_flyer = flyer_paths[0] if flyer_paths else self.flyer_path
@@ -1437,6 +1512,7 @@ class App(tk.Tk):
             to_save["MISTRAL_API_KEY"] = self.mistral_key_var.get().strip()
         if self.zernio_key_var.get().strip():
             to_save["ZERNIO_API_KEY"] = self.zernio_key_var.get().strip()
+        to_save["PIPELINE_MODE"] = self.pipeline_mode_var.get().strip().lower() or "economy"
         if to_save:
             _save_env(to_save)
         self.status_var.set("Keys saved.")
@@ -1462,6 +1538,7 @@ class App(tk.Tk):
         if gemini_vision: to_save["GEMINI_API_KEY"] = gemini_vision
         if mistral:       to_save["MISTRAL_API_KEY"]   = mistral
         if zernio:        to_save["ZERNIO_API_KEY"]     = zernio
+        to_save["PIPELINE_MODE"] = self.pipeline_mode_var.get().strip().lower() or "economy"
         if to_save:       _save_env(to_save)
         
         # No manual teaser needed for dub pipeline - use auto generation
@@ -1512,6 +1589,24 @@ class App(tk.Tk):
             self.status_var.set("A publish is already in progress. Please wait.")
             return
 
+        missing_account_envs = get_missing_platform_account_envs(selected_platforms)
+        if missing_account_envs:
+            self._end_publish("dub")
+            missing_lines = "\n".join(
+                f"- {platform}: {env_name}"
+                for platform, env_name in missing_account_envs.items()
+            )
+            msg = (
+                "Publishing is blocked because Zernio platform account IDs are not configured.\n\n"
+                "Add these keys to your .env:\n"
+                f"{missing_lines}"
+            )
+            self._update_dub_results(f"❌ {msg.replace(chr(10), ' ')}")
+            self.status_var.set("Publishing blocked: missing Zernio account IDs.")
+            self.run_btn.config(state="normal")
+            messagebox.showerror("Missing Zernio Account IDs", msg)
+            return
+
         def _safe_done(success, msg, pub_results=None):
             if done_cb:
                 if not self._queue_ui(lambda: done_cb(success=success, msg=msg, pub_results=pub_results)):
@@ -1546,10 +1641,24 @@ class App(tk.Tk):
                     fallback_files={"main_video": video_path}  # Pass video for upload
                 )
                 
+                error_msg = _extract_error_message(results)
                 ok = _count_successful_results(results)
                 unconfirmed = _count_unconfirmed_results(results)
+                likely_live = _count_likely_live_results(results)
                 total = len(selected_platforms or [])
-                if ok > 0 and unconfirmed > 0:
+                if error_msg:
+                    msg = f"Publishing blocked: {error_msg}"
+                elif likely_live > 0 and unconfirmed > 0:
+                    msg = (
+                        f"Published {ok}/{total} platform(s); {likely_live} likely already live and "
+                        f"{unconfirmed} still unconfirmed. Check dashboard before retrying."
+                    )
+                elif likely_live > 0:
+                    msg = (
+                        f"Published {ok}/{total} platform(s); {likely_live} likely already live "
+                        "from a duplicate Bluesky response."
+                    )
+                elif ok > 0 and unconfirmed > 0:
                     msg = (
                         f"Published {ok}/{total} platform(s); {unconfirmed} unconfirmed. "
                         "Check dashboard before retrying."
@@ -1565,7 +1674,7 @@ class App(tk.Tk):
                     msg = f"Published 0/{total} platform(s)."
                 
                 # Log to Google Sheet after successful or unconfirmed publish
-                if ok > 0 or unconfirmed > 0:
+                if not error_msg and (ok > 0 or unconfirmed > 0):
                     try:
                         self._queue_ui(lambda: self._update_dub_results(_stage_text(11, "Log to Google Sheet")))
                         self._queue_ui(lambda: self.status_var.set(_stage_text(11, "Log to Google Sheet")))
@@ -1592,7 +1701,7 @@ class App(tk.Tk):
                 else:
                     self._queue_ui(
                         lambda: self._update_dub_results(
-                            "⚠️ Stage 11/11 - Recording on Google Sheet skipped (no confirmed/unconfirmed publish results)."
+                            "⚠️ Stage 11/11 - Recording on Google Sheet skipped."
                         )
                     )
                 
@@ -1618,7 +1727,12 @@ class App(tk.Tk):
         self.status_var.set(msg)
         self.run_btn.config(state="normal")
         if pub_results:
+            root_error = _extract_error_message(pub_results)
+            if root_error:
+                print(f"FAIL publish: {root_error}")
             for k, v in pub_results.items():
+                if k == "error":
+                    continue
                 if isinstance(v, dict):
                     status = v.get("status", "unknown")
                     pid = v.get("post_id") or v.get("_id") or "n/a"
