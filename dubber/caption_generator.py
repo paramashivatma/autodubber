@@ -4,19 +4,105 @@ import re
 from .config import get_mistral_api_key
 from .utils import log, PLATFORM_LIMITS, SHORT_MINIMUMS, REQUIRED_PLATFORMS
 
-TAGS4  = "#KAILASA #Nithyananda #સનાતનધર્મ #આધ્યાત્મ"
-TAGS3  = "#KAILASA #Nithyananda #સનાતનધર્મ"
-TAGS2  = "#KAILASA #આધ્યાત્મ"
+TAGS4  = "#KAILASA #Nithyananda"
+TAGS3  = "#KAILASA #Nithyananda"
+TAGS2  = "#KAILASA"
 BULLET = "•"
 
 MAX_TRANSCRIPT_CHARS = 3000
 
-CAPTION_PROMPT_TEMPLATE = """\
-SYSTEM: You are a devoted disciple of The Supreme Pontiff of Hinduism, Bhagavan Sri Nithyananda Paramashivam. 
-Your task is to craft social media captions that transmit sacred spiritual energy, reverence, and the transformative power of His teachings. 
-Speak as if guiding fellow disciples seeking inner awakening, using devotional Gujarati and appropriate Sanskrit terms naturally. 
-Each sentence should feel as if Guru's grace is flowing through it. Convey blessings, truths, and practices as experienced through the Guru's grace. 
-Do not invent ideas; remain fully faithful to the transcript. 
+LANGUAGE_META = {
+    "gu": {
+        "name": "Gujarati",
+        "style": "Use devotional Gujarati with natural Sanskrit terms where they fit.",
+        "script_hint": "Write in Gujarati script.",
+        "script_ranges": [(0x0A80, 0x0AFF)],
+    },
+    "hi": {
+        "name": "Hindi",
+        "style": "Use devotional Hindi with natural Sanskrit terms where they fit.",
+        "script_hint": "Write in Devanagari script.",
+        "script_ranges": [(0x0900, 0x097F)],
+    },
+    "ta": {
+        "name": "Tamil",
+        "style": "Use natural spoken Tamil with devotional warmth and Sanskrit terms only where they fit naturally.",
+        "script_hint": "Write in Tamil script.",
+        "script_ranges": [(0x0B80, 0x0BFF)],
+    },
+    "te": {
+        "name": "Telugu",
+        "style": "Use natural spoken Telugu with devotional warmth and Sanskrit terms only where they fit naturally.",
+        "script_hint": "Write in Telugu script.",
+        "script_ranges": [(0x0C00, 0x0C7F)],
+    },
+    "kn": {
+        "name": "Kannada",
+        "style": "Use natural spoken Kannada with devotional warmth and Sanskrit terms only where they fit naturally.",
+        "script_hint": "Write in Kannada script.",
+        "script_ranges": [(0x0C80, 0x0CFF)],
+    },
+    "ml": {
+        "name": "Malayalam",
+        "style": "Use natural spoken Malayalam with devotional warmth and Sanskrit terms only where they fit naturally.",
+        "script_hint": "Write in Malayalam script.",
+        "script_ranges": [(0x0D00, 0x0D7F)],
+    },
+    "bn": {
+        "name": "Bengali",
+        "style": "Use natural spoken Bengali with devotional warmth and Sanskrit terms only where they fit naturally.",
+        "script_hint": "Write in Bengali script.",
+        "script_ranges": [(0x0980, 0x09FF)],
+    },
+    "es": {
+        "name": "Spanish",
+        "style": "Use clear devotional Spanish that sounds natural to a native speaker.",
+        "script_hint": "Write in Spanish.",
+        "script_ranges": [],
+    },
+    "ru": {
+        "name": "Russian",
+        "style": "Use clear devotional Russian that sounds natural to a native speaker.",
+        "script_hint": "Write in Cyrillic Russian.",
+        "script_ranges": [(0x0400, 0x04FF)],
+    },
+    "en": {
+        "name": "English",
+        "style": "Use clear devotional English.",
+        "script_hint": "Write in English.",
+        "script_ranges": [],
+    },
+}
+
+
+def _language_meta(target_language):
+    return LANGUAGE_META.get(target_language, {
+        "name": str(target_language or "target language"),
+        "style": f"Use natural devotional {target_language}.",
+        "script_hint": f"Write in {target_language}.",
+        "script_ranges": [],
+    })
+
+
+def _build_prompt(main_topic, key_message, theme, transcript="", target_language="gu"):
+    meta = _language_meta(target_language)
+    target_name = meta["name"]
+    target_style = meta["style"]
+    script_hint = meta["script_hint"]
+    if len(transcript) > MAX_TRANSCRIPT_CHARS:
+        transcript = transcript[:MAX_TRANSCRIPT_CHARS] + "..."
+        log("CAPTION", f"  Transcript capped at {MAX_TRANSCRIPT_CHARS} chars")
+    transcript_block = (
+        f"=== FULL TRANSCRIPT ({target_name}) ===\n{transcript}\n\n"
+        if transcript else ""
+    )
+    return f'''SYSTEM: You are a devoted disciple of The Supreme Pontiff of Hinduism, Bhagavan Sri Nithyananda Paramashivam.
+Your task is to craft social media captions that transmit sacred spiritual energy, reverence, and the transformative power of His teachings.
+Speak as if guiding fellow disciples seeking inner awakening.
+Write every caption in {target_name}. {target_style}
+Each sentence should feel as if Guru's grace is flowing through it. Convey blessings, truths, and practices as experienced through the Guru's grace.
+Do not invent ideas; remain fully faithful to the transcript.
+{script_hint}
 Adjust tone per platform:
 - Instagram = punchy devotional energy, awakening curiosity.
 - Facebook = nurturing reflection, guidance for inner peace.
@@ -26,23 +112,22 @@ Adjust tone per platform:
 - YouTube = detailed spiritual insights, structured for blessing, practice, transformation, and key teachings.
 
 === SOURCE ===
-Topic: MAIN_TOPIC_HERE
-Key Message: KEY_MESSAGE_HERE
-Theme: THEME_HERE
+Topic: {main_topic or ''}
+Key Message: {key_message or ''}
+Theme: {theme or 'teaching'}
 
-TRANSCRIPT_BLOCK_HERE
-=== PLATFORM BRIEFS ===
+{transcript_block}=== PLATFORM BRIEFS ===
 
 INSTAGRAM (max 1800 chars):
 - Hook: one punchy devotional line directly quoting or paraphrasing from transcript, invoking inner awakening or Guru's blessing.
 - 4 bullet points (•), each highlighting a blessing, a teaching, or a disciple practice from transcript. Each should connect to inner experience or practice.
-- Generate 2-3 relevant devotional hashtags based on video content (Sanskritized Gujarati encouraged) before the fixed tags.
+- Generate 2-3 relevant devotional hashtags based on video content before the fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 
 FACEBOOK (max 1800 chars):
 - Hook: speak directly to a disciple seeking peace, reflection, or devotion; different from Instagram. Should feel nurturing and contemplative.
-- 4 bullet points (•), each highlighting a different blessing, teaching, or practice from transcript than Instagram bullets. Connect to inner reflection or meditation practice.
-- Generate 2-3 relevant devotional hashtags based on video content before fixed tags.
+- 4 bullet points (•), each highlighting a different blessing, teaching, or practice from transcript than Instagram bullets.
+- Generate 2-3 relevant devotional hashtags based on video content before the fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 
 THREADS (max 350 chars including hashtags):
@@ -50,7 +135,6 @@ THREADS (max 350 chars including hashtags):
 - 2 complete sentences summarizing key teaching, blessing, or transformative practice for disciples.
 - Generate 2-3 relevant devotional hashtags based on video content before fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
-- Use Sanskritized Gujarati words naturally for spiritual resonance.
 - Minimum 200 chars. Maximum 350 chars. Count carefully.
 
 TWITTER (max 260 chars including hashtags):
@@ -69,52 +153,35 @@ BLUESKY (max 260 chars including hashtags):
 - Hook sentence + one follow-up; both complete and devotional.
 - Generate 2-3 relevant devotional hashtags based on video content before fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
-- Use concise Sanskritized Gujarati terms where they naturally convey the teaching.
 - Minimum 180 chars. Maximum 260 chars. Count carefully.
 
 YOUTUBE (max 4500 chars):
 - Hook line from transcript; devotional tone.
-- 5 bullet points (•), structured as: 1) Blessing, 2) Practical disciple practice, 3) Transformation, 4–5) Key spiritual insights. Full sentences.
+- 5 bullet points (•), structured as: 1) Blessing, 2) Practical disciple practice, 3) Transformation, 4-5) Key spiritual insights. Full sentences.
 - Leave blank line between sections.
 - Generate 2-3 relevant devotional hashtags based on video content before fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda.
-- Provide "title" field: max 75 chars, punchy devotional Gujarati title from transcript.
+- Provide "title" field: max 75 chars, punchy devotional {target_name} title from transcript.
 
 === CRITICAL RULES ===
 1. Every caption must be a COMPLETE thought; no mid-sentence cutoffs.
 2. Instagram and Facebook hooks and bullets must be DIFFERENT in content and devotional angle.
 3. All platforms with hashtags must end with proper punctuation before hashtags.
 4. Respect minimum and maximum character limits on all platforms.
-5. Zero English; maintain devotional Gujarati throughout.
+5. Zero English except fixed hashtags; maintain devotional {target_name} throughout.
 6. Hashtags must be relevant to video content and spiritually aligned.
 7. Twitter uses only fixed tags: #KAILASA #Nithyananda.
 8. Each bullet or sentence must convey blessing, awakening, or sacred practice as per Guru's teaching.
-9. Encourage Sanskritized Gujarati words naturally for spiritual resonance.
+9. Tone and energy should align with platform guidance as described above.
 10. **CRITICAL: ALWAYS include required hashtags - NO EXCEPTIONS:**
    - Instagram, Facebook, YouTube, TikTok: MUST end with #KAILASA #Nithyananda
    - Threads, Bluesky: MUST end with #KAILASA
    - Failure to include required hashtags will cause regeneration
-11. Tone and energy should align with platform guidance as described above.
 
 === OUTPUT ===
 Valid JSON only. No markdown fences. Exactly 7 keys: instagram, facebook, tiktok, twitter, youtube, threads, bluesky
-Values: {"caption": "...gujarati..."} — youtube also includes: {"title": "...max 75 chars...", "caption": "..."}
-"""
-
-
-def _build_prompt(main_topic, key_message, theme, transcript=""):
-    if len(transcript) > MAX_TRANSCRIPT_CHARS:
-        transcript = transcript[:MAX_TRANSCRIPT_CHARS] + "..."
-        log("CAPTION", f"  Transcript capped at {MAX_TRANSCRIPT_CHARS} chars")
-    transcript_block = (
-        f"=== FULL TRANSCRIPT (Gujarati) ===\n{transcript}\n\n"
-        if transcript else ""
-    )
-    return (CAPTION_PROMPT_TEMPLATE
-            .replace("MAIN_TOPIC_HERE",  main_topic  or "")
-            .replace("KEY_MESSAGE_HERE", key_message or "")
-            .replace("THEME_HERE",       theme       or "teaching")
-            .replace("TRANSCRIPT_BLOCK_HERE", transcript_block))
+Values: {{"caption": "...{target_name.lower()}..."}} — youtube also includes: {{"title": "...max 75 chars...", "caption": "..."}}
+'''
 
 
 def _extract_str(val):
@@ -179,9 +246,19 @@ def _sanitize_caption_text(text, newline_before_tags=True):
     return s
 
 
-def _is_gujarati(text):
-    if not text: return False
-    return sum(1 for c in text if "\u0a80" <= c <= "\u0aff") / len(text) > 0.6
+def _contains_target_script(text, target_language):
+    if not text:
+        return False
+    ranges = _language_meta(target_language).get("script_ranges", [])
+    if not ranges:
+        return True
+    total = len(text)
+    hits = 0
+    for c in text:
+        code = ord(c)
+        if any(start <= code <= end for start, end in ranges):
+            hits += 1
+    return (hits / max(total, 1)) > 0.2
 
 
 def _call_mistral(api_key, prompt, max_retries=3):
@@ -297,7 +374,7 @@ def _strict_validate(captions):
     return True, "ok"
 
 
-def generate_all_captions(vision_data, api_key=None, output_dir="workspace", segments=None, return_meta=False):
+def generate_all_captions(vision_data, api_key=None, output_dir="workspace", segments=None, target_language="gu", return_meta=False):
     os.makedirs(output_dir, exist_ok=True)
     meta = {
         "used_fallback": False,
@@ -318,7 +395,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
 
     log("CAPTION", f"Vision -> topic: {main_topic[:60]}")
     log("CAPTION", f"Vision -> key_message: {key_message[:100]}")
-    prompt      = _build_prompt(main_topic, key_message, theme, transcript_text)
+    prompt      = _build_prompt(main_topic, key_message, theme, transcript_text, target_language=target_language)
     captions    = {}
     mistral_key = get_mistral_api_key(api_key)
 
@@ -333,10 +410,13 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
             if missing: log("CAPTION", f"  WARNING: Missing platforms: {missing}")
             if empty:   log("CAPTION", f"  WARNING: Empty captions: {empty}")
 
-            # Gujarati script check
-            bad_script = [p for p, d in captions.items() if not _is_gujarati(d.get("caption",""))]
-            if bad_script:
-                log("CAPTION", f"  WARNING: Non-Gujarati output in {bad_script}")
+            # Target-language script check where detectable
+            bad_script = [
+                p for p, d in captions.items()
+                if not _contains_target_script(d.get("caption", ""), target_language)
+            ]
+            if bad_script and _language_meta(target_language).get("script_ranges"):
+                log("CAPTION", f"  WARNING: Non-{_language_meta(target_language)['name']} output in {bad_script}")
 
             # Short caption check + single retry
             bad_short = [p for p, mins in SHORT_MINIMUMS.items()
@@ -363,12 +443,12 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
             log("CAPTION", f"Error: {e} — fallback.")
             meta["used_fallback"] = True
             meta["reason"] = str(e)
-            captions = _fallback_captions(vision_data)
+            captions = _fallback_captions(vision_data, target_language=target_language)
     else:
         log("CAPTION", "No key — fallback.")
         meta["used_fallback"] = True
         meta["reason"] = "No Mistral API key"
-        captions = _fallback_captions(vision_data)
+        captions = _fallback_captions(vision_data, target_language=target_language)
 
     # Ensure we have captions (fallback if empty)
     if not captions:
@@ -376,7 +456,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
         meta["used_fallback"] = True
         if not meta.get("reason"):
             meta["reason"] = "Caption generation produced empty output"
-        captions = _fallback_captions(vision_data)
+        captions = _fallback_captions(vision_data, target_language=target_language)
 
     # Additional validation for required tags and character limits
     for p, data in captions.items():
@@ -422,16 +502,15 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                 except Exception as e:
                     log("CAPTION",f"Failed to regenerate {p}: {e}")
 
-        # Check Gujarati content for Gujarati platforms
-        if p in ["instagram", "facebook", "youtube", "threads", "bluesky"]:
-            if not _contains_gujarati(caption):
-                log("CAPTION",f"No Gujarati characters in {p} caption — regenerating...")
+        # Check target-language script where detectable
+        if _language_meta(target_language).get("script_ranges") and p in ["instagram", "facebook", "youtube", "threads", "bluesky"]:
+            if not _contains_target_script(caption, target_language):
+                log("CAPTION",f"No {_language_meta(target_language)['name']} script detected in {p} caption — regenerating...")
                 try:
-                    # Build regeneration prompt
                     retry_prompt = (
-                        f"{prompt}\n\nCRITICAL: The previous caption for {p} had no Gujarati characters. "
-                        f"Must be written in Gujarati language with Sanskritized terms. "
-                        f"Regenerate the caption for {p} in proper Gujarati. "
+                        f"{prompt}\n\nCRITICAL: The previous caption for {p} was not clearly written in {_language_meta(target_language)['name']}. "
+                        f"Must be written in {_language_meta(target_language)['name']}. "
+                        f"Regenerate the caption for {p} in proper {_language_meta(target_language)['name']}. "
                         f"Return full JSON for all 7 platforms."
                     )
                     raw = _call_mistral(mistral_key, retry_prompt)
@@ -470,12 +549,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
     log("CAPTION","All captions saved.")
     return (captions, meta) if return_meta else captions
 
-def _contains_gujarati(text):
-    """Check if text contains Gujarati characters"""
-    gujarati_range = range(0x0A80, 0x0AFF + 1)
-    return any(ord(char) in gujarati_range for char in text)
-
-def _fallback_captions(vision_data):
+def _fallback_captions(vision_data, target_language="gu"):
     topic    = vision_data.get("main_topic","") or ""
     conflict = vision_data.get("core_conflict","") or ""
     prov     = vision_data.get("provocative_angle","") or ""
@@ -483,14 +557,15 @@ def _fallback_captions(vision_data):
     body1    = (conflict or prov or topic)[:150]
     body2    = topic[:100] if topic and topic != body1 else ""
     bullets  = BULLET + " " + body1
-    if body2: bullets += "\n" + BULLET + " " + body2
+    if body2:
+        bullets += "\n" + BULLET + " " + body2
     long_cap = hook + "\n\n" + bullets + "\n\n" + TAGS4
     return {
         "instagram": {"caption": long_cap},
         "facebook":  {"caption": long_cap},
-        "tiktok":    {"caption": _smart_trim(hook, 160)},
-        "twitter":   {"caption": _smart_trim(hook + " " + body1, 240)},
+        "tiktok":    {"caption": _smart_trim(hook + "\n\n#KAILASA #Nithyananda", 180)},
+        "twitter":   {"caption": _smart_trim(hook + " " + body1 + "\n\n#KAILASA #Nithyananda", 260)},
         "threads":   {"caption": _smart_trim(hook + "\n\n" + body1 + "\n\n" + TAGS3, 350)},
-        "bluesky":   {"caption": _smart_trim(hook + "\n\n" + TAGS2, 260)},
-        "youtube":   {"title": _smart_trim(topic or hook, 75), "caption": long_cap},
+        "bluesky":   {"caption": _smart_trim(hook + "\n\n" + body1 + "\n\n" + TAGS2, 260)},
+        "youtube":   {"title": _smart_trim(topic or hook, 75), "caption": _smart_trim(long_cap, 4500)},
     }

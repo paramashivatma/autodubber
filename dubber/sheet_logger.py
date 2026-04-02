@@ -26,7 +26,9 @@ LANGUAGE_CODES_TO_NAMES = {
     "te": "Telugu",
     "kn": "Kannada",
     "ml": "Malayalam",
-    "bn": "Bengali"
+    "bn": "Bengali",
+    "es": "Spanish",
+    "ru": "Russian"
 }
 
 def _get_full_language_name(lang_code: str) -> str:

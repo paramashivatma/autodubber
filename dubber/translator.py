@@ -168,6 +168,7 @@ def _gemini_translate(text, source_hint="auto", target_language="gu"):
     lang_names = {
         "gu": "Gujarati", "hi": "Hindi", "ta": "Tamil",
         "te": "Telugu", "kn": "Kannada", "ml": "Malayalam",
+        "bn": "Bengali", "es": "Spanish", "ru": "Russian",
         "en": "English", "auto": "the detected language",
     }
     
@@ -224,6 +225,7 @@ def _gemini_translate_batch(texts, source_hint, target_language):
     lang_names = {
         "gu": "Gujarati", "hi": "Hindi", "ta": "Tamil",
         "te": "Telugu", "kn": "Kannada", "ml": "Malayalam",
+        "bn": "Bengali", "es": "Spanish", "ru": "Russian",
         "en": "English", "auto": "the detected language",
     }
     target_name = lang_names.get(target_language, target_language)

@@ -198,4 +198,4 @@ dubber/
 - Keep this repo private until all keys are confirmed rotated.
 
 ## License
-No license file is currently included. Add one before public/open distribution if needed.
+This project is licensed under the MIT License. See [LICENSE](LICENSE).

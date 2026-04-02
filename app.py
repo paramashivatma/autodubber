@@ -41,6 +41,12 @@ VOICES = {
     "Tamil - Pallavi (F)":     "ta-IN-PallaviNeural",
     "Telugu - Mohan (M)":      "te-IN-MohanNeural",
     "Telugu - Shruti (F)":     "te-IN-ShrutiNeural",
+    "Bengali - Pradeep (M)":   "bn-BD-PradeepNeural",
+    "Bengali - Nabanita (F)":  "bn-BD-NabanitaNeural",
+    "Spanish - Alvaro (M)":    "es-ES-AlvaroNeural",
+    "Spanish - Elvira (F)":    "es-ES-ElviraNeural",
+    "Russian - Dmitry (M)":    "ru-RU-DmitryNeural",
+    "Russian - Svetlana (F)":  "ru-RU-SvetlanaNeural",
     "English - Ryan (M)":      "en-GB-RyanNeural",
     "English - Sonia (F)":     "en-GB-SoniaNeural",
 }
@@ -48,6 +54,17 @@ WHISPER_MODELS = ["tiny","base","small","medium","large"]
 LANGUAGES = {
     "English":"en","Hindi":"hi","Gujarati":"gu",
     "Tamil":"ta","Telugu":"te","Kannada":"kn","Malayalam":"ml","Bengali":"bn",
+    "Spanish":"es","Russian":"ru",
+}
+LANGUAGE_DEFAULT_VOICE = {
+    "Gujarati": "Gujarati - Niranjan (M)",
+    "Hindi": "Hindi - Madhur (M)",
+    "Tamil": "Tamil - Valluvar (M)",
+    "Telugu": "Telugu - Mohan (M)",
+    "Bengali": "Bengali - Pradeep (M)",
+    "Spanish": "Spanish - Alvaro (M)",
+    "Russian": "Russian - Dmitry (M)",
+    "English": "English - Ryan (M)",
 }
 
 DUB_TOTAL_STAGES = 11
@@ -185,7 +202,8 @@ def run_dub_pipeline(video_input, voice, model_size, src_lang, tgt_lang,
 
         status_cb(_stage_text(7, "Generate captions"))
         captions, caption_meta = generate_all_captions(
-            vision, mistral_key, WORKSPACE, segments=segs, return_meta=True
+            vision, mistral_key, WORKSPACE, segments=segs,
+            target_language=tgt_lang, return_meta=True
         )
         if caption_meta.get("used_fallback"):
             status_cb(_backup_warning("Mistral Caption API", caption_meta.get("reason", "unknown"), "template captions"))
@@ -632,9 +650,10 @@ class App(tk.Tk):
 
         tk.Label(self.t_dub, text="2) Language & Voice", font=("Segoe UI Semibold", 11)).grid(row=2, column=0, sticky="w", **pad)
         tk.Label(self.t_dub, text="Voice:", font=("Segoe UI", 10)).grid(row=3,column=0,sticky="w",**pad)
-        self.voice_var = tk.StringVar(value=list(VOICES.keys())[0])
-        ttk.Combobox(self.t_dub, textvariable=self.voice_var, values=list(VOICES.keys()),
-                     width=30, state="readonly").grid(row=3,column=1,sticky="w",**pad)
+        self.voice_var = tk.StringVar(value=LANGUAGE_DEFAULT_VOICE.get("Gujarati", list(VOICES.keys())[0]))
+        self.voice_combo = ttk.Combobox(self.t_dub, textvariable=self.voice_var, values=list(VOICES.keys()),
+                     width=30, state="readonly")
+        self.voice_combo.grid(row=3,column=1,sticky="w",**pad)
 
         tk.Label(self.t_dub, text="Whisper model:", font=("Segoe UI", 10)).grid(row=4,column=0,sticky="w",**pad)
         self.model_var = tk.StringVar(value="medium")
@@ -649,9 +668,12 @@ class App(tk.Tk):
 
         tk.Label(self.t_dub, text="Target lang:", font=("Segoe UI", 10)).grid(row=6,column=0,sticky="w",**pad)
         self.tgt_lang_var = tk.StringVar(value="Gujarati")
-        ttk.Combobox(self.t_dub, textvariable=self.tgt_lang_var,
+        self.tgt_lang_combo = ttk.Combobox(self.t_dub, textvariable=self.tgt_lang_var,
                      values=list(LANGUAGES.keys()), width=16,
-                     state="readonly").grid(row=6,column=1,sticky="w",**pad)
+                     state="readonly")
+        self.tgt_lang_combo.grid(row=6,column=1,sticky="w",**pad)
+        self.tgt_lang_combo.bind("<<ComboboxSelected>>", self._on_target_language_changed)
+        self._sync_voice_options()
 
         ttk.Separator(self.t_dub,orient="horizontal").grid(row=7,column=0,columnspan=3,sticky="ew",pady=8)
         tk.Label(self.t_dub, text="3) Audio Blend & Platforms", font=("Segoe UI Semibold", 11)).grid(row=8, column=0, sticky="w", **pad)
@@ -863,6 +885,23 @@ class App(tk.Tk):
             self.publish_flyer_btn.pack_forget()
             # Show Run Pipeline button
             self.run_btn.pack(side="right", padx=6)
+
+    def _voice_options_for_language(self, language_name):
+        prefix = f"{language_name} -"
+        matches = [label for label in VOICES.keys() if label.startswith(prefix)]
+        return matches or list(VOICES.keys())
+
+    def _sync_voice_options(self):
+        target_language = self.tgt_lang_var.get() or "Gujarati"
+        options = self._voice_options_for_language(target_language)
+        if hasattr(self, 'voice_combo'):
+            self.voice_combo["values"] = options
+        current = self.voice_var.get().strip()
+        if current not in options:
+            self.voice_var.set(LANGUAGE_DEFAULT_VOICE.get(target_language, options[0]))
+
+    def _on_target_language_changed(self, event=None):
+        self._sync_voice_options()
 
     def _toggle_bgm(self):
         self.bgm_scale.config(state="normal" if self.bgm_var.get() else "disabled")
