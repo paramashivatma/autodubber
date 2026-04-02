@@ -195,7 +195,7 @@ dubber/
 ## Security notes
 - Never commit `.env`, credentials JSON, or API keys.
 - Rotate keys immediately if exposed.
-- Keep this repo private until all keys are confirmed rotated.
+- Keep real secrets out of the repo and use templates like `.env.example` and `credentials.example.json` for public sharing.
 
 ## License
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
