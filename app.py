@@ -495,13 +495,48 @@ class App(tk.Tk):
         except Exception:
             return ""
 
+
+    def _get_media_duration_text(self, media_path):
+        """Return HH:MM:SS or MM:SS for sheet logging."""
+        if not media_path or not os.path.exists(media_path):
+            return ""
+        try:
+            from dubber.video_builder import _ffprobe_duration
+            total_seconds = int(round(float(_ffprobe_duration(media_path))))
+            hours, rem = divmod(total_seconds, 3600)
+            minutes, seconds = divmod(rem, 60)
+            if hours:
+                return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            return f"{minutes:02d}:{seconds:02d}"
+        except Exception:
+            return ""
+
     def _build_video_sheet_title(self, approved_captions, video_path):
-        """Return `Gujarati Title (English Title)` when available."""
+        """Return `Target-language Title (English Title)` with caption fallback."""
         fallback = os.path.splitext(os.path.basename(video_path))[0]
-        youtube = approved_captions.get("youtube", {}) if isinstance(approved_captions, dict) else {}
         gujarati_title = ""
-        if isinstance(youtube, dict):
-            gujarati_title = (youtube.get("title") or "").strip()
+
+        if isinstance(approved_captions, dict):
+            youtube = approved_captions.get("youtube", {})
+            if isinstance(youtube, dict):
+                gujarati_title = (youtube.get("title") or "").strip()
+
+            if not gujarati_title:
+                for platform in ("instagram", "facebook", "threads", "twitter", "tiktok", "bluesky"):
+                    pdata = approved_captions.get(platform, {})
+                    caption = ""
+                    if isinstance(pdata, dict):
+                        caption = (pdata.get("caption") or "").strip()
+                    elif isinstance(pdata, str):
+                        caption = pdata.strip()
+                    if caption:
+                        first_line = caption.splitlines()[0].strip()
+                        main_part = first_line.split("#")[0].strip()
+                        sentence_parts = [part.strip() for part in re.split(r'[.!?\n]+', main_part) if part.strip()]
+                        gujarati_title = sentence_parts[0] if sentence_parts else main_part
+                        if gujarati_title:
+                            break
+
         if not gujarati_title:
             return fallback
         english_title = self._translate_title_to_english(gujarati_title)
@@ -1474,13 +1509,17 @@ class App(tk.Tk):
                         sheet_success, sheet_msg = quick_update_from_publish_result(
                             video_title=formatted_title,
                             publish_results=results,
-                            duration="",
+                            duration=self._get_media_duration_text(video_path),
                             source_lang=self.src_lang_var.get() or "English",
                             target_lang=self.tgt_lang_var.get() or "Gujarati",
-                            content_format="",  # keep blank for videos in sheet
+                            content_format="video",
                         )
-                        log("PUBLISH", f"✅ Google Sheet update: {sheet_msg}")
-                        self._queue_ui(lambda: self._update_dub_results(f"✅ {_stage_text(11, 'Log to Google Sheet')} {sheet_msg}"))
+                        if sheet_success:
+                            log("PUBLISH", f"✅ Google Sheet update: {sheet_msg}")
+                            self._queue_ui(lambda: self._update_dub_results(f"✅ {_stage_text(11, 'Log to Google Sheet')} {sheet_msg}"))
+                        else:
+                            log("PUBLISH", f"⚠️ Google Sheet update skipped: {sheet_msg}")
+                            self._queue_ui(lambda: self._update_dub_results(f"⚠️ {_stage_text(11, 'Log to Google Sheet')} {sheet_msg}"))
                     
                     except ImportError:
                         log("PUBLISH", "⚠️ Google Sheet logger not available")

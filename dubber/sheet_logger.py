@@ -118,11 +118,10 @@ def _parse_logs_for_data(log_buffer: List[str]) -> Dict:
     return data
 
 
-def _format_platforms_list(platforms: List[str]) -> str:
-    """Format platforms list for column H."""
+def _platform_display_name(platform: str) -> str:
     platform_names = {
         "youtube": "YouTube",
-        "instagram": "Instagram", 
+        "instagram": "Instagram",
         "tiktok": "TikTok",
         "facebook": "Facebook",
         "twitter": "Twitter",
@@ -134,7 +133,22 @@ def _format_platforms_list(platforms: List[str]) -> str:
         "snapchat": "Snapchat",
         "gmb": "Google Business"
     }
-    formatted = [platform_names.get(p, p.title()) for p in platforms]
+    return platform_names.get(platform, platform.title())
+
+
+def _format_platforms_list(platforms: List[str]) -> str:
+    """Format platforms list for column H."""
+    formatted = [_platform_display_name(p) for p in platforms]
+    return ",".join(formatted) if formatted else ""
+
+
+def _format_publish_platforms(successful_results: Dict[str, Dict], unconfirmed_results: Dict[str, Dict]) -> str:
+    """Format confirmed and unconfirmed publish targets distinctly."""
+    formatted = []
+    for platform in successful_results.keys():
+        formatted.append(_platform_display_name(platform))
+    for platform in unconfirmed_results.keys():
+        formatted.append(f"{_platform_display_name(platform)} (unconfirmed)")
     return ",".join(formatted) if formatted else ""
 
 def _format_post_ids(publish_results: Dict[str, Dict]) -> str:
@@ -279,7 +293,7 @@ def update_video_tracker(
             # else: will append new row at end
         
         # Prepare row data (columns A-J)
-        platforms_str = _format_platforms_list(data["platforms"])
+        platforms_str = _format_publish_platforms(successful_results, unconfirmed_results)
         
         row_data = [
             data["title"],
@@ -341,11 +355,15 @@ def quick_update_from_publish_result(
         if not sheet_id:
             return False, "No Google Sheet ID found"
         
-        creds_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), 
-            CREDENTIALS_FILE
-        )
-        
+        configured_file = get_credentials_file(CREDENTIALS_FILE)
+        if os.path.isabs(configured_file):
+            creds_path = configured_file
+        else:
+            creds_path = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                configured_file
+            )
+
         if not os.path.exists(creds_path):
             return False, f"Credentials not found: {creds_path}"
         
@@ -377,8 +395,8 @@ def quick_update_from_publish_result(
             status_text = "Failed ❌"
 
         raw_format = str(content_format or "").strip().lower()
-        if raw_format in ("", "video"):
-            format_label = ""
+        if raw_format == "video":
+            format_label = "Video"
         elif raw_format == "image":
             format_label = "Image"
         else:
@@ -392,10 +410,7 @@ def quick_update_from_publish_result(
             "duration": duration,
             "source_lang": source_lang,
             "target_lang": target_lang,
-            "platforms": [
-                p for p in (publish_results or {}).keys()
-                if p in successful_results or p in unconfirmed_results
-            ],
+            "platforms": [],
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         
