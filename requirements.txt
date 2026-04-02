@@ -13,3 +13,5 @@ google-genai
 gspread
 google-auth
 zernio
+python-dotenv
+atproto

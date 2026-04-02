@@ -6,9 +6,9 @@ Replaces complex custom publishing with official SDK
 import os
 import mimetypes
 import subprocess
-import threading
 from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConnectionError, ZernioRateLimitError, ZernioTimeoutError
 from dubber.config import get_platform_accounts
+from dubber.bluesky_poster import get_bluesky_poster
 from dubber.utils import log, PLATFORM_LIMITS
 
 def _extract_public_url(upload_result):
@@ -91,6 +91,53 @@ def _probe_video_duration_seconds(path):
         return float((result.stdout or "").strip())
     except Exception:
         return None
+
+
+def _publish_direct_bluesky(content, progress_cb=None, total_platforms=1):
+    """Publish directly to Bluesky using env-based credentials."""
+    if progress_cb:
+        progress_cb(0, total_platforms, "bluesky", "posting")
+
+    poster = get_bluesky_poster()
+    if not getattr(poster, "enabled", False):
+        msg = "Skipped: direct Bluesky credentials are missing or login failed."
+        log("BLUESKY", msg)
+        if progress_cb:
+            progress_cb(1, total_platforms, "bluesky", "skipped")
+        return {
+            "bluesky": {
+                "status": "skipped",
+                "platform": "bluesky",
+                "error": msg,
+                "error_message": msg,
+            }
+        }
+
+    try:
+        response = poster.post(content)
+        post_id = getattr(response, "uri", None) or getattr(response, "cid", None) or "posted"
+        log("BLUESKY", f"Direct post successful: {post_id}")
+        if progress_cb:
+            progress_cb(1, total_platforms, "bluesky", "ok")
+        return {
+            "bluesky": {
+                "status": "ok",
+                "platform": "bluesky",
+                "post_id": str(post_id),
+            }
+        }
+    except Exception as exc:
+        log("BLUESKY", f"Direct post failed: {exc}")
+        if progress_cb:
+            progress_cb(1, total_platforms, "bluesky", "error")
+        return {
+            "bluesky": {
+                "status": "error",
+                "platform": "bluesky",
+                "error": str(exc),
+                "error_message": str(exc),
+            }
+        }
 
 
 def _publish_single_platform(
@@ -506,16 +553,49 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
     log("PUBLISH", f"  📄 Fallback files: {list(fallback_files.keys()) if fallback_files else None}")
     
     try:
+        selected_platforms = list(platforms or [])
+        zernio_platforms = [p for p in selected_platforms if str(p).lower() != "bluesky"]
+
+        direct_default_content = ""
+        direct_platform_contents = {}
+        for platform, platform_data in (captions or {}).items():
+            if isinstance(platform_data, dict) and platform_data.get("caption"):
+                text = _fit_platform_content(platform, platform_data["caption"])
+                if not direct_default_content:
+                    direct_default_content = text
+                direct_platform_contents[platform] = text
+            elif isinstance(platform_data, str):
+                text = _fit_platform_content(platform, platform_data)
+                if not direct_default_content:
+                    direct_default_content = text
+                direct_platform_contents[platform] = text
+        if not direct_default_content:
+            direct_default_content = "Published via AutoDubber"
+
+        direct_bluesky_results = {}
+        if any(str(p).lower() == "bluesky" for p in selected_platforms):
+            bluesky_content = direct_platform_contents.get("bluesky") or direct_default_content
+            direct_bluesky_results = _publish_direct_bluesky(
+                bluesky_content,
+                progress_cb=progress_cb,
+                total_platforms=len(selected_platforms) or 1,
+            )
+
+        if not zernio_platforms:
+            if progress_cb:
+                progress_cb(len(selected_platforms), len(selected_platforms) or 1, "sdk", "completed")
+            return direct_bluesky_results
+
         # Initialize Zernio client with timeout.
         # Bluesky can take noticeably longer for video processing.
-        has_bluesky = any(str(p).lower() == "bluesky" for p in (platforms or []))
+        has_bluesky = any(str(p).lower() == "bluesky" for p in (zernio_platforms or []))
         sdk_timeout = 360.0 if has_bluesky else 120.0
         log("PUBLISH", f"  🔧 Initializing Zernio client with timeout={sdk_timeout}s...")
         client = Zernio(api_key=api_key, timeout=sdk_timeout)
         log("PUBLISH", "✅ Zernio SDK initialized")
         
         if progress_cb:
-            progress_cb(0, len(platforms), "sdk", "initializing")
+            progress_cb(0, len(selected_platforms), "sdk", "initializing")
         
         # Prepare media URLs - upload video if needed
         media_urls = []
@@ -638,7 +718,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             default_content = "Published via AutoDubber"
 
         # Choose a safe shared content baseline for strict platforms.
-        strict_selected = [p for p in platforms if p in PLATFORM_LIMITS]
+        strict_selected = [p for p in zernio_platforms if p in PLATFORM_LIMITS]
         if strict_selected:
             strictest = min(strict_selected, key=lambda p: PLATFORM_LIMITS.get(p, 10_000))
             strict_caption = platform_specific_contents.get(strictest)
@@ -651,7 +731,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         platform_accounts = get_platform_accounts()
         platform_list = []
         preflight_results = {}
-        for platform in platforms:
+        for platform in zernio_platforms:
             account_id = platform_accounts.get(platform)
             if account_id:
                 platform_entry = {
@@ -690,7 +770,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                     "error_message": msg,
                 }
                 if progress_cb:
-                    progress_cb(0, len(platforms), "twitter", "skipped")
+                    progress_cb(0, len(selected_platforms), "twitter", "skipped")
                 continue
             filtered_platforms.append(entry)
 
@@ -702,15 +782,20 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         if not platform_list:
             error_msg = "No valid platform accounts configured"
             log("PUBLISH", f"❌ {error_msg}")
+            if direct_bluesky_results:
+                direct_bluesky_results.update(preflight_results)
+                if not preflight_results:
+                    direct_bluesky_results["error"] = error_msg
+                return direct_bluesky_results
             if preflight_results:
                 return preflight_results
             return {"error": error_msg}
         
         if progress_cb:
-            progress_cb(1, len(platforms), "sdk", "uploading_media")
+            progress_cb(1, len(selected_platforms), "sdk", "uploading_media")
         
         if progress_cb:
-            progress_cb(2, len(platforms), "sdk", "creating_post")
+            progress_cb(2, len(selected_platforms), "sdk", "creating_post")
         
         log("PUBLISH", f"🚀 Creating post for {len(platform_list)} platforms...")
         log("PUBLISH", f"  Content: {default_content[:100]}...")
@@ -739,53 +824,22 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             if not platforms_without_media:
                 error_msg = "No media uploaded but all selected platforms require video (youtube, tiktok)"
                 log("PUBLISH", f"❌ {error_msg}")
+                if direct_bluesky_results:
+                    merged = dict(direct_bluesky_results)
+                    merged.update(preflight_results)
+                    merged["error"] = error_msg
+                    return merged
                 return {"error": error_msg}
             if skipped_video_required:
                 log("PUBLISH", f"⚠️ Skipped video-required platforms without media: {skipped_video_required}")
             platform_list = platforms_without_media
 
-        results = dict(preflight_results)
-        total_platforms = len(platforms)
-        processed_count = 0
-        bluesky_entry = None
-        remaining_entries = []
+        results = dict(direct_bluesky_results)
+        results.update(preflight_results)
+        total_platforms = len(selected_platforms)
+        processed_count = len(direct_bluesky_results) + len(preflight_results)
+
         for platform_entry in platform_list:
-            if str(platform_entry.get("platform", "")).lower() == "bluesky" and bluesky_entry is None:
-                bluesky_entry = platform_entry
-            else:
-                remaining_entries.append(platform_entry)
-
-        bluesky_results = {}
-        bluesky_exception = {}
-
-        if bluesky_entry is not None:
-            if progress_cb:
-                progress_cb(processed_count, total_platforms, "bluesky", "posting")
-
-            def _bluesky_worker():
-                try:
-                    _run_single_platform_publish(
-                        api_key,
-                        bluesky_entry,
-                        media_items,
-                        platform_specific_contents,
-                        default_content,
-                        publish_now,
-                        scheduled_for,
-                        bluesky_results,
-                        processed_count=len(preflight_results),
-                        total_platforms=total_platforms,
-                        progress_cb=None,
-                    )
-                except Exception as exc:
-                    bluesky_exception["exc"] = exc
-
-            bluesky_thread = threading.Thread(target=_bluesky_worker, daemon=True)
-            bluesky_thread.start()
-        else:
-            bluesky_thread = None
-
-        for platform_entry in remaining_entries:
             platform_name = platform_entry["platform"]
 
             if progress_cb:
@@ -806,31 +860,8 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             )
             processed_count += 1
 
-        if bluesky_thread is not None:
-            log("PUBLISH", "⏳ Waiting for Bluesky to finish...")
-            bluesky_thread.join()
-            if "exc" in bluesky_exception:
-                raise bluesky_exception["exc"]
-            if bluesky_results:
-                parsed_bluesky = {}
-                bluesky_result_value = bluesky_results.get("bluesky")
-                if isinstance(bluesky_result_value, dict):
-                    status = str(bluesky_result_value.get("status", "")).lower()
-                    if progress_cb:
-                        if status in {"ok", "published", "success", "submitted", "queued", "processing", "likely_live", "duplicate_live"}:
-                            progress_cb(min(processed_count + 1, total_platforms), total_platforms, "bluesky", "ok" if status != "likely_live" else "likely_live")
-                        elif status in {"unconfirmed", "submitted_unconfirmed", "timeout-unconfirmed"}:
-                            progress_cb(min(processed_count + 1, total_platforms), total_platforms, "bluesky", "unconfirmed")
-                        elif status in {"skipped", "skip"}:
-                            progress_cb(min(processed_count + 1, total_platforms), total_platforms, "bluesky", "skipped")
-                        else:
-                            progress_cb(min(processed_count + 1, total_platforms), total_platforms, "bluesky", "error")
-                    parsed_bluesky = bluesky_results
-                results.update(parsed_bluesky)
-                processed_count += 1
-
         if progress_cb:
-            progress_cb(len(platforms), len(platforms), "sdk", "completed")
+            progress_cb(len(selected_platforms), len(selected_platforms), "sdk", "completed")
 
         log("PUBLISH", f"🎉 SDK publishing completed! {len(results)} platforms")
         return results
@@ -838,7 +869,11 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         error_msg = f"SDK publishing failed: {str(e)}"
         log("PUBLISH", f"❌ {error_msg}")
         if progress_cb:
-            progress_cb(len(platforms), len(platforms), "sdk", "error")
+            progress_cb(len(selected_platforms), len(selected_platforms), "sdk", "error")
+        if 'direct_bluesky_results' in locals() and direct_bluesky_results:
+            merged = dict(direct_bluesky_results)
+            merged["error"] = error_msg
+            return merged
         return {"error": error_msg}
 
 # Simple wrapper function for app.py

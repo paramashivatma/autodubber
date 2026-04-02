@@ -316,7 +316,7 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.03")
+        self.title("Video Dubber v1.04")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -1649,6 +1649,7 @@ class App(tk.Tk):
             return
 
         missing_account_envs = get_missing_platform_account_envs(selected_platforms)
+        missing_account_envs.pop("bluesky", None)
         if missing_account_envs:
             self._stop_activity_mirror("dub")
             self._end_publish("dub")
