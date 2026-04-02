@@ -232,18 +232,6 @@ def _build_status_text(
         return f"Failed ❌{suffix}"
     return "Failed ❌"
 
-def _format_post_ids(publish_results: Dict[str, Dict]) -> str:
-    """Build a comma-separated list of platform:post_id values."""
-    parts = []
-    if not isinstance(publish_results, dict):
-        return ""
-    for platform, result in publish_results.items():
-        if isinstance(result, dict):
-            post_id = result.get("post_id") or result.get("_id") or result.get("id")
-            if post_id:
-                parts.append(f"{platform}:{post_id}")
-    return ",".join(parts)
-
 def _is_success_result(result) -> bool:
     if isinstance(result, bool):
         return result
@@ -346,16 +334,16 @@ def update_video_tracker(
                 # Update headers to new format
                 new_headers = [
                     "Video Title", "Status", "Attempts", "Format", "Duration",
-                    "Source Lang", "Target Lang", "Platforms", "Post IDs", "Timestamp"
+                    "Source Lang", "Target Lang", "Platforms", "Timestamp"
                 ]
-                worksheet.update("A1:J1", [new_headers])
+                worksheet.update("A1:I1", [new_headers])
                 log("SHEET", "Updated headers from 'YouTube URL' to 'Format'")
         except gspread.exceptions.WorksheetNotFound:
             # Create worksheet with headers
-            worksheet = spreadsheet.add_worksheet(SHEET_NAME, rows=1000, cols=10)
+            worksheet = spreadsheet.add_worksheet(SHEET_NAME, rows=1000, cols=9)
             headers = [
                 "Video Title", "Status", "Attempts", "Format", "Duration",
-                "Source Lang", "Target Lang", "Platforms", "Post IDs", "Timestamp"
+                "Source Lang", "Target Lang", "Platforms", "Timestamp"
             ]
             worksheet.append_row(headers)
             log("SHEET", f"Created '{SHEET_NAME}' worksheet with headers")
@@ -389,7 +377,7 @@ def update_video_tracker(
                 log("SHEET", f"Using empty row {row_index}")
             # else: will append new row at end
         
-        # Prepare row data (columns A-J)
+        # Prepare row data (columns A-I)
         platforms_str = _format_publish_platforms(successful_results, unconfirmed_results)
         
         row_data = [
@@ -401,13 +389,12 @@ def update_video_tracker(
             _get_full_language_name(data["source_lang"]),
             _get_full_language_name(data["target_lang"]),
             platforms_str,
-            "",
             data["timestamp"]
         ]
         
         if row_index:
             # Update existing row
-            worksheet.update(f"A{row_index}:J{row_index}", [row_data])
+            worksheet.update(f"A{row_index}:I{row_index}", [row_data])
             log("SHEET", f"Updated row {row_index} for '{data['title']}'")
             return True, f"Updated row {row_index}"
         else:
@@ -545,15 +532,15 @@ def quick_update_from_publish_result(
                 # Update headers to new format
                 new_headers = [
                     "Video Title", "Status", "Attempts", "Format", "Duration",
-                    "Source Lang", "Target Lang", "Platforms", "Post IDs", "Timestamp"
+                    "Source Lang", "Target Lang", "Platforms", "Timestamp"
                 ]
-                worksheet.update("A1:J1", [new_headers])
+                worksheet.update("A1:I1", [new_headers])
                 log("SHEET", "Updated headers from 'YouTube URL' to 'Format'")
         except gspread.exceptions.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(SHEET_NAME, rows=1000, cols=10)
+            worksheet = spreadsheet.add_worksheet(SHEET_NAME, rows=1000, cols=9)
             headers = [
                 "Video Title", "Status", "Attempts", "Format", "Duration",
-                "Source Lang", "Target Lang", "Platforms", "Post IDs", "Timestamp"
+                "Source Lang", "Target Lang", "Platforms", "Timestamp"
             ]
             worksheet.append_row(headers)
         
@@ -591,29 +578,15 @@ def quick_update_from_publish_result(
             unconfirmed_results,
             skipped_results,
         )
-        post_ids_payload = dict(successful_results)
-        for platform, result in likely_live_results.items():
-            if platform not in post_ids_payload:
-                pid = ""
-                if isinstance(result, dict):
-                    pid = result.get("post_id") or result.get("_id") or result.get("id") or "likely_live"
-                post_ids_payload[platform] = {"post_id": f"{pid} (likely_live)"}
-        for platform, result in unconfirmed_results.items():
-            if platform not in post_ids_payload:
-                pid = ""
-                if isinstance(result, dict):
-                    pid = result.get("post_id") or result.get("_id") or result.get("id") or "unconfirmed"
-                post_ids_payload[platform] = {"post_id": f"{pid} (unconfirmed)"}
-        post_ids_str = _format_post_ids(post_ids_payload)
         
         row_data = [
             data["title"], data["status"], data["attempts"],
             data["format"], data["duration"], _get_full_language_name(data["source_lang"]),
-            _get_full_language_name(data["target_lang"]), platforms_str, post_ids_str, data["timestamp"]
+            _get_full_language_name(data["target_lang"]), platforms_str, data["timestamp"]
         ]
         
         if row_index:
-            worksheet.update(f"A{row_index}:J{row_index}", [row_data])
+            worksheet.update(f"A{row_index}:I{row_index}", [row_data])
             log("SHEET", f"Updated row {row_index}")
             return True, f"Updated row {row_index}"
         else:

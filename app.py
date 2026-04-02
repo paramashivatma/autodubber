@@ -184,6 +184,32 @@ def _extract_error_message(results):
     return ""
 
 
+def _build_flyer_sheet_blurb(flyer_path, workspace_dir=WORKSPACE):
+    """Create a short English blurb for sheet column A when publishing images."""
+    fallback = os.path.splitext(os.path.basename(flyer_path or "flyer_image"))[0]
+    fallback = re.sub(r"[_\-]+", " ", fallback).strip() or "Flyer image"
+
+    text_path = os.path.join(workspace_dir, "flyer_text.txt")
+    if not os.path.exists(text_path):
+        return fallback
+
+    try:
+        with open(text_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except Exception:
+        return fallback
+
+    ascii_words = re.findall(r"[A-Za-z0-9]+", raw or "")
+    if len(ascii_words) < 3:
+        return fallback
+
+    # Keep it short and useful in the sheet title column.
+    blurb = " ".join(ascii_words[:10]).strip()
+    if len(blurb) > 90:
+        blurb = blurb[:89].rstrip() + "…"
+    return blurb
+
+
 def run_dub_pipeline(video_input, voice, model_size, src_lang, tgt_lang,
                      use_bgm, bgm_volume, gemini_vision_key, mistral_key, zernio_key,
                      selected_platforms, publish_now, scheduled_for,
@@ -1436,40 +1462,7 @@ class App(tk.Tk):
             # Log to Google Sheet after successful flyer publish
             try:
                 from dubber.sheet_logger import quick_update_from_publish_result
-                
-                # Get flyer title for sheet
-                formatted_title = ""
-                try:
-                    # Use flyer filename as title
-                    flyer_title = os.path.basename(self.flyer_path)
-                    # Remove extension
-                    title_without_ext = os.path.splitext(flyer_title)[0]
-                    
-                    # Try to get Gujarati title from flyer captions
-                    captions_file = os.path.join("workspace", "flyer_captions.json")
-                    if os.path.exists(captions_file):
-                        with open(captions_file, "r", encoding="utf-8") as f:
-                            captions = json.load(f)
-                        
-                        # Get Gujarati title from any platform (YouTube might have title)
-                        gujarati_title = ""
-                        for platform, data in captions.items():
-                            if isinstance(data, dict) and data.get("title"):
-                                gujarati_title = data["title"]
-                                break
-                        
-                        if gujarati_title:
-                            # Format as "Gujarati (English)"
-                            formatted_title = f"{gujarati_title} ({title_without_ext})"
-                            print(f"[SHEET] Using formatted flyer title: {formatted_title}")
-                        else:
-                            formatted_title = title_without_ext
-                    else:
-                        formatted_title = title_without_ext
-                        
-                except Exception as e:
-                    print(f"[SHEET] Error getting flyer title: {e}")
-                    formatted_title = os.path.basename(self.flyer_path)
+                formatted_title = _build_flyer_sheet_blurb(self.flyer_path, WORKSPACE)
                 
                 # Call sheet logger for image publishing
                 sheet_success, sheet_msg = quick_update_from_publish_result(
@@ -1495,25 +1488,7 @@ class App(tk.Tk):
             # Still update Google Sheet to track this attempt and mark unconfirmed status.
             try:
                 from dubber.sheet_logger import quick_update_from_publish_result
-                formatted_title = ""
-                try:
-                    flyer_title = os.path.basename(self.flyer_path)
-                    title_without_ext = os.path.splitext(flyer_title)[0]
-                    captions_file = os.path.join("workspace", "flyer_captions.json")
-                    if os.path.exists(captions_file):
-                        with open(captions_file, "r", encoding="utf-8") as f:
-                            captions = json.load(f)
-                        gujarati_title = ""
-                        for platform, data in captions.items():
-                            if isinstance(data, dict) and data.get("title"):
-                                gujarati_title = data["title"]
-                                break
-                        formatted_title = f"{gujarati_title} ({title_without_ext})" if gujarati_title else title_without_ext
-                    else:
-                        formatted_title = title_without_ext
-                except Exception as e:
-                    print(f"[SHEET] Error getting flyer title: {e}")
-                    formatted_title = os.path.basename(self.flyer_path)
+                formatted_title = _build_flyer_sheet_blurb(self.flyer_path, WORKSPACE)
 
                 sheet_success, sheet_msg = quick_update_from_publish_result(
                     video_title=formatted_title,
