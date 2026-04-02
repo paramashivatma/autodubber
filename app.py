@@ -327,11 +327,37 @@ class App(tk.Tk):
             font=("Segoe UI", 10, "bold"),
             background=self._colors["primary_dark"],
             foreground="white",
+            borderwidth=0,
+            relief="flat",
         )
         style.map(
             "Modern.TNotebook.Tab",
-            background=[("selected", self._colors["primary"]), ("!selected", self._colors["primary_dark"])],
-            foreground=[("selected", "white"), ("!selected", "white")],
+            background=[
+                ("selected", self._colors["primary"]),
+                ("active", self._colors["primary_dark"]),
+                ("!selected", self._colors["primary_dark"]),
+            ],
+            foreground=[
+                ("selected", "white"),
+                ("active", "white"),
+                ("!selected", "white"),
+            ],
+            bordercolor=[
+                ("selected", self._colors["primary"]),
+                ("active", self._colors["primary_dark"]),
+                ("!selected", self._colors["primary_dark"]),
+            ],
+            lightcolor=[
+                ("selected", self._colors["primary"]),
+                ("active", self._colors["primary_dark"]),
+                ("!selected", self._colors["primary_dark"]),
+            ],
+            darkcolor=[
+                ("selected", self._colors["primary"]),
+                ("active", self._colors["primary_dark"]),
+                ("!selected", self._colors["primary_dark"]),
+            ],
+            expand=[("selected", [1, 1, 1, 0]), ("active", [1, 1, 1, 0]), ("!selected", [1, 1, 1, 0])],
         )
         style.configure(
             "Modern.Horizontal.TProgressbar",
