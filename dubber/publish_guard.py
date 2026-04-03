@@ -62,13 +62,25 @@ def _fingerprint(video_path, captions, platform):
     h.update(_caption_for_platform(captions, platform).encode("utf-8"))
     return h.hexdigest()
 
+def _media_fingerprint(video_path, platform):
+    """Platform+media fingerprint (caption-independent) for strict duplicate platforms."""
+    h = hashlib.sha256()
+    h.update(str(platform or "").lower().encode("utf-8"))
+    h.update(_sample_file_signature(video_path).encode("utf-8"))
+    return h.hexdigest()
+
 
 def find_ambiguous_repost_blocks(video_path, captions, platforms):
     guard = _load_guard()
     blocked = []
+    strict_media_guard_platforms = {"threads", "bluesky"}
     for platform in platforms or []:
-        key = _fingerprint(video_path, captions, platform)
+        platform_l = str(platform or "").lower()
+        key = _fingerprint(video_path, captions, platform_l)
         record = guard.get(key)
+        if not isinstance(record, dict) and platform_l in strict_media_guard_platforms:
+            media_key = _media_fingerprint(video_path, platform_l)
+            record = guard.get(media_key)
         if not isinstance(record, dict):
             continue
         status = str(record.get("status", "")).lower()
@@ -87,21 +99,29 @@ def record_ambiguous_publish_results(video_path, captions, publish_results):
         return
     guard = _load_guard()
     changed = False
+    strict_media_guard_platforms = {"threads", "bluesky"}
     for platform, result in publish_results.items():
         if not isinstance(result, dict):
             continue
+        platform_l = str(platform or "").lower()
         status = str(result.get("status", "")).lower()
-        key = _fingerprint(video_path, captions, platform)
+        key = _fingerprint(video_path, captions, platform_l)
+        media_key = _media_fingerprint(video_path, platform_l) if platform_l in strict_media_guard_platforms else None
         if status in BLOCKING_STATUSES:
-            guard[key] = {
+            payload = {
                 "platform": platform,
                 "status": status,
                 "timestamp": _utc_now(),
                 "note": result.get("error") or result.get("error_message") or "",
             }
+            guard[key] = payload
+            if media_key:
+                guard[media_key] = payload
             changed = True
         elif status in {"error", "failed", "skipped", "skip"} and key in guard:
             del guard[key]
+            if media_key and media_key in guard:
+                del guard[media_key]
             changed = True
     if changed:
         _save_guard(guard)
