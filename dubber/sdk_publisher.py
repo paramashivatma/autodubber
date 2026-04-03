@@ -12,6 +12,31 @@ from dubber.bluesky_poster import get_bluesky_poster
 from dubber.youtube_poster import get_selected_youtube_targets, publish_direct_youtube
 from dubber.utils import log, PLATFORM_LIMITS
 
+def _dedupe_platform_names(platforms):
+    """Return platform list without duplicates, preserving original order."""
+    out = []
+    seen = set()
+    for p in platforms or []:
+        key = str(p or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _dedupe_platform_entries(entries):
+    """Return platform entries without duplicates, preserving original order."""
+    out = []
+    seen = set()
+    for entry in entries or []:
+        key = str((entry or {}).get("platform", "")).strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return out
+
 def _extract_public_url(upload_result):
     """Handle SDK upload responses returned as dicts or typed objects."""
     if isinstance(upload_result, dict):
@@ -601,7 +626,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
     log("PUBLISH", f"  📄 Fallback files: {list(fallback_files.keys()) if fallback_files else None}")
     
     try:
-        selected_platforms = list(platforms or [])
+        selected_platforms = _dedupe_platform_names(platforms or [])
         youtube_targets = get_selected_youtube_targets(selected_platforms)
         expanded_targets = []
         for platform in selected_platforms:
@@ -850,7 +875,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 continue
             filtered_platforms.append(entry)
 
-        platform_list = filtered_platforms
+        platform_list = _dedupe_platform_entries(filtered_platforms)
 
         # Bluesky is often the slowest to settle; start it first while staying sequential/controlled.
         platform_list.sort(key=lambda item: 0 if str(item.get("platform", "")).lower() == "bluesky" else 1)
@@ -916,8 +941,14 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         total_platforms = total_publish_targets
         processed_count = len(direct_bluesky_results) + len(direct_youtube_results) + len(preflight_results)
 
+        attempted_platforms = set()
         for platform_entry in platform_list:
             platform_name = platform_entry["platform"]
+            platform_key = str(platform_name).strip().lower()
+            if platform_key in attempted_platforms:
+                log("PUBLISH", f"  ⚠️ Skipping duplicate platform entry in run: {platform_name}")
+                continue
+            attempted_platforms.add(platform_key)
 
             if progress_cb:
                 progress_cb(processed_count, total_platforms, platform_name, "posting")

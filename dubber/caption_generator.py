@@ -256,6 +256,11 @@ def _sanitize_caption_text(text, newline_before_tags=True):
     # Remove stray leading/trailing quotes occasionally produced by LLM output.
     s = re.sub(r'^[\s"“”\'‘’`]+', "", s)
     s = re.sub(r'[\s"“”\'‘’`]+$', "", s)
+    # Strip Markdown emphasis markers that should not appear in published captions.
+    s = re.sub(r"\*\*(.*?)\*\*", r"\1", s)
+    s = re.sub(r"__(.*?)__", r"\1", s)
+    # Normalize markdown list bullets to platform-friendly bullet symbol.
+    s = re.sub(r"(?m)^\s*[-*]\s+", f"{BULLET} ", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
 
     if newline_before_tags and "#" in s:
