@@ -119,7 +119,13 @@ def _probe_video_duration_seconds(path):
         return None
 
 
-def _publish_direct_bluesky(content, progress_cb=None, total_platforms=1, image_paths=None):
+def _publish_direct_bluesky(
+    content,
+    progress_cb=None,
+    total_platforms=1,
+    image_paths=None,
+    video_path=None,
+):
     """Publish directly to Bluesky using env-based credentials."""
     if progress_cb:
         progress_cb(0, total_platforms, "bluesky", "posting")
@@ -140,7 +146,12 @@ def _publish_direct_bluesky(content, progress_cb=None, total_platforms=1, image_
         }
 
     try:
-        response = poster.post(content, image_paths=image_paths, image_alt="Flyer image")
+        response = poster.post(
+            content,
+            image_paths=image_paths,
+            image_alt="Flyer image",
+            video_path=video_path,
+        )
         post_id = getattr(response, "uri", None) or getattr(response, "cid", None) or "posted"
         log("BLUESKY", f"Direct post successful: {post_id}")
         if progress_cb:
@@ -224,7 +235,12 @@ def _publish_single_platform(
     platform_name = platform_entry["platform"]
     single_content = platform_specific_contents.get(platform_name) or default_content
 
-    client = Zernio(api_key=api_key, timeout=360.0 if platform_name == "bluesky" else 120.0)
+    # Threads/Meta video can exceed 120s server-side; short timeouts cause retries → duplicate-content errors.
+    slow_zernio_platforms = {"bluesky", "threads"}
+    client = Zernio(
+        api_key=api_key,
+        timeout=420.0 if str(platform_name).lower() in slow_zernio_platforms else 120.0,
+    )
 
     log("PUBLISH", f"🚀 Starting SDK call for {platform_name}...")
     log("PUBLISH", f"  📱 Platform: {platform_name}")
@@ -660,11 +676,17 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         direct_bluesky_results = {}
         if any(str(p).lower() == "bluesky" for p in selected_platforms):
             bluesky_content = direct_platform_contents.get("bluesky") or direct_default_content
+            bluesky_video = None
+            if fallback_files:
+                bluesky_video = fallback_files.get("main_video")
+                if bluesky_video and not os.path.exists(bluesky_video):
+                    bluesky_video = None
             direct_bluesky_results = _publish_direct_bluesky(
                 bluesky_content,
                 progress_cb=progress_cb,
                 total_platforms=total_publish_targets,
                 image_paths=image_paths,
+                video_path=bluesky_video,
             )
 
         direct_youtube_results = {}
@@ -688,9 +710,9 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             return direct_results
 
         # Initialize Zernio client with timeout.
-        # Bluesky can take noticeably longer for video processing.
-        has_bluesky = any(str(p).lower() == "bluesky" for p in (zernio_platforms or []))
-        sdk_timeout = 360.0 if has_bluesky else 120.0
+        # Threads (Zernio) and any in-SDK Bluesky need long HTTP timeouts for video.
+        slow = {"bluesky", "threads"}
+        sdk_timeout = 420.0 if any(str(p).lower() in slow for p in (zernio_platforms or [])) else 120.0
         log("PUBLISH", f"  🔧 Initializing Zernio client with timeout={sdk_timeout}s...")
         client = Zernio(api_key=api_key, timeout=sdk_timeout)
         log("PUBLISH", "✅ Zernio SDK initialized")
