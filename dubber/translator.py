@@ -175,7 +175,24 @@ def _gemini_translate(text, source_hint="auto", target_language="gu"):
     source_lang = lang_names.get(source_hint, source_hint)
     target_lang = lang_names.get(target_language, target_language)
     
-    prompt = f"""Translate the following text from {source_lang} to {target_language}.
+    prompt = f"""Translate the following text from {source_lang} to {target_lang}.
+
+Context: This is a spiritual/Vedantic teaching by a Hindu monk about Hindu deities, traditions, and sacred places.
+
+CRITICAL: Before translating, identify and correct any potentially misheard proper nouns, especially:
+- Tamil/Sanskrit spiritual names (e.g., "Allama" might be "ella malla siddhar")
+- Deity names (Meenakshi, Shiva, Vishnu, etc.)
+- Sacred place names (Madurai, Kailasa, etc.)
+- Tradition names (Pandya, Chola, etc.)
+- Siddha/Yogi names
+
+Use context clues to identify misheard names. Common transcription errors:
+- "Allama" → often "ella malla" or similar Tamil phrases
+- Unusual word combinations → likely misheard proper nouns
+- Words that don't fit the spiritual context → check if they're names
+
+Correct the text FIRST, then translate the corrected version.
+
 Return ONLY the translation, no explanations or extra text.
 
 Text to translate:
@@ -236,7 +253,22 @@ def _gemini_translate_batch(texts, source_hint, target_language):
     
     prompt = f"""Translate the following numbered list of texts from {source_name} to {target_name}.
 
-Context: This is a spiritual/Vedantic teaching by a Hindu monk.
+Context: This is a spiritual/Vedantic teaching by a Hindu monk about Hindu deities, traditions, and sacred places.
+
+CRITICAL: Before translating, identify and correct any potentially misheard proper nouns, especially:
+- Tamil/Sanskrit spiritual names (e.g., "Allama" might be "ella malla siddhar", "ella malla siddhar")
+- Deity names (Meenakshi, Shiva, Vishnu, etc.)
+- Sacred place names (Madurai, Kailasa, etc.)
+- Tradition names (Pandya, Chola, etc.)
+- Siddha/Yogi names
+
+Use context clues to identify misheard names. Common transcription errors:
+- "Allama" → often "ella malla" or similar Tamil phrases
+- Unusual word combinations → likely misheard proper nouns
+- Words that don't fit the spiritual context → check if they're names
+
+Correct the text FIRST, then translate the corrected version.
+
 Preserve the teacher's tone and voice.
 Use natural spoken {target_name} — not literal word-for-word translation.
 Convey the meaning and spiritual register, not just the words.
