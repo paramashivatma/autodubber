@@ -87,9 +87,12 @@ def build_dubbed_video(video_path, segments, output_path,
         seg_out = os.path.join(tmp, f"seg_{i:04d}.mp4")
         _cut(video_path, seg_start, seg_end, seg_raw)
 
+        # Log all segments for debugging
+        log("BUILD", f"  seg#{seg['id']}: orig={orig_dur:.2f}s tts={tts_dur:.2f}s gap={gap:.2f}s")
+
         if tts_dur > orig_dur + 0.05:
             stretch = tts_dur / orig_dur
-            log("BUILD", f"  seg#{seg['id']}: stretch {stretch:.3f}x")
+            log("BUILD", f"    → stretch {stretch:.3f}x")
             _slow(seg_raw, seg_out, stretch)
             actual_seg_dur = _actual_duration(seg_out) or tts_dur
         else:
@@ -103,6 +106,9 @@ def build_dubbed_video(video_path, segments, output_path,
 
         if seg.get("audio_path") and os.path.exists(seg["audio_path"]):
             positions.append((audio_start, tts_dur, seg["audio_path"]))
+            log("BUILD", f"    → audio overlay at {audio_start:.2f}s")
+        else:
+            log("BUILD", f"    → WARNING: No audio path for seg#{seg['id']}")
 
     if prev < orig_total - 0.05:
         tf = os.path.join(tmp, "tail.mp4")
