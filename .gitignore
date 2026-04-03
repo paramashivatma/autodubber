@@ -19,6 +19,7 @@ output.mp4
 translation_cache.json
 logs/
 .publish_guard.json
+.youtube_tokens/
 
 # Local test artifacts
 dummy_input_for_e2e.mp4

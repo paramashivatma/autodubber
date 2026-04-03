@@ -123,6 +123,8 @@ def _parse_logs_for_data(log_buffer: List[str]) -> Dict:
 def _platform_display_name(platform: str) -> str:
     platform_names = {
         "youtube": "YouTube",
+        "youtube_hdh_gujarati": "YouTube (HDH Gujarati)",
+        "youtube_kailaasa_gujarati": "YouTube (Kailaasa Gujarati)",
         "instagram": "Instagram",
         "tiktok": "TikTok",
         "facebook": "Facebook",

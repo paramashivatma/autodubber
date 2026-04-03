@@ -9,6 +9,7 @@ import subprocess
 from zernio import Zernio, ZernioAPIError, ZernioAuthenticationError, ZernioConnectionError, ZernioRateLimitError, ZernioTimeoutError
 from dubber.config import get_platform_accounts
 from dubber.bluesky_poster import get_bluesky_poster
+from dubber.youtube_poster import get_selected_youtube_targets, publish_direct_youtube
 from dubber.utils import log, PLATFORM_LIMITS
 
 def _extract_public_url(upload_result):
@@ -138,6 +139,52 @@ def _publish_direct_bluesky(content, progress_cb=None, total_platforms=1, image_
                 "error_message": str(exc),
             }
         }
+
+
+def _publish_direct_youtube_accounts(
+    video_path,
+    captions,
+    selected_platforms,
+    publish_now=True,
+    progress_cb=None,
+    total_platforms=1,
+):
+    results = {}
+    youtube_targets = get_selected_youtube_targets(selected_platforms)
+    if not youtube_targets:
+        return results
+
+    youtube_data = (captions or {}).get("youtube", {})
+    youtube_title = ""
+    youtube_description = ""
+    if isinstance(youtube_data, dict):
+        youtube_title = youtube_data.get("title", "")
+        youtube_description = youtube_data.get("caption", "")
+    elif isinstance(youtube_data, str):
+        youtube_description = youtube_data
+
+    if not youtube_description:
+        youtube_description = "Published via AutoDubber"
+
+    for idx, alias in enumerate(youtube_targets, start=1):
+        if progress_cb:
+            progress_cb(idx - 1, total_platforms, alias, "posting")
+        result = publish_direct_youtube(
+            alias=alias,
+            video_path=video_path,
+            title=youtube_title,
+            description=youtube_description,
+            publish_now=publish_now,
+        )
+        results[alias] = result
+        if progress_cb:
+            status = str(result.get("status", "")).lower()
+            if status in {"ok", "published", "success"}:
+                progress_cb(idx, total_platforms, alias, "ok")
+            else:
+                progress_cb(idx, total_platforms, alias, "error")
+
+    return results
 
 
 def _publish_single_platform(
@@ -555,7 +602,19 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
     
     try:
         selected_platforms = list(platforms or [])
-        zernio_platforms = [p for p in selected_platforms if str(p).lower() != "bluesky"]
+        youtube_targets = get_selected_youtube_targets(selected_platforms)
+        expanded_targets = []
+        for platform in selected_platforms:
+            if str(platform).lower() == "youtube":
+                expanded_targets.extend(youtube_targets)
+            else:
+                expanded_targets.append(platform)
+        total_publish_targets = len(expanded_targets) or len(selected_platforms) or 1
+
+        zernio_platforms = [
+            p for p in selected_platforms
+            if str(p).lower() not in {"bluesky", "youtube"}
+        ]
 
         direct_default_content = ""
         direct_platform_contents = {}
@@ -579,14 +638,29 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             direct_bluesky_results = _publish_direct_bluesky(
                 bluesky_content,
                 progress_cb=progress_cb,
-                total_platforms=len(selected_platforms) or 1,
+                total_platforms=total_publish_targets,
                 image_paths=image_paths,
+            )
+
+        direct_youtube_results = {}
+        if youtube_targets:
+            main_video_path = fallback_files.get("main_video") if fallback_files else None
+            direct_youtube_results = _publish_direct_youtube_accounts(
+                video_path=main_video_path,
+                captions=captions,
+                selected_platforms=selected_platforms,
+                publish_now=publish_now,
+                progress_cb=progress_cb,
+                total_platforms=total_publish_targets,
             )
 
         if not zernio_platforms:
             if progress_cb:
-                progress_cb(len(selected_platforms), len(selected_platforms) or 1, "sdk", "completed")
-            return direct_bluesky_results
+                progress_cb(total_publish_targets, total_publish_targets, "sdk", "completed")
+            direct_results = {}
+            direct_results.update(direct_bluesky_results)
+            direct_results.update(direct_youtube_results)
+            return direct_results
 
         # Initialize Zernio client with timeout.
         # Bluesky can take noticeably longer for video processing.
@@ -597,7 +671,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         log("PUBLISH", "✅ Zernio SDK initialized")
         
         if progress_cb:
-            progress_cb(0, len(selected_platforms), "sdk", "initializing")
+            progress_cb(0, total_publish_targets, "sdk", "initializing")
         
         # Prepare media URLs - upload video if needed
         media_urls = []
@@ -794,10 +868,10 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             return {"error": error_msg}
         
         if progress_cb:
-            progress_cb(1, len(selected_platforms), "sdk", "uploading_media")
+            progress_cb(1, total_publish_targets, "sdk", "uploading_media")
         
         if progress_cb:
-            progress_cb(2, len(selected_platforms), "sdk", "creating_post")
+            progress_cb(2, total_publish_targets, "sdk", "creating_post")
         
         log("PUBLISH", f"🚀 Creating post for {len(platform_list)} platforms...")
         log("PUBLISH", f"  Content: {default_content[:100]}...")
@@ -837,9 +911,10 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             platform_list = platforms_without_media
 
         results = dict(direct_bluesky_results)
+        results.update(direct_youtube_results)
         results.update(preflight_results)
-        total_platforms = len(selected_platforms)
-        processed_count = len(direct_bluesky_results) + len(preflight_results)
+        total_platforms = total_publish_targets
+        processed_count = len(direct_bluesky_results) + len(direct_youtube_results) + len(preflight_results)
 
         for platform_entry in platform_list:
             platform_name = platform_entry["platform"]
@@ -863,7 +938,7 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
             processed_count += 1
 
         if progress_cb:
-            progress_cb(len(selected_platforms), len(selected_platforms), "sdk", "completed")
+            progress_cb(total_publish_targets, total_publish_targets, "sdk", "completed")
 
         log("PUBLISH", f"🎉 SDK publishing completed! {len(results)} platforms")
         return results
@@ -871,9 +946,10 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         error_msg = f"SDK publishing failed: {str(e)}"
         log("PUBLISH", f"❌ {error_msg}")
         if progress_cb:
-            progress_cb(len(selected_platforms), len(selected_platforms), "sdk", "error")
+            progress_cb(total_publish_targets, total_publish_targets, "sdk", "error")
         if 'direct_bluesky_results' in locals() and direct_bluesky_results:
             merged = dict(direct_bluesky_results)
+            merged.update(locals().get("direct_youtube_results", {}))
             merged["error"] = error_msg
             return merged
         return {"error": error_msg}

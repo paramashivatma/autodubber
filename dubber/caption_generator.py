@@ -3,7 +3,7 @@ import httpx
 import re
 from .config import get_mistral_api_key
 from .runtime_config import is_economy_mode, is_quality_mode
-from .utils import log, PLATFORM_LIMITS, SHORT_MINIMUMS, REQUIRED_PLATFORMS
+from .utils import log, PLATFORM_LIMITS, SHORT_MINIMUMS, REQUIRED_PLATFORMS, PLATFORMS
 
 TAGS4  = "#KAILASA #Nithyananda"
 TAGS3  = "#KAILASA #Nithyananda"
@@ -78,6 +78,8 @@ LANGUAGE_META = {
     },
 }
 
+CAPTION_PLATFORM_ORDER = list(PLATFORMS)
+
 
 def _language_meta(target_language):
     return LANGUAGE_META.get(target_language, {
@@ -88,11 +90,25 @@ def _language_meta(target_language):
     })
 
 
-def _build_prompt(main_topic, key_message, theme, transcript="", target_language="gu"):
+def _normalize_target_platforms(target_platforms=None):
+    if not target_platforms:
+        return list(CAPTION_PLATFORM_ORDER)
+    selected = []
+    allowed = set(CAPTION_PLATFORM_ORDER)
+    for platform in target_platforms:
+        key = str(platform or "").strip().lower()
+        if key in allowed and key not in selected:
+            selected.append(key)
+    return selected or list(CAPTION_PLATFORM_ORDER)
+
+
+def _build_prompt(main_topic, key_message, theme, transcript="", target_language="gu", target_platforms=None):
     meta = _language_meta(target_language)
     target_name = meta["name"]
     target_style = meta["style"]
     script_hint = meta["script_hint"]
+    selected_platforms = _normalize_target_platforms(target_platforms)
+    selected_keys = ", ".join(selected_platforms)
     if len(transcript) > MAX_TRANSCRIPT_CHARS:
         transcript = transcript[:MAX_TRANSCRIPT_CHARS] + "..."
         log("CAPTION", f"  Transcript capped at {MAX_TRANSCRIPT_CHARS} chars")
@@ -107,6 +123,7 @@ Write every caption in {target_name}. {target_style}
 Each sentence should feel as if Guru's grace is flowing through it. Convey blessings, truths, and practices as experienced through the Guru's grace.
 Do not invent ideas; remain fully faithful to the transcript.
 {script_hint}
+Generate captions ONLY for these platforms: {selected_keys}.
 Adjust tone per platform:
 - Instagram = punchy devotional energy, awakening curiosity.
 - Facebook = nurturing reflection, guidance for inner peace.
@@ -183,7 +200,7 @@ YOUTUBE (max 4500 chars):
    - Failure to include required hashtags will cause regeneration
 
 === OUTPUT ===
-Valid JSON only. No markdown fences. Exactly 7 keys: instagram, facebook, tiktok, twitter, youtube, threads, bluesky
+Valid JSON only. No markdown fences. Output EXACTLY these keys only: {selected_keys}
 Values: {{"caption": "...{target_name.lower()}..."}} — youtube also includes: {{"title": "...max 75 chars...", "caption": "..."}}
 '''
 
@@ -212,9 +229,10 @@ def _normalize(raw):
     return result
 
 
-def _validate_schema(captions):
-    missing = REQUIRED_PLATFORMS - set(captions.keys())
-    empty   = [p for p in REQUIRED_PLATFORMS if not captions.get(p, {}).get("caption","").strip()]
+def _validate_schema(captions, target_platforms=None):
+    required = set(_normalize_target_platforms(target_platforms))
+    missing = required - set(captions.keys())
+    empty   = [p for p in required if not captions.get(p, {}).get("caption","").strip()]
     return missing, empty
 
 
@@ -405,7 +423,15 @@ def _strict_validate(captions):
     return True, "ok"
 
 
-def generate_all_captions(vision_data, api_key=None, output_dir="workspace", segments=None, target_language="gu", return_meta=False):
+def generate_all_captions(
+    vision_data,
+    api_key=None,
+    output_dir="workspace",
+    segments=None,
+    target_language="gu",
+    return_meta=False,
+    selected_platforms=None,
+):
     os.makedirs(output_dir, exist_ok=True)
     meta = {
         "used_fallback": False,
@@ -417,6 +443,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
     prov        = vision_data.get("provocative_angle","")
     key_message = (conflict + " | " + prov).strip(" |")
     theme       = vision_data.get("theme","teaching")
+    target_platforms = _normalize_target_platforms(selected_platforms)
 
     transcript_text = ""
     if segments:
@@ -426,7 +453,11 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
 
     log("CAPTION", f"Vision -> topic: {main_topic[:60]}")
     log("CAPTION", f"Vision -> key_message: {key_message[:100]}")
-    prompt      = _build_prompt(main_topic, key_message, theme, transcript_text, target_language=target_language)
+    prompt      = _build_prompt(
+        main_topic, key_message, theme, transcript_text,
+        target_language=target_language,
+        target_platforms=target_platforms,
+    )
     captions    = {}
     mistral_key = get_mistral_api_key(api_key)
     mode_name = "Economy" if is_economy_mode() else "Quality"
@@ -437,9 +468,10 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
             log("CAPTION", "Calling Mistral ...")
             raw      = _call_mistral(mistral_key, prompt)
             captions = _parse_raw(raw)
+            captions = {p: captions.get(p, {}) for p in target_platforms if p in captions}
 
             # Schema validation
-            missing, empty = _validate_schema(captions)
+            missing, empty = _validate_schema(captions, target_platforms=target_platforms)
             if missing: log("CAPTION", f"  WARNING: Missing platforms: {missing}")
             if empty:   log("CAPTION", f"  WARNING: Empty captions: {empty}")
 
@@ -453,6 +485,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
 
             # Short caption check + single retry
             bad_short = [p for p, mins in SHORT_MINIMUMS.items()
+                         if p in target_platforms
                          if len(captions.get(p, {}).get("caption", "")) < mins]
             if bad_short and is_quality_mode():
                 log("CAPTION", f"  Short captions on {bad_short} — retrying ...")
@@ -467,7 +500,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                     f"Minimums: TikTok=80 chars, Twitter=180 chars, Threads=200 chars, Bluesky=180 chars. "
                     f"{twitter_instruction}"
                     f"Write LONGER complete sentences. Fill the limit without exceeding any platform max. "
-                    f"Return full JSON for all 7 platforms."
+                    f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
                 )
                 try:
                     raw2      = _call_mistral(mistral_key, retry_prompt)
@@ -486,12 +519,16 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
             log("CAPTION", f"Error: {e} — fallback.")
             meta["used_fallback"] = True
             meta["reason"] = str(e)
-            captions = _fallback_captions(vision_data, target_language=target_language)
+            captions = _fallback_captions(
+                vision_data, target_language=target_language, target_platforms=target_platforms
+            )
     else:
         log("CAPTION", "No key — fallback.")
         meta["used_fallback"] = True
         meta["reason"] = "No Mistral API key"
-        captions = _fallback_captions(vision_data, target_language=target_language)
+        captions = _fallback_captions(
+            vision_data, target_language=target_language, target_platforms=target_platforms
+        )
 
     # Ensure we have captions (fallback if empty)
     if not captions:
@@ -499,7 +536,18 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
         meta["used_fallback"] = True
         if not meta.get("reason"):
             meta["reason"] = "Caption generation produced empty output"
-        captions = _fallback_captions(vision_data, target_language=target_language)
+        captions = _fallback_captions(
+            vision_data, target_language=target_language, target_platforms=target_platforms
+        )
+
+    captions = {p: captions.get(p, {}) for p in target_platforms if p in captions}
+    missing_after_parse = [p for p in target_platforms if not captions.get(p, {}).get("caption", "").strip()]
+    if missing_after_parse:
+        fallback_map = _fallback_captions(
+            vision_data, target_language=target_language, target_platforms=target_platforms
+        )
+        for p in missing_after_parse:
+            captions[p] = fallback_map.get(p, {"caption": ""})
 
     # Additional validation for required tags and character limits
     for p, data in captions.items():
@@ -516,7 +564,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                         f"{prompt}\n\nCRITICAL: The previous caption for {p} was missing required hashtags. "
                         f"Must include both #KAILASA and #Nithyananda hashtags. "
                         f"Regenerate the caption for {p} with proper hashtags. "
-                        f"Return full JSON for all 7 platforms."
+                        f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
                     )
                     raw = _call_mistral(mistral_key, retry_prompt)
                     new_captions = _parse_raw(raw)
@@ -539,7 +587,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                         f"{prompt}\n\nCRITICAL: The previous caption for {p} was missing required #KAILASA hashtag. "
                         f"Must include #KAILASA hashtag. "
                         f"Regenerate the caption for {p} with proper hashtag. "
-                        f"Return full JSON for all 7 platforms."
+                        f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
                     )
                     raw = _call_mistral(mistral_key, retry_prompt)
                     new_captions = _parse_raw(raw)
@@ -562,7 +610,7 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
                         f"{prompt}\n\nCRITICAL: The previous caption for {p} was not clearly written in {_language_meta(target_language)['name']}. "
                         f"Must be written in {_language_meta(target_language)['name']}. "
                         f"Regenerate the caption for {p} in proper {_language_meta(target_language)['name']}. "
-                        f"Return full JSON for all 7 platforms."
+                        f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
                     )
                     raw = _call_mistral(mistral_key, retry_prompt)
                     new_captions = _parse_raw(raw)
@@ -593,14 +641,15 @@ def generate_all_captions(vision_data, api_key=None, output_dir="workspace", seg
     
     with open(os.path.join(output_dir,"captions.json"),"w",encoding="utf-8") as f:
         json.dump(captions, f, ensure_ascii=False, indent=2)
-    for p, data in captions.items():
+    for p in target_platforms:
+        data = captions.get(p, {})
         prefix = f"TITLE: {data['title']}\n\n" if p=="youtube" and data.get("title") else ""
         with open(os.path.join(output_dir,f"caption_{p}.txt"),"w",encoding="utf-8") as f:
             f.write(prefix + data.get("caption",""))
-    log("CAPTION","All captions saved.")
+    log("CAPTION", f"All captions saved ({len(target_platforms)} platforms).")
     return (captions, meta) if return_meta else captions
 
-def _fallback_captions(vision_data, target_language="gu"):
+def _fallback_captions(vision_data, target_language="gu", target_platforms=None):
     topic    = vision_data.get("main_topic","") or ""
     conflict = vision_data.get("core_conflict","") or ""
     prov     = vision_data.get("provocative_angle","") or ""
@@ -611,7 +660,7 @@ def _fallback_captions(vision_data, target_language="gu"):
     if body2:
         bullets += "\n" + BULLET + " " + body2
     long_cap = hook + "\n\n" + bullets + "\n\n" + TAGS4
-    return {
+    all_caps = {
         "instagram": {"caption": long_cap},
         "facebook":  {"caption": long_cap},
         "tiktok":    {"caption": _smart_trim(hook + "\n\n#KAILASA #Nithyananda", 180)},
@@ -620,3 +669,5 @@ def _fallback_captions(vision_data, target_language="gu"):
         "bluesky":   {"caption": _smart_trim(hook + "\n\n" + body1 + "\n\n" + TAGS2, 260)},
         "youtube":   {"title": _smart_trim(topic or hook, 75), "caption": _smart_trim(long_cap, 4500)},
     }
+    wanted = _normalize_target_platforms(target_platforms)
+    return {p: all_caps[p] for p in wanted if p in all_caps}

@@ -1,4 +1,4 @@
-# AutoDub Studio (Video Dubber v1.05)
+# AutoDub Studio (Video Dubber v1.06)
 Desktop GUI tool to:
 - Dub videos into Indian languages with voice synthesis.
 - Generate platform-aware captions/teasers.
@@ -102,6 +102,7 @@ Edit `.env`:
 | `MISTRAL_API_KEY` | Recommended | Caption generation |
 | `GROQ_API_KEY` | Optional | Fast cloud transcription |
 | `ZERNIO_*_ACCOUNT_ID` | Required for each platform you publish to | Your own Zernio-connected social account IDs |
+| `YOUTUBE_*_CLIENT_ID` / `YOUTUBE_*_CLIENT_SECRET` | Required for direct YouTube publishing | OAuth desktop app credentials for each YouTube account |
 | `GOOGLE_SHEET_ID` | Optional | Sheet logging |
 | `GOOGLE_CREDENTIALS_FILE` | Optional | Service account JSON path for Sheets |
 | `PIPELINE_MODE` (`economy`/`quality`) | Optional | Cost/performance behavior |
@@ -113,13 +114,23 @@ Legacy aliases still supported:
 Publishing reads platform account IDs from `.env`, for example:
 - `ZERNIO_INSTAGRAM_ACCOUNT_ID`
 - `ZERNIO_FACEBOOK_ACCOUNT_ID`
-- `ZERNIO_YOUTUBE_ACCOUNT_ID`
 - `ZERNIO_THREADS_ACCOUNT_ID`
 - `ZERNIO_TWITTER_ACCOUNT_ID`
 - `ZERNIO_TIKTOK_ACCOUNT_ID`
 - `ZERNIO_BLUESKY_ACCOUNT_ID`
 
 These must be your own Zernio-connected social account IDs. The public repo does not ship publishable account IDs. If IDs are missing or wrong, publishing will fail with "No valid platform accounts configured" or per-platform account errors.
+
+### 4b) Direct YouTube publishing
+YouTube is published directly, not through Zernio. When `YouTube` is selected, the app publishes to both configured YouTube accounts.
+
+Required `.env` keys:
+- `YOUTUBE_HDH_GUJARATI_CLIENT_ID`
+- `YOUTUBE_HDH_GUJARATI_CLIENT_SECRET`
+- `YOUTUBE_KAILAASA_GUJARATI_CLIENT_ID`
+- `YOUTUBE_KAILAASA_GUJARATI_CLIENT_SECRET`
+
+On first use, Google will open a browser for one-time consent and the app will save local tokens in `.youtube_tokens/`.
 
 ### 5) Run the app
 ```bash

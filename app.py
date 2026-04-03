@@ -184,6 +184,31 @@ def _extract_error_message(results):
     return ""
 
 
+def _display_platform_name(platform):
+    names = {
+        "youtube_hdh_gujarati": "YouTube (HDH Gujarati)",
+        "youtube_kailaasa_gujarati": "YouTube (Kailaasa Gujarati)",
+    }
+    return names.get(str(platform or ""), str(platform or ""))
+
+
+def _effective_publish_total(selected_platforms, results):
+    if not isinstance(results, dict):
+        return len(selected_platforms or [])
+    resolved = len([key for key in results.keys() if key != "error"])
+    return max(len(selected_platforms or []), resolved)
+
+
+def _expanded_publish_guard_platforms(selected_platforms):
+    expanded = []
+    for platform in selected_platforms or []:
+        if platform == "youtube":
+            expanded.extend(["youtube_hdh_gujarati", "youtube_kailaasa_gujarati"])
+        else:
+            expanded.append(platform)
+    return expanded
+
+
 def _build_flyer_sheet_blurb(flyer_path, workspace_dir=WORKSPACE):
     """Create a short English blurb for sheet column A when publishing images."""
     fallback = os.path.splitext(os.path.basename(flyer_path or "flyer_image"))[0]
@@ -265,7 +290,8 @@ def run_dub_pipeline(video_input, voice, model_size, src_lang, tgt_lang,
         status_cb(_stage_text(7, "Generate captions"))
         captions, caption_meta = generate_all_captions(
             vision, mistral_key, WORKSPACE, segments=segs,
-            target_language=tgt_lang, return_meta=True
+            target_language=tgt_lang, return_meta=True,
+            selected_platforms=selected_platforms,
         )
         if caption_meta.get("used_fallback"):
             status_cb(_backup_warning("Mistral Caption API", caption_meta.get("reason", "unknown"), "template captions"))
@@ -315,13 +341,16 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
                 "date":              "None",
                 "theme":             "teaching",
             }
-            captions, caption_meta = generate_all_captions(vision, mistral_key, WORKSPACE, return_meta=True)
+            captions, caption_meta = generate_all_captions(
+                vision, mistral_key, WORKSPACE, return_meta=True,
+                selected_platforms=selected_platforms,
+            )
             if caption_meta.get("used_fallback"):
                 status_cb(_backup_warning("Mistral Caption API", caption_meta.get("reason", "unknown"), "template captions"))
         else:
             status_cb("Opening caption review for manual entry ...")
-            captions = {p: {"caption":""} for p in PLATFORMS}
-            for p in PLATFORMS:
+            captions = {p: {"caption":""} for p in selected_platforms}
+            for p in selected_platforms:
                 if p == "youtube": captions[p]["title"] = ""
 
         status_cb("Waiting for caption review ...")
@@ -342,7 +371,7 @@ def run_publish_only(image_paths, teaser_path, topic_hint,
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.05")
+        self.title("Video Dubber v1.06")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -1617,7 +1646,7 @@ class App(tk.Tk):
         self.status_var.set("Review captions — edit if needed, then approve.")
         
         # Show review dialog (simplified without parallel uploads for now)
-        dlg = ReviewDialog(self, captions, upload_manager=None)
+        dlg = ReviewDialog(self, captions, upload_manager=None, platforms=selected_platforms)
         if dlg.result is None:
             self._stop_activity_mirror("dub")
             self.run_btn.config(state="normal")
@@ -1629,6 +1658,7 @@ class App(tk.Tk):
 
         missing_account_envs = get_missing_platform_account_envs(selected_platforms)
         missing_account_envs.pop("bluesky", None)
+        missing_account_envs.pop("youtube", None)
         if missing_account_envs:
             self._stop_activity_mirror("dub")
             self._end_publish("dub")
@@ -1647,12 +1677,16 @@ class App(tk.Tk):
             messagebox.showerror("Missing Zernio Account IDs", msg)
             return
 
-        repost_blocks = find_ambiguous_repost_blocks(video_path, approved, selected_platforms)
+        repost_blocks = find_ambiguous_repost_blocks(
+            video_path,
+            approved,
+            _expanded_publish_guard_platforms(selected_platforms),
+        )
         if repost_blocks:
             self._stop_activity_mirror("dub")
             self._end_publish("dub")
             lines = "\n".join(
-                f"- {item['platform']}: previous {item['status']} at {item['timestamp']}"
+                f"- {_display_platform_name(item['platform'])}: previous {item['status']} at {item['timestamp']}"
                 for item in repost_blocks
             )
             msg = (
@@ -1705,7 +1739,7 @@ class App(tk.Tk):
                 unconfirmed = _count_unconfirmed_results(results)
                 likely_live = _count_likely_live_results(results)
                 skipped = _count_skipped_results(results)
-                total = len(selected_platforms or [])
+                total = _effective_publish_total(selected_platforms, results)
                 if error_msg:
                     msg = f"Publishing blocked: {error_msg}"
                 elif skipped > 0 and likely_live > 0 and unconfirmed > 0:
@@ -1821,13 +1855,13 @@ class App(tk.Tk):
                     pid = v.get("post_id") or v.get("_id") or "n/a"
                     err = v.get("error") or v.get("error_message")
                     if status in {"likely_live", "duplicate_live"}:
-                        print(f'OK   {k}: status={status} note={err or "likely already live"}')
+                        print(f'OK   {_display_platform_name(k)}: status={status} note={err or "likely already live"}')
                     elif err:
-                        print(f'FAIL {k}: status={status} error={err}')
+                        print(f'FAIL {_display_platform_name(k)}: status={status} error={err}')
                     else:
-                        print(f'OK   {k}: status={status} id={pid}')
+                        print(f'OK   {_display_platform_name(k)}: status={status} id={pid}')
                 else:
-                    print(f'OK   {k}: {v}')
+                    print(f'OK   {_display_platform_name(k)}: {v}')
         (messagebox.showinfo if success else messagebox.showerror)("Result", msg)
         
         # Clean up workspace after pipeline completion
@@ -1844,19 +1878,19 @@ class App(tk.Tk):
         print(f"[STATUS] Progress update: {platform} -> {status} ({done}/{total})")
         
         if status == "posting":
-            self.status_var.set(f"Posting to {platform} ...")
+            self.status_var.set(f"Posting to {_display_platform_name(platform)} ...")
         elif status == "ok":
-            self.status_var.set(f"✓ {platform} published")
+            self.status_var.set(f"✓ {_display_platform_name(platform)} published")
         elif status == "error":
-            self.status_var.set(f"✗ {platform} failed")
+            self.status_var.set(f"✗ {_display_platform_name(platform)} failed")
         elif status == "timeout":
-            self.status_var.set(f"⏱ {platform} timed out")
+            self.status_var.set(f"⏱ {_display_platform_name(platform)} timed out")
         elif status == "unconfirmed":
-            self.status_var.set(f"⚠ {platform} unconfirmed")
+            self.status_var.set(f"⚠ {_display_platform_name(platform)} unconfirmed")
         elif status == "likely_live":
-            self.status_var.set(f"✓ {platform} likely already live")
+            self.status_var.set(f"✓ {_display_platform_name(platform)} likely already live")
         elif status == "skipped":
-            self.status_var.set(f"⊘ {platform} skipped")
+            self.status_var.set(f"⊘ {_display_platform_name(platform)} skipped")
         elif status == "initializing":
             self.status_var.set("Initializing Zernio SDK...")
         elif status == "uploading_media":

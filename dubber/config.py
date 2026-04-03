@@ -9,7 +9,6 @@ ENV_FILE = ".env"
 PLATFORM_ACCOUNT_ENV_MAP = {
     "instagram": "ZERNIO_INSTAGRAM_ACCOUNT_ID",
     "facebook": "ZERNIO_FACEBOOK_ACCOUNT_ID",
-    "youtube": "ZERNIO_YOUTUBE_ACCOUNT_ID",
     "threads": "ZERNIO_THREADS_ACCOUNT_ID",
     "twitter": "ZERNIO_TWITTER_ACCOUNT_ID",
     "tiktok": "ZERNIO_TIKTOK_ACCOUNT_ID",

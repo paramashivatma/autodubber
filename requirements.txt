@@ -12,6 +12,9 @@ Pillow
 google-genai
 gspread
 google-auth
+google-auth-httplib2
+google-auth-oauthlib
+google-api-python-client
 zernio
 python-dotenv
 atproto
