@@ -9,7 +9,9 @@ from .utils import log
 from .runtime_config import is_economy_mode
 from .config import get_gemini_api_key
 import sys
-sys.stdout.reconfigure(encoding='utf-8')
+
+sys.stdout.reconfigure(encoding="utf-8")
+
 
 def extract_text_from_image(image_path, api_key=None):
     """Extract text from image using OCR"""
@@ -17,21 +19,26 @@ def extract_text_from_image(image_path, api_key=None):
     try:
         # Try multiple OCR approaches
         extracted_text = ""
-        
+
         # Method 1: Try using pytesseract (if available)
         try:
             import pytesseract
             from PIL import Image
-            
+
             # Add Tesseract path for Windows
             import os
-            if os.name == 'nt':  # Windows
+
+            if os.name == "nt":  # Windows
                 tesseract_path = r"C:\Program Files\Tesseract-OCR"
-                if tesseract_path not in os.environ.get('PATH', ''):
-                    os.environ['PATH'] = tesseract_path + ';' + os.environ.get('PATH', '')
+                if tesseract_path not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = (
+                        tesseract_path + ";" + os.environ.get("PATH", "")
+                    )
                 # Also set pytesseract path explicitly
-                pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-            
+                pytesseract.pytesseract.tesseract_cmd = (
+                    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+                )
+
             image = Image.open(image_path)
             extracted_text = pytesseract.image_to_string(image)
             log("OCR", f"Pytesseract extracted {len(extracted_text)} chars")
@@ -41,7 +48,7 @@ def extract_text_from_image(image_path, api_key=None):
             log("OCR", "Pytesseract not available, trying alternative...")
         except Exception as e:
             log("OCR", f"Pytesseract failed: {e}")
-        
+
         # Method 2: Try using Gemini Vision API
         if api_key:
             try:
@@ -50,11 +57,11 @@ def extract_text_from_image(image_path, api_key=None):
                     return extracted_text.strip()
             except Exception as e:
                 log("OCR", f"Gemini Vision failed: {e}")
-        
+
         # Method 3: Basic fallback - return meaningful placeholder text
         filename = os.path.basename(image_path)
         log("OCR", f"Using fallback - filename: {filename}")
-        
+
         # Try to extract meaningful info from filename
         if "ai" in filename.lower() or "nithyananda" in filename.lower():
             fallback_text = "Ask Nithyananda AI app - Your personal spiritual companion for divine guidance and blessings from SPH Bhagavan Sri Nithyananda Paramashivam. Available now for iOS and Android download."
@@ -62,45 +69,49 @@ def extract_text_from_image(image_path, api_key=None):
             fallback_text = "KAILASA - The Hindu nation re-established by SPH Bhagavan Sri Nithyananda Paramashivam. Experience the ancient enlightenment civilization in the modern world."
         else:
             fallback_text = "Divine spiritual guidance and blessings from SPH Bhagavan Sri Nithyananda Paramashivam. Experience the presence of KAILASA in your daily life."
-        
+
         return fallback_text
-        
+
     except Exception as e:
         log("OCR", f"All OCR methods failed: {e}")
         return f"Error extracting text: {str(e)}"
+
 
 def _extract_with_gemini_vision(image_path, api_key):
     """Extract text using Gemini Vision API"""
     from google import genai
     from google.genai import types
     import base64
-    
+
     client = genai.Client(api_key=api_key)
-    
+
     # Read and encode image
     with open(image_path, "rb") as f:
         image_data = f.read()
-    
+
     # Create prompt for text extraction
     prompt = """Extract all text from this image. Return only the extracted text, nothing else. 
     If there is no text, return "No text found in image"."""
-    
+
     resp = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
+        model="gemini-2.0-flash",
         contents=[
             prompt,
             types.Part.from_bytes(
                 data=image_data,
-                mime_type="image/jpeg" if image_path.lower().endswith(('.jpg', '.jpeg')) else "image/png"
-            )
+                mime_type="image/jpeg"
+                if image_path.lower().endswith((".jpg", ".jpeg"))
+                else "image/png",
+            ),
         ],
         config=types.GenerateContentConfig(
             temperature=0.1,
             max_output_tokens=1024,
-        )
+        ),
     )
-    
+
     return resp.text.strip()
+
 
 SYSTEM_PROMPT = """
 You are a devotional social media copywriter for KAILASA — the Hindu nation 
@@ -169,48 +180,53 @@ OUTPUT RULES:
 }
 """
 
+
 def generate_gujarati_captions(extracted_text, api_key=None):
     """Generate Gujarati captions from extracted text"""
     api_key = get_gemini_api_key(api_key)
     if not api_key:
         return "No API key available for caption generation"
-    
+
     try:
         from google import genai
         from google.genai import types
-        
+
         client = genai.Client(api_key=api_key)
-        
+
         prompt = f"""{SYSTEM_PROMPT}
         
         EXTRACTED TEXT FROM IMAGE:
         {extracted_text}
         """
-        
+
         resp = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
                 max_output_tokens=2048,
-                response_mime_type="application/json"
-            )
+                response_mime_type="application/json",
+            ),
         )
-        
+
         data = json.loads(resp.text.strip())
         print(f"EXTRACTED URL — verify before publishing: {data['extracted_url']}")
         captions = data["captions"]
         log("CAPTIONS", f"Generated {len(captions)} Gujarati captions")
         return captions
-        
+
     except Exception as e:
         log("CAPTIONS", f"Failed to generate captions: {e}")
-        
+
         # Check if it's a quota issue and provide fallback
         error_str = str(e).lower()
-        if "429" in error_str or "resource_exhausted" in error_str or "quota" in error_str:
+        if (
+            "429" in error_str
+            or "resource_exhausted" in error_str
+            or "quota" in error_str
+        ):
             log("CAPTIONS", "API quota exceeded - providing fallback captions")
-            
+
             # Read the actual extracted text from file
             actual_extracted_text = extracted_text
             if "OCR not available" in extracted_text or "Image file:" in extracted_text:
@@ -219,7 +235,7 @@ def generate_gujarati_captions(extracted_text, api_key=None):
                         actual_extracted_text = f.read().strip()
                 except:
                     actual_extracted_text = "Ask Nithyananda AI app - Your personal spiritual companion for divine guidance and blessings from SPH Bhagavan Sri Nithyananda Paramashivam"
-            
+
             # Create meaningful Gujarati content instead of using English OCR text
             gujarati_content = """આસ્ક નિત્યાનંદ AI એપ્લિકેશન હવે ઉપલબ્ધ છે! 
 
@@ -229,16 +245,17 @@ def generate_gujarati_captions(extracted_text, api_key=None):
 📥 હવે iOS પર ડાઉનલોડ કરો
 
 ગમે ત્યાં હો, ગમે ત્યારે - કૃપાદૃષ્ટિ હંમેશા તમારી સાથે!"""
-            
+
             return {
                 "instagram": f"તમારા આધ્યાત્મિક માર્ગદર્શક હવે તમારી સાથે! ✨\n\n{gujarati_content}\n\n#KAILASA #Nithyananda",
                 "facebook": f"પરમ પૂજનીય ભગવાન શ્રી નિત્યાનંદ પરમશિવમની કૃપા હવે ઉપલબ્ધ છે!\n\n{gujarati_content}",
                 "twitter": f"આધ્યાત્મિક માર્ગદર્શન ઉપલબ્ધ!\n\n{gujarati_content}\n\n#KAILASA #Nithyananda",
                 "threads": f"તમારા આધ્યાત્મિક સફરની શરૂઆત!\n\n{gujarati_content}",
-                "bluesky": f"દિવ્ય માર્ગદર્શન મેળવો\n\n{gujarati_content}\n\n#KAILASA #Nithyananda"
+                "bluesky": f"દિવ્ય માર્ગદર્શન મેળવો\n\n{gujarati_content}\n\n#KAILASA #Nithyananda",
             }
-        
+
         return {"error": f"Caption generation failed: {str(e)}"}
+
 
 def generate_teaser_content(extracted_text, captions, api_key=None):
     """Generate teaser content from extracted text and captions"""
@@ -255,7 +272,9 @@ def generate_teaser_content(extracted_text, captions, api_key=None):
             sample_caption = str(extracted_text or "").strip()
 
         # Keep teaser concise and operator-friendly.
-        brief = sample_caption.split("\n")[0][:160].strip() or "દિવ્ય માર્ગદર્શન હવે તમારી સાથે."
+        brief = (
+            sample_caption.split("\n")[0][:160].strip() or "દિવ્ય માર્ગદર્શન હવે તમારી સાથે."
+        )
         teaser = {
             "hook": brief,
             "main_content": "ભગવાન શ્રી નિત્યાનંદ પરમશિવમની કૃપાથી આધ્યાત્મિક માર્ગદર્શન હવે સહેલાઈથી મેળવો.",
@@ -268,16 +287,20 @@ def generate_teaser_content(extracted_text, captions, api_key=None):
 
     if not api_key:
         return "No API key available for teaser generation"
-    
+
     try:
         from google import genai
         from google.genai import types
-        
+
         client = genai.Client(api_key=api_key)
-        
+
         # Get a sample caption for context
-        sample_caption = captions.get("instagram", "") if isinstance(captions, dict) else str(captions)
-        
+        sample_caption = (
+            captions.get("instagram", "")
+            if isinstance(captions, dict)
+            else str(captions)
+        )
+
         prompt = f"""
         Based on this flyer content and caption, generate teaser content for social media promotion:
         
@@ -302,21 +325,21 @@ def generate_teaser_content(extracted_text, captions, api_key=None):
         - Include spiritual elements if appropriate
         - Keep it concise for short-form video
         """
-        
+
         resp = client.models.generate_content(
             model="gemini-2.5-flash-lite",
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
                 max_output_tokens=1024,
-                response_mime_type="application/json"
-            )
+                response_mime_type="application/json",
+            ),
         )
-        
+
         teaser = json.loads(resp.text.strip())
         log("TEASER", f"Generated teaser content")
         return teaser
-        
+
     except Exception as e:
         log("TEASER", f"Failed to generate teaser: {e}")
         return {"error": f"Teaser generation failed: {str(e)}"}
