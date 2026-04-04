@@ -660,16 +660,19 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         direct_default_content = ""
         direct_platform_contents = {}
         for platform, platform_data in (captions or {}).items():
+            pk = str(platform or "").strip().lower()
+            if not pk:
+                continue
             if isinstance(platform_data, dict) and platform_data.get("caption"):
-                text = _fit_platform_content(platform, platform_data["caption"])
+                text = _fit_platform_content(pk, platform_data["caption"])
                 if not direct_default_content:
                     direct_default_content = text
-                direct_platform_contents[platform] = text
+                direct_platform_contents[pk] = text
             elif isinstance(platform_data, str):
-                text = _fit_platform_content(platform, platform_data)
+                text = _fit_platform_content(pk, platform_data)
                 if not direct_default_content:
                     direct_default_content = text
-                direct_platform_contents[platform] = text
+                direct_platform_contents[pk] = text
         if not direct_default_content:
             direct_default_content = "Published via AutoDubber"
 
@@ -824,18 +827,20 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
         default_content = ""
         platform_specific_contents = {}
         
-        for platform, platform_data in captions.items():
+        for platform, platform_data in (captions or {}).items():
+            pk = str(platform or "").strip().lower()
+            if not pk:
+                continue
             if isinstance(platform_data, dict) and platform_data.get("caption"):
-                caption_text = _fit_platform_content(platform, platform_data["caption"])
+                caption_text = _fit_platform_content(pk, platform_data["caption"])
                 if not default_content:
                     default_content = caption_text  # First one becomes default
-                # Store platform-specific content (will be used if different from default)
-                platform_specific_contents[platform] = caption_text
+                platform_specific_contents[pk] = caption_text
             elif isinstance(platform_data, str):
-                caption_text = _fit_platform_content(platform, platform_data)
+                caption_text = _fit_platform_content(pk, platform_data)
                 if not default_content:
                     default_content = caption_text  # First one becomes default
-                platform_specific_contents[platform] = caption_text
+                platform_specific_contents[pk] = caption_text
         
         if not default_content:
             default_content = "Published via AutoDubber"
@@ -865,7 +870,8 @@ def publish_with_sdk(api_key, captions, platforms, upload_results=None,
                 # Add platform-specific content if different from default
                 platform_content = platform_specific_contents.get(platform, "")
                 if platform_content and platform_content != default_content:
-                    platform_entry["platformSpecificContent"] = platform_content
+                    # Zernio / Late API: PlatformTarget.customContent (not platformSpecificContent).
+                    platform_entry["customContent"] = platform_content
                 
                 # Add YouTube-specific fields
                 if platform == "youtube":

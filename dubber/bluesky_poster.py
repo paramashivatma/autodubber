@@ -53,7 +53,8 @@ class BlueskyPoster:
         self.enabled = False
 
         try:
-            from atproto import Client
+            import httpx
+            from atproto import Client, Request
         except Exception as exc:
             log("BLUESKY", f"atproto not installed — skipping direct Bluesky publish: {exc}")
             return
@@ -63,7 +64,9 @@ class BlueskyPoster:
             return
 
         try:
-            client = Client()
+            # Default httpx timeouts are too low for multi‑MiB video blob uploads to the PDS.
+            long_timeout = httpx.Timeout(connect=60.0, read=600.0, write=600.0, pool=60.0)
+            client = Client(request=Request(timeout=long_timeout))
             client.login(handle, password)
             self.client = client
             self.enabled = True
