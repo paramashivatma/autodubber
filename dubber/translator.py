@@ -205,9 +205,10 @@ Context: This is a spiritual/Vedantic teaching by a Hindu monk about Hindu deiti
 
 RULES:
 1. PROPER NOUNS: If a name seems clearly misheard (e.g., "Allama" in a Tamil spiritual context likely means "ella malla"), correct it. Otherwise, transliterate names as-is.
-2. REVERENCE: Maintain a respectful, devotional tone. Keep sacred terms (e.g., Bhakti, Dharma, Prasad) in their original form if natural in {target_lang}.
-3. TTS OPTIMIZED: Use clear punctuation for natural pauses (commas for breaths, periods for full stops). Avoid symbols like *, _, (), or brackets.
-4. NATURAL SPEECH: Write for the ear, not the eye. Use conversational {target_lang}, not literary or formal style.
+2. SANSKRIT SHLOKAS: If you detect a Sanskrit verse, mantra, or shloka (e.g., "Om Namah Shivaya", "Yada Yada Hi Dharmasya"), keep it in its original form. Do NOT translate shlokas. Only translate the teacher's explanation around them.
+3. REVERENCE: Maintain a respectful, devotional tone. Keep sacred terms (e.g., Bhakti, Dharma, Prasad) in their original form if natural in {target_lang}.
+4. TTS OPTIMIZED: Use clear punctuation for natural pauses (commas for breaths, periods for full stops). Avoid symbols like *, _, (), or brackets.
+5. NATURAL SPEECH: Write for the ear, not the eye. Use conversational {target_lang}, not literary or formal style.
 
 Return ONLY the translation. No explanations.
 
@@ -284,9 +285,10 @@ Context: This is a spiritual/Vedantic teaching by a Hindu monk about Hindu deiti
 
 RULES:
 1. PROPER NOUNS: If a name seems clearly misheard (e.g., "Allama" in a Tamil spiritual context likely means "ella malla"), correct it. Otherwise, transliterate names as-is.
-2. REVERENCE: Maintain a respectful, devotional tone. Keep sacred terms (e.g., Bhakti, Dharma, Prasad) in their original form if natural in {target_name}.
-3. TTS OPTIMIZED: Use clear punctuation for natural pauses (commas for breaths, periods for full stops). Avoid symbols like *, _, (), or brackets.
-4. NATURAL SPEECH: Write for the ear, not the eye. Use conversational {target_name}, not literary or formal style.
+2. SANSKRIT SHLOKAS: If you detect a Sanskrit verse, mantra, or shloka (e.g., "Om Namah Shivaya", "Yada Yada Hi Dharmasya"), keep it in its original form. Do NOT translate shlokas. Only translate the teacher's explanation around them.
+3. REVERENCE: Maintain a respectful, devotional tone. Keep sacred terms (e.g., Bhakti, Dharma, Prasad) in their original form if natural in {target_name}.
+4. TTS OPTIMIZED: Use clear punctuation for natural pauses (commas for breaths, periods for full stops). Avoid symbols like *, _, (), or brackets.
+5. NATURAL SPEECH: Write for the ear, not the eye. Use conversational {target_name}, not literary or formal style.
 
 Return ONLY a numbered list of translations in the same order.
 Format each line as: "number. translation"

@@ -1,4 +1,4 @@
-import os, shutil, threading, tkinter as tk
+import os, shutil, threading, tkinter as tk, concurrent.futures
 import re
 from tkinter import filedialog, ttk, messagebox
 
@@ -19,10 +19,11 @@ from dubber import (
     extract_vision,
     generate_all_captions,
     generate_teasers,
-    log,  # Removed legacy publish_to_platforms
+    log,
     find_ambiguous_repost_blocks,
     record_ambiguous_publish_results,
 )
+from dubber.api_validator import validate_all_keys
 from dubber.utils import (
     PLATFORMS,
     PLATFORM_LIMITS,
@@ -302,6 +303,8 @@ def run_dub_pipeline(
     status_cb,
     caption_ready_cb,
     done_cb,
+    dub_only=False,
+    progress_cb=None,
 ):
     try:
         shutil.rmtree(WORKSPACE, ignore_errors=True)
@@ -309,19 +312,40 @@ def run_dub_pipeline(
 
         if is_url(video_input):
             status_cb("Downloading video ...")
+            if progress_cb:
+                progress_cb(5)
             video_path = download_video(video_input, WORKSPACE)
         else:
             video_path = video_input
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Not found: {video_path}")
 
+        # PARALLEL GROUP 1: BGM separation + Transcription run simultaneously
         bgm_path = None
         if use_bgm:
             status_cb("Separating background music ...")
-            bgm_path = separate_background(video_path, WORKSPACE)
-
         status_cb(_stage_text(1, "Transcribe"))
-        segs = transcribe_audio(video_path, WORKSPACE, model_size, src_lang)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            bgm_future = None
+            if use_bgm:
+                bgm_future = pool.submit(separate_background, video_path, WORKSPACE)
+            transcribe_future = pool.submit(
+                transcribe_audio, video_path, WORKSPACE, model_size, src_lang
+            )
+
+            # Wait for both to finish
+            if bgm_future:
+                try:
+                    bgm_path = bgm_future.result()
+                except Exception as e:
+                    log("BGM_SEP", f"Parallel BGM failed: {e} — continuing without BGM")
+                    bgm_path = None
+
+            segs = transcribe_future.result()
+
+        if progress_cb:
+            progress_cb(30)
         status_cb(_stage_text(2, "Merge segments"))
         segs = merge_short_segments(segs)
         status_cb(_stage_text(3, "Translate"))
@@ -339,22 +363,34 @@ def run_dub_pipeline(
                     "Google Translate",
                 )
             )
+        if progress_cb:
+            progress_cb(43)
+
+        # PARALLEL GROUP 2: TTS/Video Build + Vision extraction run simultaneously
         status_cb(_stage_text(4, "Generate TTS"))
         segs = generate_tts_audio(segs, voice=voice, output_dir=WORKSPACE)
-        status_cb(_stage_text(5, "Build video"))
-        build_dubbed_video(
-            video_path=video_path,
-            segments=segs,
-            output_path=OUTPUT_FILE,
-            bgm_path=bgm_path,
-            bgm_volume=bgm_volume,
-            output_dir=WORKSPACE,
-        )
+        if progress_cb:
+            progress_cb(58)
 
-        status_cb(_stage_text(6, "Extract insights"))
-        vision, vision_meta = extract_vision(
-            segs, gemini_vision_key, WORKSPACE, return_meta=True
-        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            build_future = pool.submit(
+                build_dubbed_video,
+                video_path=video_path,
+                segments=segs,
+                output_path=OUTPUT_FILE,
+                bgm_path=bgm_path,
+                bgm_volume=bgm_volume,
+                output_dir=WORKSPACE,
+            )
+            vision_future = pool.submit(
+                extract_vision, segs, gemini_vision_key, WORKSPACE, True
+            )
+
+            build_future.result()  # wait for video build
+            vision, vision_meta = vision_future.result()
+
+        if progress_cb:
+            progress_cb(78)
         if vision_meta.get("used_fallback"):
             status_cb(
                 _backup_warning(
@@ -363,6 +399,13 @@ def run_dub_pipeline(
                     "rule-based intelligence",
                 )
             )
+
+        if dub_only:
+            status_cb("Dub-only mode complete. Output: workspace/output.mp4")
+            if progress_cb:
+                progress_cb(100)
+            done_cb(success=True, msg="Dubbing complete.", pub_results={})
+            return
 
         status_cb(_stage_text(7, "Generate captions"))
         captions, caption_meta = generate_all_captions(
@@ -374,6 +417,8 @@ def run_dub_pipeline(
             return_meta=True,
             selected_platforms=selected_platforms,
         )
+        if progress_cb:
+            progress_cb(88)
         if caption_meta.get("used_fallback"):
             status_cb(
                 _backup_warning(
@@ -395,6 +440,8 @@ def run_dub_pipeline(
             teaser_path = teaser_paths.get("instagram")
         else:
             status_cb(_stage_text(8, "Skip teasers"))
+        if progress_cb:
+            progress_cb(93)
 
         status_cb(_stage_text(9, "Review captions"))
         caption_ready_cb(
@@ -489,7 +536,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.10")
+        self.title("Video Dubber v1.11")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -927,6 +974,28 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        self.progress_var = tk.StringVar(value="Ready")
+        progress_frame = tk.Frame(self, bg=self._colors["panel"])
+        progress_frame.pack(fill="x", padx=16, pady=(0, 4))
+        self.progress_label = tk.Label(
+            progress_frame,
+            textvariable=self.progress_var,
+            fg=self._colors["muted"],
+            bg=self._colors["panel"],
+            font=("Segoe UI", 9),
+            width=18,
+            anchor="w",
+        )
+        self.progress_label.pack(side="left")
+        self.progress = ttk.Progressbar(
+            progress_frame,
+            mode="determinate",
+            maximum=100,
+            value=0,
+            style="Modern.Horizontal.TProgressbar",
+        )
+        self.progress.pack(side="right", fill="x", expand=True, padx=(8, 0))
+
         self.nb = ttk.Notebook(self, style="Modern.TNotebook")
         self.nb.pack(fill="both", expand=True, padx=16, pady=6)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -1027,20 +1096,31 @@ class App(tk.Tk):
         ttk.Separator(self.t_dub, orient="horizontal").grid(
             row=next_row + 5, column=0, columnspan=3, sticky="ew", pady=8
         )
+        self.dub_only_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            self.t_dub,
+            text="Dub only — skip captions, teasers & publishing",
+            variable=self.dub_only_var,
+            font=("Segoe UI", 9),
+        ).grid(row=next_row + 6, column=0, columnspan=3, sticky="w", **pad)
+
+        ttk.Separator(self.t_dub, orient="horizontal").grid(
+            row=next_row + 7, column=0, columnspan=3, sticky="ew", pady=8
+        )
         tk.Label(
             self.t_dub,
             text="3) Audio Blend & Platforms",
             font=("Segoe UI Semibold", 11),
-        ).grid(row=next_row + 6, column=0, sticky="w", **pad)
+        ).grid(row=next_row + 8, column=0, sticky="w", **pad)
         self.bgm_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             self.t_dub,
             text="Preserve background music (Demucs)",
             variable=self.bgm_var,
             command=self._toggle_bgm,
-        ).grid(row=next_row + 7, column=0, columnspan=2, sticky="w", **pad)
+        ).grid(row=next_row + 9, column=0, columnspan=2, sticky="w", **pad)
         tk.Label(self.t_dub, text="Music volume:", font=("Segoe UI", 10)).grid(
-            row=next_row + 8, column=0, sticky="w", **pad
+            row=next_row + 10, column=0, sticky="w", **pad
         )
         self.bgm_vol_var = tk.DoubleVar(value=0.35)
         self.bgm_scale = tk.Scale(
@@ -1055,14 +1135,14 @@ class App(tk.Tk):
             fg=self._colors["text"],
             highlightthickness=0,
         )
-        self.bgm_scale.grid(row=next_row + 8, column=1, sticky="w", **pad)
+        self.bgm_scale.grid(row=next_row + 10, column=1, sticky="w", **pad)
 
         tk.Label(self.t_dub, text="Platforms to publish:", font=("Segoe UI", 10)).grid(
-            row=next_row + 9, column=0, sticky="w", **pad
+            row=next_row + 11, column=0, sticky="w", **pad
         )
         self._plat_vars = {}
         pf = tk.Frame(self.t_dub, bg=self._colors["panel"])
-        pf.grid(row=next_row + 9, column=1, columnspan=2, sticky="w")
+        pf.grid(row=next_row + 11, column=1, columnspan=2, sticky="w")
         for i, p in enumerate(PLATFORMS):
             v = tk.BooleanVar(value=True)
             self._plat_vars[p] = v
@@ -1071,7 +1151,7 @@ class App(tk.Tk):
             ).grid(row=i // 4, column=i % 4, sticky="w", padx=6)
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 10, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 12, column=0, columnspan=3, sticky="ew", pady=8
         )
         self.dub_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(
@@ -1080,24 +1160,24 @@ class App(tk.Tk):
             variable=self.dub_publish_now_var,
             value=True,
             font=("Segoe UI", 9),
-        ).grid(row=next_row + 11, column=0, columnspan=2, sticky="w", **pad)
+        ).grid(row=next_row + 13, column=0, columnspan=2, sticky="w", **pad)
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 12, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 14, column=0, columnspan=3, sticky="ew", pady=8
         )
         tk.Label(
             self.t_dub, text="Pipeline activity", font=("Segoe UI Semibold", 11)
-        ).grid(row=next_row + 13, column=0, sticky="w", **pad)
+        ).grid(row=next_row + 15, column=0, sticky="w", **pad)
         self.dub_results = tk.Text(self.t_dub, width=84, height=8, font=("Consolas", 9))
         self.dub_results.grid(
-            row=next_row + 14,
+            row=next_row + 16,
             column=0,
             columnspan=3,
             padx=12,
             pady=(0, 8),
             sticky="nsew",
         )
-        self.t_dub.grid_rowconfigure(next_row + 14, weight=1)
+        self.t_dub.grid_rowconfigure(next_row + 16, weight=1)
         self._style_text_area(self.dub_results)
 
         self.t_media_tab = tk.Frame(self.nb, bg=self._colors["panel"], padx=0, pady=0)
@@ -1345,11 +1425,6 @@ class App(tk.Tk):
         self.process_flyer_btn.pack_forget()
         self.publish_flyer_btn.pack_forget()
         self._set_flyer_publish_ready(False)
-
-        self.progress = ttk.Progressbar(
-            self, mode="indeterminate", style="Modern.Horizontal.TProgressbar"
-        )
-        self.progress.pack(fill="x", padx=16, pady=(0, 6))
 
         status_frame = tk.Frame(self, bg=self._colors["panel"], relief="solid", bd=1)
         self.status_var = tk.StringVar(value=f"Ready. {mode_label()}.")
@@ -1809,7 +1884,8 @@ class App(tk.Tk):
 
             # Start publishing
             self.status_var.set("Publishing flyer...")
-            self.progress.start(12)
+            self.progress["value"] = 0
+            self.progress_var.set("Progress: 0%")
             self._start_activity_mirror("flyer")
             _save_env(
                 {
@@ -1904,7 +1980,10 @@ class App(tk.Tk):
     def _flyer_publish_done(self, successful, total, results):
         """Handle flyer publishing completion"""
         self._stop_activity_mirror("flyer")
-        self.progress.stop()
+        self.progress["value"] = 100 if successful else 0
+        self.progress_var.set(
+            "Progress: Complete ✓" if successful else "Progress: Failed ✗"
+        )
         self.flyer_results.insert(tk.END, "\n📊 Publish Results:\n")
         self.flyer_results.insert(tk.END, "=" * 40 + "\n")
         failure_lines = []
@@ -2084,8 +2163,9 @@ class App(tk.Tk):
         self._clear_dub_results()  # Clear previous results
         self.dub_results.insert(tk.END, "🔄 Starting dub pipeline...\n\n")
         self._start_activity_mirror("dub")
-        self.progress.start(12)
-        self.status_var.set("Starting dub pipeline ...")
+        self.progress["value"] = 0
+        self.progress_var.set("Progress: 0%")
+        self.status_var.set("Validating API connections ...")
 
         selected = [p for p, v in self._plat_vars.items() if v.get()]
         # No scheduling implemented yet - always publish immediately
@@ -2093,6 +2173,52 @@ class App(tk.Tk):
         gemini_vision = self.gemini_vision_key_var.get().strip()
         mistral = self.mistral_key_var.get().strip()
         zernio = self.zernio_key_var.get().strip()
+        groq_key = os.environ.get("GROQ_API_KEY", "")
+
+        # Pre-flight API validation
+        validation = validate_all_keys(
+            gemini_key=gemini_vision,
+            mistral_key=mistral,
+            zernio_key=zernio,
+            groq_key=groq_key,
+            need_transcription=True,
+            need_captions=not self.dub_only_var.get(),
+            need_publish=not self.dub_only_var.get(),
+        )
+
+        # Check for hard failures
+        errors = {k: v for k, v in validation.items() if v["status"] == "error"}
+        if errors:
+            error_lines = []
+            for svc, info in validation.items():
+                icon = {"ok": "✅", "error": "❌", "missing": "⏭️"}.get(
+                    info["status"], "❓"
+                )
+                label = {
+                    "groq": "Groq",
+                    "gemini": "Gemini",
+                    "mistral": "Mistral",
+                    "zernio": "Zernio",
+                }.get(svc, svc)
+                error_lines.append(f"{icon} {label}: {info['message']}")
+
+            msg = "\n".join(error_lines)
+            proceed = messagebox.askokcancel(
+                "API Connection Issues",
+                f"⚠️ Some API checks failed:\n\n{msg}\n\nContinue anyway?",
+            )
+            if not proceed:
+                self.dub_results.insert(
+                    tk.END, f"❌ Aborted: {len(errors)} API check(s) failed\n\n"
+                )
+                self.progress["value"] = 0
+                self.status_var.set("Aborted — API validation failed")
+                self.run_btn.config(state="normal")
+                return
+            else:
+                self.dub_results.insert(
+                    tk.END, "⚠️ Proceeding despite API warnings...\n\n"
+                )
         to_save = {}
         if gemini_vision:
             to_save["GEMINI_API_KEY"] = gemini_vision
@@ -2110,9 +2236,12 @@ class App(tk.Tk):
         manual_teaser = ""
 
         # Create custom status callback for dub results
-        def dub_status_callback(message):
+        def dub_status_callback(message, progress_pct=None):
             def _apply():
                 self._update_dub_results(message)
+                if progress_pct is not None:
+                    self.progress["value"] = progress_pct
+                    self.progress_var.set(f"Progress: {progress_pct}%")
                 # Keep status bar aligned with pipeline activity stages/warnings.
                 if str(message).startswith("Stage ") or str(message).startswith("⚠"):
                     self.status_var.set(message)
@@ -2147,6 +2276,8 @@ class App(tk.Tk):
                 dub_status_callback,
                 self._caption_ready_cb,
                 safe_done_callback,
+                self.dub_only_var.get(),
+                dub_status_callback,  # progress_cb — same callback handles both
             ),
             daemon=True,
         ).start()
@@ -2240,7 +2371,8 @@ class App(tk.Tk):
                     except Exception:
                         pass
 
-        self.progress.start(12)
+        self.progress["value"] = 0
+        self.progress_var.set("Progress: 0%")
         self._update_dub_results(_stage_text(10, "Publish"))
         self.status_var.set(_stage_text(10, "Publish"))
 
@@ -2403,7 +2535,10 @@ class App(tk.Tk):
 
     def _done_cb(self, success, msg, pub_results=None):
         self._stop_activity_mirror("dub")
-        self.progress.stop()
+        self.progress["value"] = 100 if success else 0
+        self.progress_var.set(
+            "Progress: Complete ✓" if success else "Progress: Failed ✗"
+        )
         self.status_var.set(msg)
         self.run_btn.config(state="normal")
         if pub_results:
