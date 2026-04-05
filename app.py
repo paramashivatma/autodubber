@@ -29,6 +29,10 @@ from dubber.utils import (
     PLATFORM_LIMITS,
     add_log_subscriber,
     remove_log_subscriber,
+    _init_file_logger,
+    get_api_call_counts,
+    reset_api_call_counts,
+    get_log_dir,
 )
 from dubber.downloader import is_url, download_video
 from dubber.bgm_separator import separate_background
@@ -282,6 +286,17 @@ def _build_flyer_sheet_blurb(flyer_path, workspace_dir=WORKSPACE):
     return blurb
 
 
+def _log_api_summary():
+    """Log API call summary at end of pipeline."""
+    counts = get_api_call_counts()
+    log("API_USAGE", f"--- API Call Summary ---")
+    log("API_USAGE", f"Gemini API calls: {counts.get('gemini', 0)}")
+    log("API_USAGE", f"Mistral API calls: {counts.get('mistral', 0)}")
+    log("API_USAGE", f"Groq API calls: {counts.get('groq', 0)}")
+    log("API_USAGE", f"Total API calls: {counts.get('total', 0)}")
+    log("API_USAGE", f"------------------------")
+
+
 def run_dub_pipeline(
     video_input,
     voice,
@@ -306,6 +321,7 @@ def run_dub_pipeline(
     progress_cb=None,
     clone_voice=False,
 ):
+    reset_api_call_counts()
     try:
         shutil.rmtree(WORKSPACE, ignore_errors=True)
         os.makedirs(WORKSPACE, exist_ok=True)
@@ -408,6 +424,7 @@ def run_dub_pipeline(
 
         if dub_only:
             status_cb("Dub-only mode complete. Output: workspace/output.mp4")
+            _log_api_summary()
             if progress_cb:
                 progress_cb(100)
             done_cb(success=True, msg="Dubbing complete.", pub_results={})
@@ -450,6 +467,7 @@ def run_dub_pipeline(
             progress_cb(93)
 
         status_cb(_stage_text(9, "Review captions"))
+        _log_api_summary()
         caption_ready_cb(
             captions=captions,
             teaser_path=teaser_path,
@@ -542,10 +560,16 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.16")
+        self.title("Video Dubber v1.17")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
+
+        log_dir = get_log_dir()
+        log_file = _init_file_logger()
+        log("APP", f"Logging to: {log_file}")
+        log("APP", f"Log directory: {log_dir}")
+
         self._env = _load_env()
         canonical_updates = _canonicalize_env_keys(self._env)
         if canonical_updates:

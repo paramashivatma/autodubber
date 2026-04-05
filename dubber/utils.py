@@ -1,8 +1,106 @@
 import datetime
+import os
 import sys
+import glob
+import logging
+from logging.handlers import RotatingFileHandler
 from dubber.config import get_platform_accounts
 
 _LOG_SUBSCRIBERS = []
+_FILE_LOGGER = None
+_LOG_DIR = None
+_API_CALL_COUNTS = {"gemini": 0, "mistral": 0, "groq": 0, "total": 0}
+
+
+def get_log_dir():
+    """Get the logs directory path."""
+    global _LOG_DIR
+    if _LOG_DIR is None:
+        _LOG_DIR = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"
+        )
+    return _LOG_DIR
+
+
+def _init_file_logger():
+    """Initialize rotating file logger with 7-day retention."""
+    global _FILE_LOGGER, _LOG_DIR, _API_CALL_COUNTS
+
+    log_dir = get_log_dir()
+    os.makedirs(log_dir, exist_ok=True)
+
+    today = datetime.date.today().strftime("%Y%m%d")
+    log_file = os.path.join(log_dir, f"dubber_{today}.log")
+
+    _FILE_LOGGER = logging.getLogger("dubber")
+    _FILE_LOGGER.setLevel(logging.INFO)
+
+    if not _FILE_LOGGER.handlers:
+        handler = RotatingFileHandler(
+            log_file, maxBytes=10 * 1024 * 1024, backupCount=7
+        )
+        formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"
+        )
+        handler.setFormatter(formatter)
+        _FILE_LOGGER.addHandler(handler)
+
+    _API_CALL_COUNTS = {"gemini": 0, "mistral": 0, "groq": 0, "total": 0}
+    _clean_old_logs(log_dir, keep_days=7)
+
+    return log_file
+
+
+def _clean_old_logs(log_dir, keep_days=7):
+    """Remove log files older than keep_days."""
+    try:
+        pattern = os.path.join(log_dir, "dubber_*.log")
+        for log_file in glob.glob(pattern):
+            file_time = os.path.getmtime(log_file)
+            file_date = datetime.datetime.fromtimestamp(file_time).date()
+            if (datetime.date.today() - file_date).days > keep_days:
+                try:
+                    os.remove(log_file)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _count_api_call(tag, msg):
+    """Track API calls by parsing log messages."""
+    global _API_CALL_COUNTS
+    msg_lower = msg.lower()
+    tag_upper = tag.upper()
+
+    if "GEMINI" in tag_upper or "gemini" in msg_lower:
+        if (
+            "call" in msg_lower
+            or "translate" in msg_lower
+            or "vision" in msg_lower
+            or "teaser" in msg_lower
+            or "caption" in msg_lower
+        ):
+            _API_CALL_COUNTS["gemini"] += 1
+            _API_CALL_COUNTS["total"] += 1
+    elif "MISTRAL" in tag_upper or "mistral" in msg_lower:
+        _API_CALL_COUNTS["mistral"] += 1
+        _API_CALL_COUNTS["total"] += 1
+    elif "GROQ" in tag_upper or "groq" in msg_lower or "TRANSCRIBE" in tag_upper:
+        if "api" in msg_lower or "call" in msg_lower:
+            _API_CALL_COUNTS["groq"] += 1
+            _API_CALL_COUNTS["total"] += 1
+
+
+def get_api_call_counts():
+    """Return current API call counts."""
+    return _API_CALL_COUNTS.copy()
+
+
+def reset_api_call_counts():
+    """Reset API call counts (typically called at start of new pipeline run)."""
+    global _API_CALL_COUNTS
+    _API_CALL_COUNTS = {"gemini": 0, "mistral": 0, "groq": 0, "total": 0}
 
 
 def add_log_subscriber(callback):
@@ -18,17 +116,79 @@ def remove_log_subscriber(callback):
 def log(tag, msg):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     line = f"[{ts}] [{tag:<12}] {msg}"
+
+    _count_api_call(tag, msg)
+
     try:
         print(line, flush=True)
     except UnicodeEncodeError:
         enc = sys.stdout.encoding or "utf-8"
         safe = line.encode(enc, errors="replace").decode(enc, errors="replace")
         print(safe, flush=True)
+
+    if _FILE_LOGGER:
+        _FILE_LOGGER.info(f"[{tag}] {msg}")
+
     for callback in list(_LOG_SUBSCRIBERS):
         try:
             callback(line=line, tag=tag, msg=msg)
         except Exception:
             continue
+
+
+def get_recent_logs(lines=100):
+    """Return last N lines of current log file."""
+    log_dir = get_log_dir()
+    today = datetime.date.today().strftime("%Y%m%d")
+    log_file = os.path.join(log_dir, f"dubber_{today}.log")
+
+    if not os.path.exists(log_file):
+        return []
+
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        return [l.strip() for l in all_lines[-lines:]]
+    except Exception:
+        return []
+
+
+def count_api_calls_from_logs(log_file=None):
+    """Count API calls from a specific log file or today's log."""
+    if log_file is None:
+        log_dir = get_log_dir()
+        today = datetime.date.today().strftime("%Y%m%d")
+        log_file = os.path.join(log_dir, f"dubber_{today}.log")
+
+    if not os.path.exists(log_file):
+        return {"gemini": 0, "mistral": 0, "groq": 0, "total": 0}
+
+    counts = {"gemini": 0, "mistral": 0, "groq": 0, "total": 0}
+
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line_lower = line.lower()
+                if (
+                    "gemini" in line_lower
+                    or "[TRANSLATE" in line
+                    or "[VISION" in line
+                    or "[TEASER" in line
+                    or "[CAPTION" in line
+                ):
+                    if "api call" in line_lower or "gemini" in line_lower:
+                        counts["gemini"] += 1
+                        counts["total"] += 1
+                elif "mistral" in line_lower:
+                    counts["mistral"] += 1
+                    counts["total"] += 1
+                elif "groq" in line_lower or "transcribe" in line_lower:
+                    if "call" in line_lower or "groq" in line_lower:
+                        counts["groq"] += 1
+    except Exception:
+        pass
+
+    return counts
 
 
 # Standardized platform definitions
