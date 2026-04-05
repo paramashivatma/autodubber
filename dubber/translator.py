@@ -96,7 +96,11 @@ def _google_translate_text(text, target_language, source_hint="auto", use_pivot=
         try:
             english = GoogleTranslator(source="auto", target="en").translate(text)
             pivoted = GoogleTranslator(source="en", target="gu").translate(english)
-            if pivoted:
+            if (
+                pivoted
+                and _is_gujarati_script(pivoted)
+                and not _has_foreign_script(pivoted)
+            ):
                 return pivoted
         except Exception as e:
             log("TRANSLATE", f"  Pivot error: {e}")
@@ -366,7 +370,14 @@ def _parse_batch_response(response, expected_count):
         if ". " in line:
             parts = line.split(". ", 1)
             if len(parts) == 2 and parts[0].isdigit():
-                translations.append(parts[1].strip())
+                text_part = parts[1].strip()
+                if text_part:
+                    translations.append(text_part)
+                else:
+                    log(
+                        "TRANSLATE",
+                        f"  Empty translation at line {parts[0]} — skipping",
+                    )
             else:
                 # Fallback: take the whole line if format is unexpected
                 translations.append(line)
@@ -427,9 +438,14 @@ def _translate_to_gujarati(text, source_hint="auto"):
                 f"  Gemini failed: {e} — falling back to Google Translate ...",
             )
 
-    result = _google_translate_text(
-        text, "gu", source_hint=source_hint, use_pivot=False
-    )
+    try:
+        result = _google_translate_text(
+            text, "gu", source_hint=source_hint, use_pivot=False
+        )
+    except Exception as e:
+        log("TRANSLATE", f"  Google Translate failed: {e} — returning original text")
+        _set_cached(text, text, "gu")
+        return text
     if result and _is_gujarati_script(result) and not _has_foreign_script(result):
         _set_cached(text, result, "gu")
         return result
@@ -559,8 +575,11 @@ def _translate_generic(text, target_language):
     result = _google_translate_text(
         text, target_language, source_hint="auto", use_pivot=False
     )
-    _set_cached(text, result, target_language)
-    return result
+    if result:
+        _set_cached(text, result, target_language)
+    else:
+        _set_cached(text, text, target_language)
+    return result or text
 
 
 def _translate_generic_batch(texts, target_language):

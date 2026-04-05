@@ -26,7 +26,7 @@ def _ffprobe_duration(path):
 
 def _cut(src, start, end, dst):
     dur = max(round(end - start, 4), 0.1)
-    subprocess.run(
+    r = subprocess.run(
         [
             "ffmpeg",
             "-y",
@@ -48,6 +48,9 @@ def _cut(src, start, end, dst):
         capture_output=True,
         timeout=300,
     )
+    if r.returncode != 0 or not os.path.exists(dst):
+        log("CUT", f"  FFmpeg cut failed for {os.path.basename(dst)}, copying source")
+        shutil.copy(src, dst)
 
 
 def _slow(src, dst, pts_factor):
@@ -76,8 +79,12 @@ def _slow(src, dst, pts_factor):
         timeout=300,
     )
     if r.returncode != 0:
-        log("SLOW", f"  FFmpeg failed, copying source as fallback")
+        log(
+            "SLOW", f"  FFmpeg failed, copying source as fallback (A/V sync may differ)"
+        )
         shutil.copy(src, dst)
+        return False
+    return True
 
 
 def _actual_duration(path):
@@ -91,8 +98,8 @@ def _concat(parts, dst):
     list_file = dst + "_list.txt"
     with open(list_file, "w", encoding="utf-8") as f:
         for p in parts:
-            safe = os.path.abspath(p).replace("\\", "/").replace("'", "\\'")
-            f.write(f"file '{safe}'\n")
+            safe = os.path.abspath(p).replace("\\", "/").replace('"', '\\"')
+            f.write(f'file "{safe}"\n')
     r = subprocess.run(
         [
             "ffmpeg",
@@ -176,7 +183,9 @@ def build_dubbed_video(
         if tts_dur > orig_dur + 0.05:
             stretch = tts_dur / orig_dur
             log("BUILD", f"    → stretch {stretch:.3f}x")
-            _slow(seg_raw, seg_out, stretch)
+            stretched = _slow(seg_raw, seg_out, stretch)
+            if not stretched:
+                log("BUILD", f"    → WARNING: stretch failed, A/V may be out of sync")
             actual_seg_dur = _actual_duration(seg_out) or tts_dur
         else:
             shutil.copy(seg_raw, seg_out)

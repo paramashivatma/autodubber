@@ -948,7 +948,10 @@ def publish_with_sdk(
                     log("PUBLISH", f"  ✅ Main video uploaded: {video_url[:50]}...")
                 except Exception as e:
                     log("PUBLISH", f"  ❌ Upload failed: {e}")
-                    return {"error": f"Media upload failed: {e}"}
+                    results = dict(direct_bluesky_results)
+                    results.update(direct_youtube_results)
+                    results["error"] = f"Media upload failed: {e}"
+                    return results
 
             # Try images if no video
             elif not main_video_path:
@@ -1228,8 +1231,9 @@ def publish_with_sdk(
     except Exception as e:
         error_msg = f"SDK publishing failed: {str(e)}"
         log("PUBLISH", f"❌ {error_msg}")
+        total = locals().get("total_publish_targets", 1)
         if progress_cb:
-            progress_cb(total_publish_targets, total_publish_targets, "sdk", "error")
+            progress_cb(total, total, "sdk", "error")
         if "direct_bluesky_results" in locals() and direct_bluesky_results:
             merged = dict(direct_bluesky_results)
             merged.update(locals().get("direct_youtube_results", {}))

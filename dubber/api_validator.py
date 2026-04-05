@@ -130,7 +130,6 @@ def validate_all_keys(
     mistral_key=None,
     zernio_key=None,
     groq_key=None,
-    need_transcription=True,
     need_captions=False,
     need_publish=False,
 ):

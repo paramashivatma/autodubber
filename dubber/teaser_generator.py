@@ -43,10 +43,7 @@ def _get_video_duration(video_path):
 def _cut_teaser(
     dubbed_video_path, start, dur, out_path, overlay_text=None, output_dir="workspace"
 ):
-    # Overlay disabled — no Gujarati-capable font available on this system via ffmpeg CLI
-    if False:
-        pass
-
+    # TODO: Implement text overlay when Gujarati-capable font is available via ffmpeg CLI
     cmd = [
         "ffmpeg",
         "-y",
@@ -77,6 +74,9 @@ def _cut_teaser(
 
 
 def generate_teasers(dubbed_video_path, segments, captions, output_dir="workspace"):
+    if not segments:
+        log("TEASER", "No segments — skipping teaser generation")
+        return {}
     os.makedirs(output_dir, exist_ok=True)
     video_dur = _get_video_duration(dubbed_video_path)
 

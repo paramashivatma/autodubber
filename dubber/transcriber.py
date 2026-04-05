@@ -4,36 +4,66 @@ from .config import get_groq_api_key
 from .utils import log
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
-GROQ_MODEL   = "whisper-large-v3"
-MAX_FILE_MB  = 25  # Groq limit
+GROQ_MODEL = "whisper-large-v3"
+MAX_FILE_MB = 25  # Groq limit
 
 
 def _extract_audio(video_path, out_wav):
-    r = subprocess.run([
-        "ffmpeg", "-y", "-i", video_path,
-        "-ar", "16000", "-ac", "1", "-f", "wav", out_wav
-    ], capture_output=True, text=True)
+    r = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            video_path,
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-f",
+            "wav",
+            out_wav,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
     if r.returncode != 0 or not os.path.exists(out_wav):
-        raise RuntimeError(f"Audio extraction failed for {video_path}: {r.stderr[-400:]}")
+        raise RuntimeError(
+            f"Audio extraction failed for {video_path}: {r.stderr[-400:]}"
+        )
 
 
 def _split_audio(wav_path, output_dir, chunk_sec=600):
     """Split audio into chunks if over 25MB."""
-    size_mb = os.path.getsize(wav_path) / (1024*1024)
+    size_mb = os.path.getsize(wav_path) / (1024 * 1024)
     if size_mb <= MAX_FILE_MB:
         return [wav_path]
     chunks = []
     i = 0
     while True:
         chunk_path = os.path.join(output_dir, f"chunk_{i:03d}.wav")
-        r = subprocess.run([
-            "ffmpeg", "-y", "-i", wav_path,
-            "-ss", str(i * chunk_sec),
-            "-t",  str(chunk_sec),
-            "-ar", "16000", "-ac", "1", chunk_path
-        ], capture_output=True)
-        if r.returncode != 0 or not os.path.exists(chunk_path): break
-        if os.path.getsize(chunk_path) < 1000: break
+        r = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                wav_path,
+                "-ss",
+                str(i * chunk_sec),
+                "-t",
+                str(chunk_sec),
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                chunk_path,
+            ],
+            capture_output=True,
+        )
+        if r.returncode != 0 or not os.path.exists(chunk_path):
+            break
+        if os.path.getsize(chunk_path) < 1000:
+            break
         chunks.append(chunk_path)
         i += 1
     return chunks
@@ -47,9 +77,9 @@ def _transcribe_chunk(api_key, audio_path, language=None):
 
     # Build multipart manually — Groq is strict about field format
     fields = [
-        ("model",           (None, GROQ_MODEL)),
+        ("model", (None, GROQ_MODEL)),
         ("response_format", (None, "verbose_json")),
-        ("temperature",     (None, "0.0")),
+        ("temperature", (None, "0.0")),
     ]
     if language:
         fields.append(("language", (None, language)))
@@ -58,7 +88,6 @@ def _transcribe_chunk(api_key, audio_path, language=None):
 
     r = httpx.post(GROQ_API_URL, headers=headers, files=fields, timeout=120)
     if not r.is_success:
-
         log("TRANSCRIBE", f"Groq error body: {r.text[:300]}")
         r.raise_for_status()
     return r.json()
@@ -69,7 +98,7 @@ def _groq_transcribe(api_key, audio_path, language, output_dir):
     if not chunks:
         raise RuntimeError("Audio chunking produced no chunks for Groq transcription.")
     all_segments = []
-    time_offset  = 0.0
+    time_offset = 0.0
     detected_lang = None
 
     for chunk_path in chunks:
@@ -77,12 +106,14 @@ def _groq_transcribe(api_key, audio_path, language, output_dir):
         result = _transcribe_chunk(api_key, chunk_path, language)
         detected_lang = result.get("language", language)
         for seg in result.get("segments", []):
-            all_segments.append({
-                "id":    seg.get("id", len(all_segments)),
-                "start": round(seg["start"] + time_offset, 3),
-                "end":   round(seg["end"]   + time_offset, 3),
-                "text":  seg["text"].strip(),
-            })
+            all_segments.append(
+                {
+                    "id": seg.get("id", len(all_segments)),
+                    "start": round(seg["start"] + time_offset, 3),
+                    "end": round(seg["end"] + time_offset, 3),
+                    "text": seg["text"].strip(),
+                }
+            )
         # Advance offset by last segment end
         segs = result.get("segments", [])
         if segs:
@@ -97,19 +128,25 @@ def _local_transcribe(audio_path, language, model_size, output_dir):
     # Try OpenAI Whisper first if installed.
     try:
         import whisper
+
         log("TRANSCRIBE", f"Local Whisper (openai-whisper): {model_size}")
         model = whisper.load_model(model_size)
         result = model.transcribe(audio_path, language=lang_code, verbose=False)
         detected = result.get("language", language)
-        log("TRANSCRIBE", f"Lang: {detected} p={result.get('language_probability', 0):.2f}")
+        log(
+            "TRANSCRIBE",
+            f"Lang: {detected} p={result.get('language_probability', 0):.2f}",
+        )
         segments = []
         for seg in result.get("segments", []):
-            segments.append({
-                "id":    seg["id"],
-                "start": round(seg["start"], 3),
-                "end":   round(seg["end"],   3),
-                "text":  seg["text"].strip(),
-            })
+            segments.append(
+                {
+                    "id": seg["id"],
+                    "start": round(seg["start"], 3),
+                    "end": round(seg["end"], 3),
+                    "text": seg["text"].strip(),
+                }
+            )
         return segments, detected
     except Exception as e:
         log("TRANSCRIBE", f"openai-whisper unavailable, trying faster-whisper: {e}")
@@ -117,21 +154,26 @@ def _local_transcribe(audio_path, language, model_size, output_dir):
     # Fallback to faster-whisper (already part of requirements.txt).
     try:
         from faster_whisper import WhisperModel
+
         log("TRANSCRIBE", f"Local Whisper (faster-whisper): {model_size}")
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
-        fw_segments, info = model.transcribe(audio_path, language=lang_code, beam_size=5)
+        fw_segments, info = model.transcribe(
+            audio_path, language=lang_code, beam_size=5
+        )
         detected = getattr(info, "language", language)
         segments = []
         for i, seg in enumerate(fw_segments):
             text = (getattr(seg, "text", "") or "").strip()
             if not text:
                 continue
-            segments.append({
-                "id": i,
-                "start": round(float(seg.start), 3),
-                "end": round(float(seg.end), 3),
-                "text": text,
-            })
+            segments.append(
+                {
+                    "id": i,
+                    "start": round(float(seg.start), 3),
+                    "end": round(float(seg.end), 3),
+                    "text": text,
+                }
+            )
         log("TRANSCRIBE", f"Lang: {detected} | segments={len(segments)}")
         return segments, detected
     except Exception as e:
@@ -141,8 +183,9 @@ def _local_transcribe(audio_path, language, model_size, output_dir):
         ) from e
 
 
-def transcribe_audio(video_path, output_dir, model_size="large",
-                     language="auto", groq_api_key=None):
+def transcribe_audio(
+    video_path, output_dir, model_size="large", language="auto", groq_api_key=None
+):
     os.makedirs(output_dir, exist_ok=True)
     wav_path = os.path.join(output_dir, "audio.wav")
     _extract_audio(video_path, wav_path)
@@ -153,14 +196,20 @@ def transcribe_audio(video_path, output_dir, model_size="large",
         log("TRANSCRIBE", f"Using Groq whisper-large-v3 (lang={language}) ...")
         try:
             lang_code = None if language in ("auto", None) else language
-            segments, detected = _groq_transcribe(groq_key, wav_path, lang_code, output_dir)
+            segments, detected = _groq_transcribe(
+                groq_key, wav_path, lang_code, output_dir
+            )
             log("TRANSCRIBE", f"Lang detected: {detected}")
         except Exception as e:
             log("TRANSCRIBE", f"Groq failed: {e} — falling back to local Whisper ...")
-            segments, detected = _local_transcribe(wav_path, language, model_size, output_dir)
+            segments, detected = _local_transcribe(
+                wav_path, language, model_size, output_dir
+            )
     else:
         log("TRANSCRIBE", "No GROQ_API_KEY — using local Whisper ...")
-        segments, detected = _local_transcribe(wav_path, language, model_size, output_dir)
+        segments, detected = _local_transcribe(
+            wav_path, language, model_size, output_dir
+        )
 
     out_path = os.path.join(output_dir, "transcript.json")
     with open(out_path, "w", encoding="utf-8") as f:

@@ -535,7 +535,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.13")
+        self.title("Video Dubber v1.14")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -2167,7 +2167,6 @@ class App(tk.Tk):
             mistral_key=mistral,
             zernio_key=zernio,
             groq_key=None,
-            need_transcription=False,  # Groq is optional, local Whisper is default
             need_captions=not self.dub_only_var.get(),
             need_publish=not self.dub_only_var.get(),
         )
@@ -2199,40 +2198,6 @@ class App(tk.Tk):
                 )
                 self.progress["value"] = 0
                 self.progress_var.set("Progress: Failed ✗")
-                self.status_var.set("Aborted — API validation failed")
-                self.run_btn.config(state="normal")
-                return
-            else:
-                self.dub_results.insert(
-                    tk.END, "⚠️ Proceeding despite API warnings...\n\n"
-                )
-
-        # Check for hard failures (only required APIs)
-        errors = {k: v for k, v in validation.items() if v["status"] == "error"}
-        if errors:
-            error_lines = []
-            for svc, info in validation.items():
-                icon = {"ok": "✅", "error": "❌", "missing": "⏭️"}.get(
-                    info["status"], "❓"
-                )
-                label = {
-                    "groq": "Groq",
-                    "gemini": "Gemini",
-                    "mistral": "Mistral",
-                    "zernio": "Zernio",
-                }.get(svc, svc)
-                error_lines.append(f"{icon} {label}: {info['message']}")
-
-            msg = "\n".join(error_lines)
-            proceed = messagebox.askokcancel(
-                "API Connection Issues",
-                f"⚠️ Some API checks failed:\n\n{msg}\n\nContinue anyway?",
-            )
-            if not proceed:
-                self.dub_results.insert(
-                    tk.END, f"❌ Aborted: {len(errors)} API check(s) failed\n\n"
-                )
-                self.progress["value"] = 0
                 self.status_var.set("Aborted — API validation failed")
                 self.run_btn.config(state="normal")
                 return
