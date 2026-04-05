@@ -98,8 +98,8 @@ def _concat(parts, dst):
     list_file = dst + "_list.txt"
     with open(list_file, "w", encoding="utf-8") as f:
         for p in parts:
-            safe = os.path.abspath(p).replace("\\", "/").replace('"', '\\"')
-            f.write(f'file "{safe}"\n')
+            safe = os.path.abspath(p).replace("\\", "/").replace("'", "'\\''")
+            f.write(f"file '{safe}'\n")
     r = subprocess.run(
         [
             "ffmpeg",
