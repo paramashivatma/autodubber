@@ -304,6 +304,7 @@ def run_dub_pipeline(
     done_cb,
     dub_only=False,
     progress_cb=None,
+    clone_voice=False,
 ):
     try:
         shutil.rmtree(WORKSPACE, ignore_errors=True)
@@ -367,7 +368,13 @@ def run_dub_pipeline(
 
         # PARALLEL GROUP 2: TTS/Video Build + Vision extraction run simultaneously
         status_cb(_stage_text(4, "Generate TTS"))
-        segs = generate_tts_audio(segs, voice=voice, output_dir=WORKSPACE)
+        segs = generate_tts_audio(
+            segs,
+            voice=voice,
+            output_dir=WORKSPACE,
+            clone_voice=clone_voice,
+            source_video=video_path if clone_voice else None,
+        )
         if progress_cb:
             progress_cb(58)
 
@@ -535,7 +542,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.15")
+        self.title("Video Dubber v1.16")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -1064,7 +1071,7 @@ class App(tk.Tk):
         ).grid(row=next_row + 2, column=1, sticky="w", **pad)
 
         tk.Label(self.t_dub, text="Target lang:", font=("Segoe UI", 10)).grid(
-            row=next_row + 4, column=0, sticky="w", **pad
+            row=next_row + 3, column=0, sticky="w", **pad
         )
         self.tgt_lang_var = tk.StringVar(value="Gujarati")
         self.tgt_lang_combo = ttk.Combobox(
@@ -1080,8 +1087,25 @@ class App(tk.Tk):
         )
         self._sync_voice_options()
 
+        self.clone_voice_var = tk.BooleanVar(value=False)
+        clone_check = tk.Checkbutton(
+            self.t_dub,
+            text="Clone speaker's voice (OpenVoice)",
+            variable=self.clone_voice_var,
+            font=("Segoe UI", 9),
+        )
+        clone_check.grid(row=next_row + 4, column=0, columnspan=2, sticky="w", **pad)
+        tk.Label(
+            self.t_dub,
+            text="EN•ES•FR•ZH•JA•KO supported | Other → Edge TTS | GPU recommended",
+            fg=self._colors["muted"],
+            font=("Segoe UI", 8),
+        ).grid(
+            row=next_row + 5, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 6)
+        )
+
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 4, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 6, column=0, columnspan=3, sticky="ew", pady=8
         )
         self.dub_only_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
@@ -1089,25 +1113,25 @@ class App(tk.Tk):
             text="Dub only — skip captions, teasers & publishing",
             variable=self.dub_only_var,
             font=("Segoe UI", 9),
-        ).grid(row=next_row + 5, column=0, columnspan=3, sticky="w", **pad)
+        ).grid(row=next_row + 7, column=0, columnspan=3, sticky="w", **pad)
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 6, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 8, column=0, columnspan=3, sticky="ew", pady=8
         )
         tk.Label(
             self.t_dub,
             text="3) Audio Blend & Platforms",
             font=("Segoe UI Semibold", 11),
-        ).grid(row=next_row + 7, column=0, sticky="w", **pad)
+        ).grid(row=next_row + 9, column=0, sticky="w", **pad)
         self.bgm_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             self.t_dub,
             text="Preserve background music (Demucs)",
             variable=self.bgm_var,
             command=self._toggle_bgm,
-        ).grid(row=next_row + 8, column=0, columnspan=2, sticky="w", **pad)
+        ).grid(row=next_row + 9, column=0, columnspan=2, sticky="w", **pad)
         tk.Label(self.t_dub, text="Music volume:", font=("Segoe UI", 10)).grid(
-            row=next_row + 9, column=0, sticky="w", **pad
+            row=next_row + 10, column=0, sticky="w", **pad
         )
         self.bgm_vol_var = tk.DoubleVar(value=0.35)
         self.bgm_scale = tk.Scale(
@@ -1122,14 +1146,14 @@ class App(tk.Tk):
             fg=self._colors["text"],
             highlightthickness=0,
         )
-        self.bgm_scale.grid(row=next_row + 9, column=1, sticky="w", **pad)
+        self.bgm_scale.grid(row=next_row + 10, column=1, sticky="w", **pad)
 
         tk.Label(self.t_dub, text="Platforms to publish:", font=("Segoe UI", 10)).grid(
-            row=next_row + 10, column=0, sticky="w", **pad
+            row=next_row + 11, column=0, sticky="w", **pad
         )
         self._plat_vars = {}
         pf = tk.Frame(self.t_dub, bg=self._colors["panel"])
-        pf.grid(row=next_row + 10, column=1, columnspan=2, sticky="w")
+        pf.grid(row=next_row + 11, column=1, columnspan=2, sticky="w")
         for i, p in enumerate(PLATFORMS):
             v = tk.BooleanVar(value=True)
             self._plat_vars[p] = v
@@ -1138,7 +1162,7 @@ class App(tk.Tk):
             ).grid(row=i // 4, column=i % 4, sticky="w", padx=6)
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 11, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 12, column=0, columnspan=3, sticky="ew", pady=8
         )
         self.dub_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(
@@ -1147,24 +1171,24 @@ class App(tk.Tk):
             variable=self.dub_publish_now_var,
             value=True,
             font=("Segoe UI", 9),
-        ).grid(row=next_row + 12, column=0, columnspan=2, sticky="w", **pad)
+        ).grid(row=next_row + 13, column=0, columnspan=2, sticky="w", **pad)
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 13, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 14, column=0, columnspan=3, sticky="ew", pady=8
         )
         tk.Label(
             self.t_dub, text="Pipeline activity", font=("Segoe UI Semibold", 11)
-        ).grid(row=next_row + 14, column=0, sticky="w", **pad)
+        ).grid(row=next_row + 15, column=0, sticky="w", **pad)
         self.dub_results = tk.Text(self.t_dub, width=84, height=8, font=("Consolas", 9))
         self.dub_results.grid(
-            row=next_row + 15,
+            row=next_row + 16,
             column=0,
             columnspan=3,
             padx=12,
             pady=(0, 8),
             sticky="nsew",
         )
-        self.t_dub.grid_rowconfigure(next_row + 15, weight=1)
+        self.t_dub.grid_rowconfigure(next_row + 16, weight=1)
         self._style_text_area(self.dub_results)
 
         self.t_media_tab = tk.Frame(self.nb, bg=self._colors["panel"], padx=0, pady=0)
@@ -2271,6 +2295,7 @@ class App(tk.Tk):
                 safe_done_callback,
                 self.dub_only_var.get(),
                 progress_callback,  # progress_cb — separate function for percentage updates
+                self.clone_voice_var.get(),  # clone_voice — enable OpenVoice cloning
             ),
             daemon=True,
         ).start()

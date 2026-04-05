@@ -475,7 +475,7 @@ def _translate_to_gujarati(text, source_hint="auto"):
 
 
 def _translate_to_gujarati_batch(texts, source_hint="auto"):
-    """Batch translate multiple texts to Gujarati"""
+    """Batch translate multiple texts to Gujarati, using cache when available."""
     if is_economy_mode():
         log(
             "TRANSLATE",
@@ -483,13 +483,23 @@ def _translate_to_gujarati_batch(texts, source_hint="auto"):
         )
         return [_translate_to_gujarati(t, source_hint) for t in texts]
 
+    cached_results = [_get_cached(t, "gu") for t in texts]
+    uncached_indices = [i for i, c in enumerate(cached_results) if c is None]
+    cached_count = len(texts) - len(uncached_indices)
+
+    if cached_count > 0:
+        log("TRANSLATE", f"  [CACHE] {cached_count}/{len(texts)} texts already cached")
+
+    if not uncached_indices:
+        return cached_results
+
+    uncached_texts = [texts[i] for i in uncached_indices]
+
     try:
-        translations = _gemini_translate_batch(texts, source_hint, "gu")
+        translations = _gemini_translate_batch(uncached_texts, source_hint, "gu")
         if translations is None:
-            # Count mismatch - fall back to per-segment translation
             return _translate_segments_per_segment(texts, source_hint, "gu")
 
-        # Validate Gujarati output for each translation
         validated_translations = []
         for translation in translations:
             if (
@@ -499,42 +509,52 @@ def _translate_to_gujarati_batch(texts, source_hint="auto"):
             ):
                 validated_translations.append(translation)
             else:
-                validated_translations.append(None)  # Mark for fallback
+                validated_translations.append(None)
 
-        # Check if any translations need fallback
         if any(t is None for t in validated_translations):
             log(
                 "TRANSLATE",
                 "  Some Gemini outputs not clean Gujarati — using fallbacks...",
             )
-            # Use individual fallback for problematic translations
             final_translations = []
-            for i, (text, validated) in enumerate(zip(texts, validated_translations)):
-                if validated is not None:
-                    final_translations.append(validated)
+            result_idx = 0
+            for i, cached in enumerate(cached_results):
+                if cached is not None:
+                    final_translations.append(cached)
                 else:
-                    # Use individual Google Translate fallback
-                    try:
-                        from deep_translator import GoogleTranslator
+                    validated = validated_translations[result_idx]
+                    result_idx += 1
+                    if validated is not None:
+                        final_translations.append(validated)
+                    else:
+                        try:
+                            from deep_translator import GoogleTranslator
 
-                        if source_hint != "en":
-                            english = GoogleTranslator(
-                                source="auto", target="en"
-                            ).translate(text)
-                            result2 = GoogleTranslator(
-                                source="en", target="gu"
-                            ).translate(english)
-                        else:
-                            result2 = GoogleTranslator(
-                                source="en", target="gu"
-                            ).translate(text)
-                        final_translations.append(result2)
-                    except Exception as e:
-                        log("TRANSLATE", f"  Fallback failed for text {i + 1}: {e}")
-                        final_translations.append(text)  # Use original as last resort
+                            text = texts[i]
+                            if source_hint != "en":
+                                english = GoogleTranslator(
+                                    source="auto", target="en"
+                                ).translate(text)
+                                result2 = GoogleTranslator(
+                                    source="en", target="gu"
+                                ).translate(english)
+                            else:
+                                result2 = GoogleTranslator(
+                                    source="en", target="gu"
+                                ).translate(text)
+                            final_translations.append(result2)
+                        except Exception as e:
+                            log("TRANSLATE", f"  Fallback failed for text {i + 1}: {e}")
+                            final_translations.append(texts[i])
             return final_translations
         else:
-            return translations
+            results = list(cached_results)
+            for idx, translation, text in zip(
+                uncached_indices, translations, uncached_texts
+            ):
+                results[idx] = translation
+                _set_cached(text, translation, "gu")
+            return results
 
     except Exception as e:
         log(
@@ -583,7 +603,7 @@ def _translate_generic(text, target_language):
 
 
 def _translate_generic_batch(texts, target_language):
-    """Batch translate multiple texts to generic language"""
+    """Batch translate multiple texts to generic language, using cache when available."""
     if is_economy_mode():
         log(
             "TRANSLATE",
@@ -591,12 +611,31 @@ def _translate_generic_batch(texts, target_language):
         )
         return [_translate_generic(t, target_language) for t in texts]
 
+    cached_results = [_get_cached(t, target_language) for t in texts]
+    uncached_indices = [i for i, c in enumerate(cached_results) if c is None]
+    cached_count = len(texts) - len(uncached_indices)
+
+    if cached_count > 0:
+        log("TRANSLATE", f"  [CACHE] {cached_count}/{len(texts)} texts already cached")
+
+    if not uncached_indices:
+        return cached_results
+
+    uncached_texts = [texts[i] for i in uncached_indices]
+
     try:
-        translations = _gemini_translate_batch(texts, "auto", target_language)
+        translations = _gemini_translate_batch(uncached_texts, "auto", target_language)
         if translations is None:
-            # Count mismatch - fall back to per-segment translation
             return _translate_segments_per_segment(texts, "auto", target_language)
-        return translations
+
+        results = list(cached_results)
+        for idx, translation, text in zip(
+            uncached_indices, translations, uncached_texts
+        ):
+            results[idx] = translation
+            _set_cached(text, translation, target_language)
+        return results
+
     except Exception as e:
         log(
             "TRANSLATE",
