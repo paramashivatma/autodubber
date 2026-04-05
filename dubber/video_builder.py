@@ -220,7 +220,6 @@ def build_dubbed_video(
 
         audio_path = seg.get("audio_path")
         if audio_path and os.path.exists(audio_path):
-            overlay_dur = orig_dur
             if tts_dur < orig_dur - 0.05:
                 target_ms = int(orig_dur * 1000)
                 padded_path = _pad_audio_with_silence(audio_path, target_ms)
@@ -228,11 +227,15 @@ def build_dubbed_video(
                     audio_path = padded_path
                     silence_ms = target_ms - int(tts_dur * 1000)
                     log("BUILD", f"    → padded with {silence_ms}ms silence")
+                    overlay_dur = orig_dur
                 else:
                     log(
                         "BUILD",
                         f"    → WARNING: padding failed, original audio may have gaps",
                     )
+                    overlay_dur = tts_dur
+            else:
+                overlay_dur = tts_dur
             positions.append((audio_start, overlay_dur, audio_path))
             log("BUILD", f"    → audio overlay at {audio_start:.2f}s")
         else:
@@ -257,10 +260,10 @@ def build_dubbed_video(
 
     total_ms = int(cursor * 1000) + 500
     tts_track = AudioSegment.silent(duration=total_ms)
-    for audio_start, tts_dur, cp in positions:
+    for audio_start, overlay_dur, cp in positions:
         try:
             tts_audio = AudioSegment.from_file(cp)
-            declared_ms = int(tts_dur * 1000)
+            declared_ms = int(overlay_dur * 1000)
             if len(tts_audio) > declared_ms + 100:
                 tts_audio = tts_audio[:declared_ms]
             tts_track = tts_track.overlay(tts_audio, position=int(audio_start * 1000))
