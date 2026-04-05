@@ -125,40 +125,13 @@ def _groq_transcribe(api_key, audio_path, language, output_dir):
 def _local_transcribe(audio_path, language, model_size, output_dir):
     lang_code = language if language and language != "auto" else None
 
-    # Try OpenAI Whisper first if installed.
-    try:
-        import whisper
-
-        log("TRANSCRIBE", f"Local Whisper (openai-whisper): {model_size}")
-        model = whisper.load_model(model_size)
-        result = model.transcribe(audio_path, language=lang_code, verbose=False)
-        detected = result.get("language", language)
-        log(
-            "TRANSCRIBE",
-            f"Lang: {detected} p={result.get('language_probability', 0):.2f}",
-        )
-        segments = []
-        for seg in result.get("segments", []):
-            segments.append(
-                {
-                    "id": seg["id"],
-                    "start": round(seg["start"], 3),
-                    "end": round(seg["end"], 3),
-                    "text": seg["text"].strip(),
-                }
-            )
-        return segments, detected
-    except Exception as e:
-        log("TRANSCRIBE", f"openai-whisper unavailable, trying faster-whisper: {e}")
-
-    # Fallback to faster-whisper (already part of requirements.txt).
     try:
         from faster_whisper import WhisperModel
 
         log("TRANSCRIBE", f"Local Whisper (faster-whisper): {model_size}")
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
         fw_segments, info = model.transcribe(
-            audio_path, language=lang_code, beam_size=5
+            audio_path, language=lang_code, beam_size=5, vad_filter=True
         )
         detected = getattr(info, "language", language)
         segments = []
@@ -174,12 +147,15 @@ def _local_transcribe(audio_path, language, model_size, output_dir):
                     "text": text,
                 }
             )
-        log("TRANSCRIBE", f"Lang: {detected} | segments={len(segments)}")
+        log(
+            "TRANSCRIBE",
+            f"Lang: {detected} p={getattr(info, 'language_probability', 0):.2f}",
+        )
         return segments, detected
     except Exception as e:
         raise RuntimeError(
             "Local transcription failed. Set GROQ_API_KEY for cloud transcription "
-            "or install openai-whisper/faster-whisper properly."
+            "or install faster-whisper (pip install faster-whisper)."
         ) from e
 
 

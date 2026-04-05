@@ -3,7 +3,14 @@ import httpx
 import re
 from .config import get_mistral_api_key
 from .runtime_config import is_economy_mode, is_quality_mode
-from .utils import log, PLATFORM_LIMITS, SHORT_MINIMUMS, REQUIRED_PLATFORMS, PLATFORMS
+from .utils import (
+    log,
+    PLATFORM_LIMITS,
+    SHORT_MINIMUMS,
+    REQUIRED_PLATFORMS,
+    PLATFORMS,
+    OPTIMAL_RANGES,
+)
 
 TAGS4 = "#KAILASA #Nithyananda"
 TAGS3 = "#KAILASA #Nithyananda"
@@ -452,7 +459,7 @@ def _strict_validate(captions):
             log("CAPTION", f"[VALIDATION_FAIL] Empty caption for {p}")
             return False, f"empty:{p}"
 
-        limit = _effective_limit(p)
+        limit = PLATFORM_LIMITS.get(p, 2000)
         if len(caption) > limit:
             log(
                 "CAPTION",
@@ -713,27 +720,42 @@ def generate_all_captions(
                 except Exception as e:
                     log("CAPTION", f"Regeneration failed for {p}: {e}")
 
-        # Check character limits
-        lim = _effective_limit(p)
-        if len(caption) > lim:
+        # Check character limits — only truncate at HARD platform limits
+        hard_lim = PLATFORM_LIMITS.get(p, 2000)
+        if len(caption) > hard_lim:
             log(
                 "CAPTION",
-                f"Caption too long for {p} ({len(caption)} > {lim}) — truncating...",
+                f"Caption exceeds hard limit for {p} ({len(caption)} > {hard_lim}) — truncating...",
             )
-            captions[p]["caption"] = caption[: lim - 1] + "…"
+            captions[p]["caption"] = caption[: hard_lim - 1] + "…"
+        else:
+            # Warn if outside optimal engagement range, but don't truncate
+            opt_range = OPTIMAL_RANGES.get(p)
+            if opt_range:
+                opt_min, opt_max = opt_range
+                if len(caption) < opt_min:
+                    log(
+                        "CAPTION",
+                        f"Caption short for {p} ({len(caption)} < {opt_min} optimal)",
+                    )
+                elif len(caption) > opt_max:
+                    log(
+                        "CAPTION",
+                        f"Caption long for {p} ({len(caption)} > {opt_max} optimal) — within hard limit, keeping as-is",
+                    )
 
     for p, data in captions.items():
-        lim = _effective_limit(p)
+        hard_lim = PLATFORM_LIMITS.get(p, 2000)
         cleaned_caption = _sanitize_caption_text(
             _extract_str(data.get("caption", "")), newline_before_tags=True
         )
-        cleaned_caption = _smart_trim(cleaned_caption, lim)
+        cleaned_caption = _smart_trim(cleaned_caption, hard_lim)
         # One more pass after trim to remove any clipped quote artifacts.
         cleaned_caption = _sanitize_caption_text(
             cleaned_caption, newline_before_tags=True
         )
-        if len(cleaned_caption) > lim:
-            cleaned_caption = _smart_trim(cleaned_caption, lim)
+        if len(cleaned_caption) > hard_lim:
+            cleaned_caption = _smart_trim(cleaned_caption, hard_lim)
         data["caption"] = cleaned_caption
         if p == "youtube":
             title = _sanitize_caption_text(
@@ -772,18 +794,18 @@ def _fallback_captions(vision_data, target_language="gu", target_platforms=None)
     all_caps = {
         "instagram": {"caption": long_cap},
         "facebook": {"caption": long_cap},
-        "tiktok": {"caption": _smart_trim(hook + "\n\n#KAILASA #Nithyananda", 180)},
+        "tiktok": {"caption": _smart_trim(hook + "\n\n#KAILASA #Nithyananda", 250)},
         "twitter": {
             "caption": _smart_trim(
                 hook + " " + body1 + "\n\n#KAILASA #Nithyananda",
-                _effective_limit("twitter"),
+                100,
             )
         },
         "threads": {
-            "caption": _smart_trim(hook + "\n\n" + body1 + "\n\n" + TAGS3, 350)
+            "caption": _smart_trim(hook + "\n\n" + body1 + "\n\n" + TAGS3, 250)
         },
         "bluesky": {
-            "caption": _smart_trim(hook + "\n\n" + body1 + "\n\n" + TAGS2, 260)
+            "caption": _smart_trim(hook + "\n\n" + body1 + "\n\n" + TAGS2, 160)
         },
         "youtube": {
             "title": _smart_trim(topic or hook, 75),
