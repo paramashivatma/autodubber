@@ -94,20 +94,20 @@ def _actual_duration(path):
         return None
 
 
-def _pad_audio_with_silence(audio_path, silence_ms):
-    """Add silence to the end of audio to match target duration."""
+def _pad_audio_with_silence(audio_path, target_dur_ms):
+    """Pad audio with silence to reach target duration (in milliseconds)."""
     if not audio_path or not os.path.exists(audio_path):
         return None
-
     try:
         audio = AudioSegment.from_file(audio_path)
         current_ms = len(audio)
-        if silence_ms <= 0 or silence_ms < 50:
+        if target_dur_ms <= current_ms:
             return None
-
+        silence_ms = target_dur_ms - current_ms
+        if silence_ms < 50:
+            return None
         silence = AudioSegment.silent(duration=silence_ms)
         padded = audio + silence
-
         padded_path = audio_path.replace(".wav", f"_padded.wav")
         padded.export(padded_path, format="wav")
         return padded_path
@@ -202,8 +202,6 @@ def build_dubbed_video(
             f"  seg#{seg['id']}: orig={orig_dur:.2f}s tts={tts_dur:.2f}s gap={gap:.2f}s",
         )
 
-        audio_path = seg.get("audio_path")
-
         if tts_dur > orig_dur + 0.05:
             stretch = tts_dur / orig_dur
             log("BUILD", f"    → stretch {stretch:.3f}x")
@@ -211,14 +209,6 @@ def build_dubbed_video(
             if not stretched:
                 log("BUILD", f"    → WARNING: stretch failed, A/V may be out of sync")
             actual_seg_dur = _actual_duration(seg_out) or tts_dur
-        elif tts_dur < orig_dur - 0.05 and audio_path and os.path.exists(audio_path):
-            silence_ms = int((orig_dur - tts_dur) * 1000)
-            padded_path = _pad_audio_with_silence(audio_path, silence_ms)
-            if padded_path:
-                audio_path = padded_path
-                log("BUILD", f"    → padded with {silence_ms}ms silence")
-            shutil.copy(seg_raw, seg_out)
-            actual_seg_dur = _actual_duration(seg_out) or orig_dur
         else:
             shutil.copy(seg_raw, seg_out)
             actual_seg_dur = _actual_duration(seg_out) or orig_dur
@@ -228,8 +218,22 @@ def build_dubbed_video(
         cursor += actual_seg_dur
         prev = seg_end
 
+        audio_path = seg.get("audio_path")
         if audio_path and os.path.exists(audio_path):
-            positions.append((audio_start, orig_dur, audio_path))
+            overlay_dur = orig_dur
+            if tts_dur < orig_dur - 0.05:
+                target_ms = int(orig_dur * 1000)
+                padded_path = _pad_audio_with_silence(audio_path, target_ms)
+                if padded_path:
+                    audio_path = padded_path
+                    silence_ms = target_ms - int(tts_dur * 1000)
+                    log("BUILD", f"    → padded with {silence_ms}ms silence")
+                else:
+                    log(
+                        "BUILD",
+                        f"    → WARNING: padding failed, original audio may have gaps",
+                    )
+            positions.append((audio_start, overlay_dur, audio_path))
             log("BUILD", f"    → audio overlay at {audio_start:.2f}s")
         else:
             log("BUILD", f"    → WARNING: No audio path for seg#{seg['id']}")
