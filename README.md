@@ -1,4 +1,4 @@
-# AutoDub Studio (Video Dubber v1.11)
+# AutoDub Studio (Video Dubber v1.12)
 Desktop GUI tool to:
 - Dub videos into Indian languages with voice synthesis.
 - Generate platform-aware captions/teasers.
@@ -100,7 +100,7 @@ Edit `.env`:
 | `ZERNIO_API_KEY` | Yes (for publishing) | Publish to social platforms |
 | `GEMINI_API_KEY` | Recommended | Translation, vision extraction, flyer AI steps |
 | `MISTRAL_API_KEY` | Recommended | Caption generation |
-| `GROQ_API_KEY` | Optional | Fast cloud transcription |
+| `GROQ_API_KEY` | Optional | Fast cloud transcription (local Whisper-large-v3 is default) |
 | `ZERNIO_*_ACCOUNT_ID` | Required for each platform you publish to | Your own Zernio-connected social account IDs |
 | `YOUTUBE_*_CLIENT_ID` / `YOUTUBE_*_CLIENT_SECRET` | Required for direct YouTube publishing | OAuth desktop app credentials for each YouTube account |
 | `GOOGLE_SHEET_ID` | Optional | Sheet logging |

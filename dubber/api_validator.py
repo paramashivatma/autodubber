@@ -5,13 +5,33 @@ from .utils import log
 
 
 def _validate_groq(api_key):
-    """Check Groq key format. No network call needed."""
+    """Ping Groq API to verify the key is valid and active."""
     if not api_key or not api_key.strip():
         return {"status": "missing", "message": "No Groq API key configured"}
     key = api_key.strip()
     if not key.startswith("gsk_"):
         return {"status": "error", "message": "Invalid key format (expected 'gsk_...')"}
-    return {"status": "ok", "message": "Key format valid"}
+    try:
+        import requests
+
+        resp = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return {"status": "ok", "message": "Connected successfully"}
+        elif resp.status_code == 401:
+            return {"status": "error", "message": "Invalid or expired API key"}
+        elif resp.status_code == 429:
+            return {"status": "error", "message": "Rate limited / quota exceeded"}
+        else:
+            return {
+                "status": "error",
+                "message": f"HTTP {resp.status_code}: {resp.text[:80]}",
+            }
+    except Exception as e:
+        return {"status": "error", "message": f"Connection failed: {str(e)[:80]}"}
 
 
 def _validate_gemini(api_key):
@@ -127,12 +147,15 @@ def validate_all_keys(
 
     # Determine which APIs to validate based on pipeline mode
     required = {"gemini"}  # Always needed (translation)
-    if need_transcription:
-        required.add("groq")
+    # Groq is optional — local Whisper large is the default
     if need_captions:
         required.add("mistral")
     if need_publish:
         required.add("zernio")
+
+    # Only validate Groq if a key is explicitly provided (optional speed boost)
+    if groq_key and groq_key.strip():
+        required.add("groq")
 
     results = {}
 

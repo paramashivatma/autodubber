@@ -65,7 +65,6 @@ VOICES = {
     "English - Ryan (M)": "en-GB-RyanNeural",
     "English - Sonia (F)": "en-GB-SoniaNeural",
 }
-WHISPER_MODELS = ["tiny", "base", "small", "medium", "large"]
 LANGUAGES = {
     "English": "en",
     "Hindi": "hi",
@@ -312,13 +311,13 @@ def run_dub_pipeline(
 
         if is_url(video_input):
             status_cb("Downloading video ...")
-            if progress_cb:
-                progress_cb(5)
             video_path = download_video(video_input, WORKSPACE)
         else:
             video_path = video_input
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Not found: {video_path}")
+        if progress_cb:
+            progress_cb(5)
 
         # PARALLEL GROUP 1: BGM separation + Transcription run simultaneously
         bgm_path = None
@@ -536,7 +535,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.11")
+        self.title("Video Dubber v1.12")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -1052,20 +1051,8 @@ class App(tk.Tk):
         )
         self.voice_combo.grid(row=next_row + 1, column=1, sticky="w", **pad)
 
-        tk.Label(self.t_dub, text="Whisper model:", font=("Segoe UI", 10)).grid(
-            row=next_row + 2, column=0, sticky="w", **pad
-        )
-        self.model_var = tk.StringVar(value="medium")
-        ttk.Combobox(
-            self.t_dub,
-            textvariable=self.model_var,
-            values=WHISPER_MODELS,
-            width=16,
-            state="readonly",
-        ).grid(row=next_row + 2, column=1, sticky="w", **pad)
-
         tk.Label(self.t_dub, text="Source lang:", font=("Segoe UI", 10)).grid(
-            row=next_row + 3, column=0, sticky="w", **pad
+            row=next_row + 2, column=0, sticky="w", **pad
         )
         self.src_lang_var = tk.StringVar(value="English")
         ttk.Combobox(
@@ -1074,7 +1061,7 @@ class App(tk.Tk):
             values=list(LANGUAGES.keys()),
             width=16,
             state="readonly",
-        ).grid(row=next_row + 3, column=1, sticky="w", **pad)
+        ).grid(row=next_row + 2, column=1, sticky="w", **pad)
 
         tk.Label(self.t_dub, text="Target lang:", font=("Segoe UI", 10)).grid(
             row=next_row + 4, column=0, sticky="w", **pad
@@ -1087,14 +1074,14 @@ class App(tk.Tk):
             width=16,
             state="readonly",
         )
-        self.tgt_lang_combo.grid(row=next_row + 4, column=1, sticky="w", **pad)
+        self.tgt_lang_combo.grid(row=next_row + 3, column=1, sticky="w", **pad)
         self.tgt_lang_combo.bind(
             "<<ComboboxSelected>>", self._on_target_language_changed
         )
         self._sync_voice_options()
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 5, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 4, column=0, columnspan=3, sticky="ew", pady=8
         )
         self.dub_only_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
@@ -1102,25 +1089,25 @@ class App(tk.Tk):
             text="Dub only — skip captions, teasers & publishing",
             variable=self.dub_only_var,
             font=("Segoe UI", 9),
-        ).grid(row=next_row + 6, column=0, columnspan=3, sticky="w", **pad)
+        ).grid(row=next_row + 5, column=0, columnspan=3, sticky="w", **pad)
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 7, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 6, column=0, columnspan=3, sticky="ew", pady=8
         )
         tk.Label(
             self.t_dub,
             text="3) Audio Blend & Platforms",
             font=("Segoe UI Semibold", 11),
-        ).grid(row=next_row + 8, column=0, sticky="w", **pad)
+        ).grid(row=next_row + 7, column=0, sticky="w", **pad)
         self.bgm_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             self.t_dub,
             text="Preserve background music (Demucs)",
             variable=self.bgm_var,
             command=self._toggle_bgm,
-        ).grid(row=next_row + 9, column=0, columnspan=2, sticky="w", **pad)
+        ).grid(row=next_row + 8, column=0, columnspan=2, sticky="w", **pad)
         tk.Label(self.t_dub, text="Music volume:", font=("Segoe UI", 10)).grid(
-            row=next_row + 10, column=0, sticky="w", **pad
+            row=next_row + 9, column=0, sticky="w", **pad
         )
         self.bgm_vol_var = tk.DoubleVar(value=0.35)
         self.bgm_scale = tk.Scale(
@@ -1135,14 +1122,14 @@ class App(tk.Tk):
             fg=self._colors["text"],
             highlightthickness=0,
         )
-        self.bgm_scale.grid(row=next_row + 10, column=1, sticky="w", **pad)
+        self.bgm_scale.grid(row=next_row + 9, column=1, sticky="w", **pad)
 
         tk.Label(self.t_dub, text="Platforms to publish:", font=("Segoe UI", 10)).grid(
-            row=next_row + 11, column=0, sticky="w", **pad
+            row=next_row + 10, column=0, sticky="w", **pad
         )
         self._plat_vars = {}
         pf = tk.Frame(self.t_dub, bg=self._colors["panel"])
-        pf.grid(row=next_row + 11, column=1, columnspan=2, sticky="w")
+        pf.grid(row=next_row + 10, column=1, columnspan=2, sticky="w")
         for i, p in enumerate(PLATFORMS):
             v = tk.BooleanVar(value=True)
             self._plat_vars[p] = v
@@ -1151,7 +1138,7 @@ class App(tk.Tk):
             ).grid(row=i // 4, column=i % 4, sticky="w", padx=6)
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 12, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 11, column=0, columnspan=3, sticky="ew", pady=8
         )
         self.dub_publish_now_var = tk.BooleanVar(value=True)
         tk.Radiobutton(
@@ -1160,24 +1147,24 @@ class App(tk.Tk):
             variable=self.dub_publish_now_var,
             value=True,
             font=("Segoe UI", 9),
-        ).grid(row=next_row + 13, column=0, columnspan=2, sticky="w", **pad)
+        ).grid(row=next_row + 12, column=0, columnspan=2, sticky="w", **pad)
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 14, column=0, columnspan=3, sticky="ew", pady=8
+            row=next_row + 13, column=0, columnspan=3, sticky="ew", pady=8
         )
         tk.Label(
             self.t_dub, text="Pipeline activity", font=("Segoe UI Semibold", 11)
-        ).grid(row=next_row + 15, column=0, sticky="w", **pad)
+        ).grid(row=next_row + 14, column=0, sticky="w", **pad)
         self.dub_results = tk.Text(self.t_dub, width=84, height=8, font=("Consolas", 9))
         self.dub_results.grid(
-            row=next_row + 16,
+            row=next_row + 15,
             column=0,
             columnspan=3,
             padx=12,
             pady=(0, 8),
             sticky="nsew",
         )
-        self.t_dub.grid_rowconfigure(next_row + 16, weight=1)
+        self.t_dub.grid_rowconfigure(next_row + 15, weight=1)
         self._style_text_area(self.dub_results)
 
         self.t_media_tab = tk.Frame(self.nb, bg=self._colors["panel"], padx=0, pady=0)
@@ -2173,20 +2160,54 @@ class App(tk.Tk):
         gemini_vision = self.gemini_vision_key_var.get().strip()
         mistral = self.mistral_key_var.get().strip()
         zernio = self.zernio_key_var.get().strip()
-        groq_key = os.environ.get("GROQ_API_KEY", "")
 
-        # Pre-flight API validation
+        # Pre-flight API validation (Groq is optional — local Whisper is default)
         validation = validate_all_keys(
             gemini_key=gemini_vision,
             mistral_key=mistral,
             zernio_key=zernio,
-            groq_key=groq_key,
-            need_transcription=True,
+            groq_key=None,
+            need_transcription=False,  # Groq is optional, local Whisper is default
             need_captions=not self.dub_only_var.get(),
             need_publish=not self.dub_only_var.get(),
         )
 
-        # Check for hard failures
+        # Check for hard failures (only required APIs)
+        errors = {k: v for k, v in validation.items() if v["status"] == "error"}
+        if errors:
+            error_lines = []
+            for svc, info in validation.items():
+                icon = {"ok": "✅", "error": "❌", "missing": "⏭️"}.get(
+                    info["status"], "❓"
+                )
+                label = {
+                    "groq": "Groq",
+                    "gemini": "Gemini",
+                    "mistral": "Mistral",
+                    "zernio": "Zernio",
+                }.get(svc, svc)
+                error_lines.append(f"{icon} {label}: {info['message']}")
+
+            msg = "\n".join(error_lines)
+            proceed = messagebox.askokcancel(
+                "API Connection Issues",
+                f"⚠️ Some API checks failed:\n\n{msg}\n\nContinue anyway?",
+            )
+            if not proceed:
+                self.dub_results.insert(
+                    tk.END, f"❌ Aborted: {len(errors)} API check(s) failed\n\n"
+                )
+                self.progress["value"] = 0
+                self.progress_var.set("Progress: Failed ✗")
+                self.status_var.set("Aborted — API validation failed")
+                self.run_btn.config(state="normal")
+                return
+            else:
+                self.dub_results.insert(
+                    tk.END, "⚠️ Proceeding despite API warnings...\n\n"
+                )
+
+        # Check for hard failures (only required APIs)
         errors = {k: v for k, v in validation.items() if v["status"] == "error"}
         if errors:
             error_lines = []
@@ -2248,6 +2269,13 @@ class App(tk.Tk):
 
             self.after(0, _apply)
 
+        def progress_callback(pct):
+            def _apply():
+                self.progress["value"] = pct
+                self.progress_var.set(f"Progress: {pct}%")
+
+            self.after(0, _apply)
+
         # Test callback immediately
         dub_status_callback("🔄 Initializing dub pipeline...")
 
@@ -2259,7 +2287,7 @@ class App(tk.Tk):
             args=(
                 video,
                 VOICES[self.voice_var.get()],
-                self.model_var.get(),
+                "large",  # Always use whisper-large-v3 for best quality
                 LANGUAGES[self.src_lang_var.get()],
                 LANGUAGES[self.tgt_lang_var.get()],
                 self.bgm_var.get(),
@@ -2277,7 +2305,7 @@ class App(tk.Tk):
                 self._caption_ready_cb,
                 safe_done_callback,
                 self.dub_only_var.get(),
-                dub_status_callback,  # progress_cb — same callback handles both
+                progress_callback,  # progress_cb — separate function for percentage updates
             ),
             daemon=True,
         ).start()
