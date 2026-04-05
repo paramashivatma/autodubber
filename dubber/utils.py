@@ -37,7 +37,7 @@ def _init_file_logger():
 
     if not _FILE_LOGGER.handlers:
         handler = RotatingFileHandler(
-            log_file, maxBytes=10 * 1024 * 1024, backupCount=7
+            log_file, maxBytes=10 * 1024 * 1024, backupCount=7, encoding="utf-8"
         )
         formatter = logging.Formatter(
             "%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"
@@ -67,29 +67,22 @@ def _clean_old_logs(log_dir, keep_days=7):
         pass
 
 
-def _count_api_call(tag, msg):
-    """Track API calls by parsing log messages."""
+def track_api_call(provider="gemini"):
+    """Track an API call attempt."""
     global _API_CALL_COUNTS
-    msg_lower = msg.lower()
-    tag_upper = tag.upper()
-
-    if "GEMINI" in tag_upper or "gemini" in msg_lower:
-        if (
-            "call" in msg_lower
-            or "translate" in msg_lower
-            or "vision" in msg_lower
-            or "teaser" in msg_lower
-            or "caption" in msg_lower
-        ):
-            _API_CALL_COUNTS["gemini"] += 1
-            _API_CALL_COUNTS["total"] += 1
-    elif "MISTRAL" in tag_upper or "mistral" in msg_lower:
-        _API_CALL_COUNTS["mistral"] += 1
+    provider = provider.lower()
+    if provider in _API_CALL_COUNTS:
+        _API_CALL_COUNTS[provider] += 1
         _API_CALL_COUNTS["total"] += 1
-    elif "GROQ" in tag_upper or "groq" in msg_lower or "TRANSCRIBE" in tag_upper:
-        if "api" in msg_lower or "call" in msg_lower:
-            _API_CALL_COUNTS["groq"] += 1
-            _API_CALL_COUNTS["total"] += 1
+
+
+def track_api_success(provider="gemini"):
+    """Track a successful API call (increments success counter)."""
+    global _API_CALL_COUNTS
+    provider = provider.lower()
+    if f"{provider}_success" not in _API_CALL_COUNTS:
+        _API_CALL_COUNTS[f"{provider}_success"] = 0
+    _API_CALL_COUNTS[f"{provider}_success"] += 1
 
 
 def get_api_call_counts():
@@ -116,8 +109,6 @@ def remove_log_subscriber(callback):
 def log(tag, msg):
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     line = f"[{ts}] [{tag:<12}] {msg}"
-
-    _count_api_call(tag, msg)
 
     try:
         print(line, flush=True)

@@ -1,5 +1,5 @@
 import os, json, time, re
-from .utils import log
+from .utils import log, track_api_call, track_api_success
 from .runtime_config import is_economy_mode
 
 VISION_PROMPT = (
@@ -31,6 +31,7 @@ def _call_gemini(api_key, prompt, max_retries=6):
     retries = min(max_retries, 2) if is_economy_mode() else max_retries
     for attempt in range(1, retries + 1):
         try:
+            track_api_call("gemini")
             resp = client.models.generate_content(
                 model="gemini-2.5-flash-lite",
                 contents=prompt,
@@ -41,11 +42,12 @@ def _call_gemini(api_key, prompt, max_retries=6):
                     max_output_tokens=1024,
                 ),
             )
-            return resp.text.strip()
+            result = resp.text.strip()
+            track_api_success("gemini")
+            return result
         except Exception as e:
             err = str(e)
             err_l = err.lower()
-            # Daily quota exhausted (limit: 0) — no point retrying
             if "429" in err or "resource_exhausted" in err_l:
                 if (
                     "limit: 0" in err_l
@@ -70,9 +72,8 @@ def _call_gemini(api_key, prompt, max_retries=6):
                 )
                 time.sleep(wait)
                 continue
-            # 503 UNAVAILABLE — transient demand spike, retry with backoff
             if "503" in err or "unavailable" in err_l:
-                wait = 2**attempt  # 2s, 4s, 8s, 16s, 32s
+                wait = 2**attempt
                 log(
                     "VISION",
                     f"  503 service unavailable — waiting {wait}s (attempt {attempt}/{retries}) ...",

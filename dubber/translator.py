@@ -1,5 +1,5 @@
 import os, json, time
-from .utils import log
+from .utils import log, track_api_call, track_api_success
 from .runtime_config import is_economy_mode
 from .config import get_gemini_api_key
 
@@ -222,6 +222,7 @@ Text to translate:
     max_attempts = 1 if is_economy_mode() else 3
     for attempt in range(1, max_attempts + 1):
         try:
+            track_api_call("gemini")
             response = client.models.generate_content(
                 model="gemini-2.5-flash-lite",
                 contents=prompt,
@@ -233,6 +234,7 @@ Text to translate:
             )
             result = response.text.strip()
             if result:
+                track_api_success("gemini")
                 return result
         except Exception as e:
             log("TRANSLATE", f"  Gemini attempt {attempt} failed: {e}")
@@ -304,6 +306,7 @@ Texts to translate:
     max_attempts = 1 if is_economy_mode() else 3
     for attempt in range(1, max_attempts + 1):
         try:
+            track_api_call("gemini")
             response = client.models.generate_content(
                 model="gemini-2.5-flash-lite",
                 contents=prompt,
@@ -317,9 +320,9 @@ Texts to translate:
             if result:
                 translations = _parse_batch_response(result, len(texts))
                 if translations is not None:
+                    track_api_success("gemini")
                     return translations
                 else:
-                    # Count mismatch - trigger fallback to per-segment translation
                     return None
         except Exception as e:
             log("TRANSLATE", f"  Gemini batch attempt {attempt} failed: {e}")
@@ -331,6 +334,144 @@ Texts to translate:
     raise RuntimeError(
         f"Gemini batch translation failed after {max_attempts} attempts."
     )
+
+
+def _mistral_translate(text, source_hint="auto", target_language="gu"):
+    """Translate using Mistral API as fallback when Gemini fails."""
+    from .config import get_mistral_api_key
+    import httpx
+
+    api_key = get_mistral_api_key()
+    if not api_key:
+        raise RuntimeError("No Mistral API key available for fallback translation.")
+
+    lang_names = {
+        "gu": "Gujarati",
+        "hi": "Hindi",
+        "ta": "Tamil",
+        "te": "Telugu",
+        "kn": "Kannada",
+        "ml": "Malayalam",
+        "bn": "Bengali",
+        "es": "Spanish",
+        "ru": "Russian",
+        "en": "English",
+        "auto": "English",
+    }
+
+    target_lang = lang_names.get(target_language, target_language)
+    source_lang = lang_names.get(source_hint, "English")
+
+    prompt = f"""Translate the following text from {source_lang} to {target_lang}.
+
+Context: This is a spiritual/Vedantic teaching by a Hindu monk about Hindu deities, traditions, and sacred places.
+
+RULES:
+1. PROPER NOUNS: Transliterate names as-is.
+2. SANSKRIT SHLOKAS: Keep Sanskrit verses in original form.
+3. REVERENCE: Maintain devotional tone.
+4. TTS OPTIMIZED: Use clear punctuation for natural pauses.
+5. NATURAL SPEECH: Write for the ear, not the eye.
+
+Return ONLY the translation. No explanations.
+
+Text to translate:
+{text}"""
+
+    url = "https://api.mistral.ai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+    payload = {
+        "model": "mistral-small-latest",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 1024,
+    }
+
+    try:
+        track_api_call("mistral")
+        r = httpx.post(url, headers=headers, json=payload, timeout=60)
+        r.raise_for_status()
+        result = r.json()["choices"][0]["message"]["content"].strip()
+        track_api_success("mistral")
+        log("TRANSLATE", f"  Mistral translation successful")
+        return result
+    except Exception as e:
+        log("TRANSLATE", f"  Mistral translation failed: {e}")
+        raise RuntimeError(f"Mistral translation failed: {e}")
+
+
+def _mistral_translate_batch(texts, source_hint, target_language):
+    """Translate multiple texts using Mistral API."""
+    from .config import get_mistral_api_key
+    import httpx
+
+    api_key = get_mistral_api_key()
+    if not api_key:
+        raise RuntimeError("No Mistral API key available for fallback translation.")
+
+    lang_names = {
+        "gu": "Gujarati",
+        "hi": "Hindi",
+        "ta": "Tamil",
+        "te": "Telugu",
+        "kn": "Kannada",
+        "ml": "Malayalam",
+        "bn": "Bengali",
+        "es": "Spanish",
+        "ru": "Russian",
+        "en": "English",
+        "auto": "English",
+    }
+
+    target_name = lang_names.get(target_language, target_language)
+    source_name = lang_names.get(source_hint, "English")
+
+    numbered_texts = "\n".join([f"{i + 1}. {text}" for i, text in enumerate(texts)])
+
+    prompt = f"""Translate the following numbered list of texts from {source_name} to {target_name}.
+
+RULES:
+1. PROPER NOUNS: Transliterate names as-is.
+2. SANSKRIT SHLOKAS: Keep Sanskrit verses in original form.
+3. REVERENCE: Maintain devotional tone.
+4. TTS OPTIMIZED: Use clear punctuation for natural pauses.
+5. NATURAL SPEECH: Write for the ear, not the eye.
+
+Return ONLY a numbered list of translations. Format: "number. translation"
+
+Texts to translate:
+{numbered_texts}"""
+
+    url = "https://api.mistral.ai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+    payload = {
+        "model": "mistral-small-latest",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 4096,
+    }
+
+    try:
+        track_api_call("mistral")
+        r = httpx.post(url, headers=headers, json=payload, timeout=120)
+        r.raise_for_status()
+        result = r.json()["choices"][0]["message"]["content"].strip()
+        track_api_success("mistral")
+
+        translations = _parse_batch_response(result, len(texts))
+        if translations is not None:
+            track_api_success("mistral")
+            return translations
+        return None
+    except Exception as e:
+        log("TRANSLATE", f"  Mistral batch translation failed: {e}")
+        return None
 
 
 def _translate_segments_per_segment(texts, source_hint, target_language):
@@ -497,64 +638,80 @@ def _translate_to_gujarati_batch(texts, source_hint="auto"):
 
     try:
         translations = _gemini_translate_batch(uncached_texts, source_hint, "gu")
-        if translations is None:
-            return _translate_segments_per_segment(texts, source_hint, "gu")
-
-        validated_translations = []
-        for translation in translations:
-            if (
-                translation
-                and _is_gujarati_script(translation)
-                and not _has_foreign_script(translation)
-            ):
-                validated_translations.append(translation)
-            else:
-                validated_translations.append(None)
-
-        if any(t is None for t in validated_translations):
-            log(
-                "TRANSLATE",
-                "  Some Gemini outputs not clean Gujarati — using fallbacks...",
-            )
-            final_translations = []
-            result_idx = 0
-            for i, cached in enumerate(cached_results):
-                if cached is not None:
-                    final_translations.append(cached)
+        if translations is not None:
+            validated_translations = []
+            for translation in translations:
+                if (
+                    translation
+                    and _is_gujarati_script(translation)
+                    and not _has_foreign_script(translation)
+                ):
+                    validated_translations.append(translation)
                 else:
-                    validated = validated_translations[result_idx]
-                    result_idx += 1
-                    if validated is not None:
-                        final_translations.append(validated)
-                    else:
-                        try:
-                            from deep_translator import GoogleTranslator
+                    validated_translations.append(None)
 
-                            text = texts[i]
-                            if source_hint != "en":
-                                english = GoogleTranslator(
-                                    source="auto", target="en"
-                                ).translate(text)
-                                result2 = GoogleTranslator(
-                                    source="en", target="gu"
-                                ).translate(english)
-                            else:
-                                result2 = GoogleTranslator(
-                                    source="en", target="gu"
-                                ).translate(text)
-                            final_translations.append(result2)
-                        except Exception as e:
-                            log("TRANSLATE", f"  Fallback failed for text {i + 1}: {e}")
-                            final_translations.append(texts[i])
-            return final_translations
-        else:
-            results = list(cached_results)
-            for idx, translation, text in zip(
-                uncached_indices, translations, uncached_texts
-            ):
-                results[idx] = translation
-                _set_cached(text, translation, "gu")
-            return results
+            if any(t is None for t in validated_translations):
+                log(
+                    "TRANSLATE",
+                    "  Some Gemini outputs not clean Gujarati — using Mistral fallback...",
+                )
+                try:
+                    mistral_results = _mistral_translate_batch(
+                        [
+                            texts[i]
+                            for i in uncached_indices
+                            if validated_translations[uncached_indices.index(i)] is None
+                        ],
+                        source_hint,
+                        "gu",
+                    )
+                    if mistral_results:
+                        for idx, result in zip(uncached_indices, mistral_results):
+                            if validated_translations[idx] is None:
+                                validated_translations[idx] = result
+                except Exception as e:
+                    log("TRANSLATE", f"  Mistral fallback failed: {e}")
+
+            if not any(t is None for t in validated_translations):
+                results = list(cached_results)
+                for idx, translation, text in zip(
+                    uncached_indices, validated_translations, uncached_texts
+                ):
+                    results[idx] = translation
+                    _set_cached(text, translation, "gu")
+                return results
+
+        if _gemini_quota_exhausted:
+            log("TRANSLATE", "  Gemini quota exhausted — trying Mistral fallback...")
+            try:
+                mistral_results = _mistral_translate_batch(
+                    uncached_texts, source_hint, "gu"
+                )
+                if mistral_results:
+                    results = list(cached_results)
+                    for idx, translation, text in zip(
+                        uncached_indices, mistral_results, uncached_texts
+                    ):
+                        results[idx] = translation
+                        _set_cached(text, translation, "gu")
+                    return results
+            except Exception as e:
+                log(
+                    "TRANSLATE",
+                    f"  Mistral fallback failed: {e} — using per-segment translation",
+                )
+                return _translate_segments_per_segment(texts, source_hint, "gu")
+
+        return _translate_segments_per_segment(texts, source_hint, "gu")
+
+    except Exception as e:
+        if _is_quota_exhausted_error(e):
+            _mark_quota_exhausted(e)
+        log(
+            "TRANSLATE",
+            f"  Translation batch failed: {e} — using per-segment translation",
+        )
+        return _translate_segments_per_segment(texts, source_hint, "gu")
 
     except Exception as e:
         log(
@@ -625,16 +782,42 @@ def _translate_generic_batch(texts, target_language):
 
     try:
         translations = _gemini_translate_batch(uncached_texts, "auto", target_language)
-        if translations is None:
-            return _translate_segments_per_segment(texts, "auto", target_language)
+        if translations is not None:
+            results = list(cached_results)
+            for idx, translation, text in zip(
+                uncached_indices, translations, uncached_texts
+            ):
+                results[idx] = translation
+                _set_cached(text, translation, target_language)
+            return results
 
-        results = list(cached_results)
-        for idx, translation, text in zip(
-            uncached_indices, translations, uncached_texts
-        ):
-            results[idx] = translation
-            _set_cached(text, translation, target_language)
-        return results
+        if _gemini_quota_exhausted:
+            log("TRANSLATE", "  Gemini quota exhausted — trying Mistral fallback...")
+            try:
+                mistral_results = _mistral_translate_batch(
+                    uncached_texts, "auto", target_language
+                )
+                if mistral_results:
+                    results = list(cached_results)
+                    for idx, translation, text in zip(
+                        uncached_indices, mistral_results, uncached_texts
+                    ):
+                        results[idx] = translation
+                        _set_cached(text, translation, target_language)
+                    return results
+            except Exception as e:
+                log("TRANSLATE", f"  Mistral fallback failed: {e}")
+
+        return _translate_segments_per_segment(texts, "auto", target_language)
+
+    except Exception as e:
+        if _is_quota_exhausted_error(e):
+            _mark_quota_exhausted(e)
+        log(
+            "TRANSLATE",
+            f"  Translation batch failed: {e} — using per-segment translation",
+        )
+        return _translate_segments_per_segment(texts, "auto", target_language)
 
     except Exception as e:
         log(
@@ -685,7 +868,8 @@ def translate_segments(segments, target_language="gu", output_dir="workspace"):
             log("TRANSLATE", f"  !! FOREIGN SCRIPT in output — check segment {i + 1}")
 
         log("TRANSLATE", f"  -> {translated[:70]}")
-        log("TRANSLATE", f"     Gujarati script: {_is_gujarati_script(translated)}")
+        if target_language == "gu":
+            log("TRANSLATE", f"     Gujarati script: {_is_gujarati_script(translated)}")
         results.append({**seg, "translated": translated})
 
     with open(
