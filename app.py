@@ -62,8 +62,22 @@ VOICES = {
     "Telugu - Shruti (F)": "te-IN-ShrutiNeural",
     "Bengali - Pradeep (M)": "bn-BD-PradeepNeural",
     "Bengali - Nabanita (F)": "bn-BD-NabanitaNeural",
-    "Spanish - Alvaro (M)": "es-ES-AlvaroNeural",
-    "Spanish - Elvira (F)": "es-ES-ElviraNeural",
+    # Spain Spanish
+    "Spanish (Spain) - Alvaro (M)": "es-ES-AlvaroNeural",
+    "Spanish (Spain) - Elvira (F)": "es-ES-ElviraNeural",
+    # Latin American Spanish
+    "Spanish (Mexico) - Jorge (M)": "es-MX-JorgeNeural",
+    "Spanish (Mexico) - Dalia (F)": "es-MX-DaliaNeural",
+    "Spanish (Colombia) - Gonzalo (M)": "es-CO-GonzaloNeural",
+    "Spanish (Colombia) - Salome (F)": "es-CO-SalomeNeural",
+    "Spanish (Argentina) - Tomas (M)": "es-AR-TomasNeural",
+    "Spanish (Argentina) - Elena (F)": "es-AR-ElenaNeural",
+    "Spanish (Peru) - Alex (M)": "es-PE-AlexNeural",
+    "Spanish (Peru) - Camila (F)": "es-PE-CamilaNeural",
+    "Spanish (Chile) - Lorenzo (M)": "es-CL-LorenzoNeural",
+    "Spanish (Chile) - Catalina (F)": "es-CL-CatalinaNeural",
+    "Spanish (Venezuela) - Sebastian (M)": "es-VE-SebastianNeural",
+    "Spanish (Venezuela) - Paola (F)": "es-VE-PaolaNeural",
     "Russian - Dmitry (M)": "ru-RU-DmitryNeural",
     "Russian - Svetlana (F)": "ru-RU-SvetlanaNeural",
     "English - Ryan (M)": "en-GB-RyanNeural",
@@ -87,7 +101,7 @@ LANGUAGE_DEFAULT_VOICE = {
     "Tamil": "Tamil - Valluvar (M)",
     "Telugu": "Telugu - Mohan (M)",
     "Bengali": "Bengali - Pradeep (M)",
-    "Spanish": "Spanish - Alvaro (M)",
+    "Spanish": "Spanish (Mexico) - Jorge (M)",
     "Russian": "Russian - Dmitry (M)",
     "English": "English - Ryan (M)",
 }
@@ -1514,7 +1528,12 @@ class App(tk.Tk):
 
     def _voice_options_for_language(self, language_name):
         prefix = f"{language_name} -"
-        matches = [label for label in VOICES.keys() if label.startswith(prefix)]
+        prefix2 = f"{language_name} ("
+        matches = [
+            label
+            for label in VOICES.keys()
+            if label.startswith(prefix) or label.startswith(prefix2)
+        ]
         return matches or list(VOICES.keys())
 
     def _sync_voice_options(self):
