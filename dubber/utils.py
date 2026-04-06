@@ -208,14 +208,15 @@ PLATFORM_LIMITS = {
 SHORT_MINIMUMS = {"tiktok": 120, "twitter": 80, "threads": 160, "bluesky": 80}
 
 # Optimal engagement ranges for warning system (min, max)
+# Adjusted to balance engagement optimization with content preservation
 OPTIMAL_RANGES = {
-    "twitter": (80, 100),
-    "threads": (160, 250),
-    "bluesky": (80, 160),
-    "instagram": (80, 300),
-    "tiktok": (120, 250),
-    "facebook": (30, 180),
-    "youtube": (120, 200),
+    "twitter": (100, 180),  # Tight platform - keep short
+    "threads": (160, 300),  # Moderate length
+    "bluesky": (100, 200),  # Moderate length
+    "instagram": (80, 500),  # Expanded - supports bullet-rich posts
+    "tiktok": (120, 250),  # Short form
+    "facebook": (30, 600),  # Expanded - supports long devotional posts
+    "youtube": (120, 800),  # Expanded - supports structured teachings
 }
 
 REQUIRED_PLATFORMS = {

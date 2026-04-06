@@ -1,7 +1,7 @@
 import os, json, subprocess
 import httpx
 from .config import get_groq_api_key
-from .utils import log
+from .utils import log, track_api_call, track_api_success
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3"
@@ -70,6 +70,7 @@ def _split_audio(wav_path, output_dir, chunk_sec=600):
 
 
 def _transcribe_chunk(api_key, audio_path, language=None):
+    track_api_call("groq")
     headers = {"Authorization": f"Bearer {api_key}"}
 
     with open(audio_path, "rb") as f:
@@ -87,6 +88,8 @@ def _transcribe_chunk(api_key, audio_path, language=None):
     fields.append(("file", (os.path.basename(audio_path), data, "audio/wav")))
 
     r = httpx.post(GROQ_API_URL, headers=headers, files=fields, timeout=120)
+    if r.is_success:
+        track_api_success("groq")
     if not r.is_success:
         log("TRANSCRIBE", f"Groq error body: {r.text[:300]}")
         r.raise_for_status()

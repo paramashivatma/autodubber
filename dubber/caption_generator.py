@@ -10,6 +10,8 @@ from .utils import (
     REQUIRED_PLATFORMS,
     PLATFORMS,
     OPTIMAL_RANGES,
+    track_api_call,
+    track_api_success,
 )
 
 TAGS4 = "#KAILASA #Nithyananda"
@@ -86,6 +88,74 @@ LANGUAGE_META = {
 }
 
 CAPTION_PLATFORM_ORDER = list(PLATFORMS)
+
+# Platform-specific caption overrides
+PLATFORM_OVERRIDES = {
+    "twitter": {"max_hashtags": 3, "hook_ratio": 0.35, "min_body": 30},
+    "threads": {"max_hashtags": 3, "hook_ratio": 0.35, "min_body": 30},
+    "instagram": {"hook_ratio": 0.45, "min_body": 50},
+    "facebook": {"hook_ratio": 0.40, "min_body": 50, "paragraph_spacing": True},
+    "tiktok": {"max_hashtags": 5, "hook_ratio": 0.40, "min_body": 30},
+    "bluesky": {"max_hashtags": 3, "hook_ratio": 0.35, "min_body": 30},
+    "youtube": {"hook_ratio": 0.40, "min_body": 80},
+}
+
+# Trim constants
+SEPARATOR = "\n\n"
+MIN_HOOK_CHARS = 50
+MIN_BODY_THRESHOLD = 30
+
+# Words to avoid ending on
+STOP_WORDS = {
+    "and",
+    "but",
+    "or",
+    "the",
+    "a",
+    "an",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "of",
+    "with",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "must",
+    "shall",
+    "can",
+    "need",
+    "dare",
+    "ought",
+    "used",
+}
+
+# Hashtag pattern - handles #AI-tools, #climate_change
+HASHTAG_PATTERN = re.compile(r"#\w[\w\-]*")
+
+
+def _get_platform_config(platform):
+    return PLATFORM_OVERRIDES.get(
+        platform, {"hook_ratio": 0.4, "min_body": MIN_BODY_THRESHOLD}
+    )
 
 
 def _language_meta(target_language):
@@ -260,16 +330,49 @@ def _validate_schema(captions, target_platforms=None):
     return missing, empty
 
 
-def _smart_trim(text, limit):
+def _smart_trim(text, limit, min_words=5):
+    """Trim text to limit, preferring sentence/word boundaries.
+    Avoids ending on stop words and ensures minimum word count.
+    """
     if len(text) <= limit:
         return text
+
     t = text[:limit]
+
+    # Try sentence boundary first
     for sep in [".", "!", "?", "\n"]:
         idx = t.rfind(sep)
         if idx > limit * 0.5:
-            return t[: idx + 1].strip()
+            trimmed = t[: idx + 1].strip()
+            # Check minimum words
+            if len(trimmed.split()) >= min_words:
+                # Avoid ending on stop words
+                last_word = trimmed.split()[-1].lower().strip(".,!?")
+                if last_word not in STOP_WORDS:
+                    return trimmed
+
+    # Try word boundary
     idx = t.rfind(" ")
-    return (t[:idx].strip() + "…") if idx > 0 else t + "…"
+    if idx > limit * 0.7:
+        trimmed = t[:idx].strip()
+        if len(trimmed.split()) >= min_words:
+            last_word = trimmed.split()[-1].lower().strip(".,!?")
+            if last_word not in STOP_WORDS:
+                return trimmed + "..."
+
+    # Last resort: hard cut, but try to avoid stop words
+    words = t.split()
+    while (
+        words
+        and words[-1].lower().strip(".,!?") in STOP_WORDS
+        and len(" ".join(words)) > limit * 0.5
+    ):
+        words.pop()
+    trimmed = " ".join(words)
+    if trimmed and len(trimmed) < len(text):
+        return trimmed.rstrip(".,!?") + "..."
+
+    return t + "..."
 
 
 def _effective_limit(platform):
@@ -337,6 +440,216 @@ def _contains_target_script(text, target_language):
     return (hits / max(total, 1)) > 0.2
 
 
+def _extract_trailing_hashtags(text):
+    """Extract trailing hashtag block from caption.
+    Handles: #AI #GovTech, #AI-tools, #climate_change, and mixed spacing.
+    Detects: Lines with >=2 hashtags OR hashtag density>50%.
+    """
+    if not text:
+        return text, ""
+
+    lines = text.strip().split("\n")
+    hashtag_block = []
+
+    # Scan from end to find trailing hashtag block
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            if hashtag_block:
+                break
+            continue
+
+        # Extract hashtags using regex (handles #-and underscores)
+        hashtags_in_line = HASHTAG_PATTERN.findall(stripped)
+
+        # Calculate hashtag density
+        hashtag_chars = sum(len(h) for h in hashtags_in_line)
+        non_hashtag_chars = len(re.sub(r"#\w[\w\-]*", "", stripped))
+
+        # Check: >=2 hashtags OR hashtag density >50%
+        if len(hashtags_in_line) >= 2 or (
+            hashtag_chars > non_hashtag_chars and len(hashtags_in_line) > 0
+        ):
+            hashtag_block.insert(0, stripped)
+        else:
+            break
+
+    if hashtag_block:
+        body = "\n".join(
+            lines[: -len(hashtag_block)] if len(hashtag_block) < len(lines) else lines
+        )
+        return body.strip(), "\n".join(hashtag_block)
+
+    return text, ""
+
+
+def _extract_cta_links(text):
+    """Extract CTA phrases and URLs from caption."""
+    if not text:
+        return text, ""
+
+    lines = text.strip().split("\n")
+    cta_lines = []
+    body_lines = []
+
+    cta_keywords = [
+        "link in bio",
+        "watch the full",
+        "subscribe",
+        "learn more",
+        "join us",
+        "sign up",
+        "full video",
+        "click here",
+        "follow us",
+    ]
+
+    for line in lines:
+        stripped = line.strip()
+        lower = stripped.lower()
+        # URL detection
+        if "http://" in lower or "https://" in lower or "www." in lower:
+            cta_lines.append(stripped)
+        # CTA phrase detection
+        elif any(kw in lower for kw in cta_keywords):
+            cta_lines.append(stripped)
+        else:
+            body_lines.append(stripped)
+
+    return "\n".join(body_lines), "\n".join(cta_lines) if cta_lines else ""
+
+
+def _split_hook_body(text, hook_limit=180):
+    """Split caption into hook and body.
+    hook_limit is adaptive - should be passed from parent based on available space.
+    """
+    if not text:
+        return "", ""
+
+    text = text.strip()
+    if len(text) <= hook_limit:
+        return text, ""
+
+    # Try to end at sentence boundary within next 40 chars
+    for i in range(hook_limit, min(hook_limit + 40, len(text))):
+        if text[i] in ".!?" and (i + 1 >= len(text) or text[i + 1] in " \n"):
+            return text[: i + 1].strip(), text[i + 1 :].strip()
+
+    # Fallback: end at word boundary
+    space_idx = text.rfind(" ", 0, hook_limit + 20)
+    if space_idx > hook_limit * 0.5:  # More permissive for tight limits
+        return text[:space_idx].strip(), text[space_idx:].strip()
+
+    return text[:hook_limit].strip(), text[hook_limit:].strip()
+
+
+def _priority_aware_trim(caption, max_chars, platform):
+    """
+    Trim caption preserving: hook, CTAs, hashtags.
+    Uses intelligent degradation: body → hook → hashtags.
+    All reserved space calculated BEFORE assembly.
+    """
+    if len(caption) <= max_chars:
+        return caption
+
+    # 1. Get platform config
+    config = _get_platform_config(platform)
+    max_hashtags = config.get("max_hashtags")
+    min_body = config.get("min_body", MIN_BODY_THRESHOLD)
+    hook_ratio = config.get("hook_ratio", 0.4)
+
+    # 2. Extract preserved elements FIRST
+    body_no_tags, hashtags = _extract_trailing_hashtags(caption)
+    body_clean, cta_block = _extract_cta_links(body_no_tags)
+
+    # 3. Apply hashtag limit per platform
+    if max_hashtags and hashtags:
+        hashtag_list = hashtags.split()
+        if len(hashtag_list) > max_hashtags:
+            hashtags = " ".join(hashtag_list[:max_hashtags])
+
+    # 4. Calculate reserved space EXPLICITLY
+    hashtag_len = len(hashtags)
+    cta_len = len(cta_block)
+
+    # Separators: hook\n\nbody\n\ncta\n\nhashtags
+    # Max4 separators if all present
+    separator_count = sum(1 for x in [True, body_clean, cta_block, hashtags] if x) - 1
+    separator_count = max(0, separator_count)
+    reserved = hashtag_len + cta_len + (separator_count * len(SEPARATOR))
+
+    available = max_chars - reserved
+
+    # 5. Determine hook limit with proper clamping
+    if available < MIN_HOOK_CHARS:
+        # Degenerate case: very tight space
+        hook_limit = max(MIN_HOOK_CHARS // 2, int(available * 0.5))
+    else:
+        # Normal: adaptive hook with bounds
+        hook_limit = max(
+            MIN_HOOK_CHARS, min(int(available * hook_ratio), available - min_body)
+        )
+
+    # 6. Split hook from body with adaptive limit
+    hook, body = _split_hook_body(body_clean, hook_limit)
+
+    # 7. Calculate body space
+    hook_len = len(hook) + (len(SEPARATOR) if hook else 0)
+    body_available = max_chars - reserved - hook_len
+
+    # 8. Trim body if needed
+    if body and body_available > MIN_BODY_THRESHOLD:
+        if len(body) > body_available:
+            trimmed_body = _smart_trim(body, body_available)
+        else:
+            trimmed_body = body
+    elif body_available > 0 and body:
+        trimmed_body = _smart_trim(body, body_available)
+    else:
+        trimmed_body = ""
+
+    # 9. Reassemble in priority order: hook + body + CTA + hashtags
+    result_parts = []
+    if hook:
+        result_parts.append(hook)
+    if trimmed_body:
+        result_parts.append(trimmed_body)
+    if cta_block:
+        result_parts.append(cta_block)
+    if hashtags:
+        result_parts.append(hashtags)
+
+    result = SEPARATOR.join(result_parts)
+
+    # 10. Final degradation if still over limit
+    if len(result) > max_chars and len(result_parts) > 1:
+        # Stage 1: Trim body more aggressively
+        if trimmed_body and len(trimmed_body) > 20:
+            excess = len(result) - max_chars
+            trimmed_body = _smart_trim(trimmed_body, len(trimmed_body) - excess)
+            result_parts = [h for h in [hook, trimmed_body, cta_block, hashtags] if h]
+            result = SEPARATOR.join(result_parts)
+
+        # Stage 2: Reduce hook
+        if len(result) > max_chars and len(hook) > MIN_HOOK_CHARS:
+            hook = _smart_trim(hook, MIN_HOOK_CHARS)
+            result_parts = [h for h in [hook, trimmed_body, cta_block, hashtags] if h]
+            result = SEPARATOR.join(result_parts)
+
+        # Stage 3: Reduce hashtags (platform-dependent)
+        if len(result) > max_chars and hashtags:
+            hashtag_list = hashtags.split()
+            while len(result) > max_chars and len(hashtag_list) > 1:
+                hashtag_list.pop()
+                hashtags = " ".join(hashtag_list)
+                result_parts = [
+                    h for h in [hook, trimmed_body, cta_block, hashtags] if h
+                ]
+                result = SEPARATOR.join(result_parts)
+
+    return result
+
+
 def _call_mistral(api_key, prompt, max_retries=None):
     """Use actual Mistral API instead of OpenRouter."""
     if max_retries is None:
@@ -356,6 +669,7 @@ def _call_mistral(api_key, prompt, max_retries=None):
         "max_tokens": max_tokens,
     }
     for attempt in range(1, max_retries + 1):
+        track_api_call("mistral")
         try:
             r = httpx.post(url, headers=headers, json=payload, timeout=timeout)
             if r.status_code == 429:
@@ -367,6 +681,7 @@ def _call_mistral(api_key, prompt, max_retries=None):
                 time.sleep(wait)
                 continue
             r.raise_for_status()
+            track_api_success("mistral")
             response_json = r.json()
             usage = response_json.get("usage", {})
             log(
@@ -720,48 +1035,74 @@ def generate_all_captions(
                 except Exception as e:
                     log("CAPTION", f"Regeneration failed for {p}: {e}")
 
-        # Check character limits — only truncate at HARD platform limits
+        # Check character limits
         hard_lim = PLATFORM_LIMITS.get(p, 2000)
+        opt_range = OPTIMAL_RANGES.get(p)
+
         if len(caption) > hard_lim:
             log(
                 "CAPTION",
-                f"Caption exceeds hard limit for {p} ({len(caption)} > {hard_lim}) — truncating...",
+                f"Caption exceeds hard limit for {p} ({len(caption)} > {hard_lim}) — keeping as-is",
             )
-            captions[p]["caption"] = caption[: hard_lim - 1] + "…"
-        else:
-            # Warn if outside optimal engagement range, but don't truncate
-            opt_range = OPTIMAL_RANGES.get(p)
-            if opt_range:
-                opt_min, opt_max = opt_range
-                if len(caption) < opt_min:
-                    log(
-                        "CAPTION",
-                        f"Caption short for {p} ({len(caption)} < {opt_min} optimal)",
+
+        # Optimal range check with 30% threshold for trimming
+        if opt_range:
+            opt_min, opt_max = opt_range
+            if len(caption) < opt_min:
+                log(
+                    "CAPTION",
+                    f"Caption short for {p} ({len(caption)} < {opt_min} optimal)",
+                )
+            elif len(caption) > opt_max:
+                overage_pct = ((len(caption) - opt_max) / opt_max) * 100
+                log(
+                    "CAPTION",
+                    f"Caption long for {p} ({len(caption)} > {opt_max} optimal, {overage_pct:.0f}% over)",
+                )
+
+                # Only trim if ≥30% over optimal
+                if overage_pct >= 30:
+                    # Extract info for logging
+                    _, hashtags = _extract_trailing_hashtags(caption)
+                    _, cta = _extract_cta_links(caption)
+                    tag_count = (
+                        len([w for w in hashtags.split() if w.startswith("#")])
+                        if hashtags
+                        else 0
                     )
-                elif len(caption) > opt_max:
+
+                    trimmed = _priority_aware_trim(caption, opt_max, p)
+
+                    # Safety: if trimming produces too-short result, keep original
+                    min_len = SHORT_MINIMUMS.get(p, 80)
+                    if len(trimmed) < min_len:
+                        log(
+                            "CAPTION",
+                            f"  WARNING: Trimmed too short ({len(trimmed)} < {min_len}), keeping original",
+                        )
+                    else:
+                        captions[p]["caption"] = trimmed
+                        log(
+                            "CAPTION",
+                            f"→ Body trimmed (smart boundary) | Hashtags preserved ({tag_count} tags) | CTA preserved ({len(cta)} chars)",
+                        )
+                else:
                     log(
                         "CAPTION",
-                        f"Caption long for {p} ({len(caption)} > {opt_max} optimal) — within hard limit, keeping as-is",
+                        f"→ Within tolerance, keeping as-is",
                     )
 
     for p, data in captions.items():
-        hard_lim = PLATFORM_LIMITS.get(p, 2000)
         cleaned_caption = _sanitize_caption_text(
             _extract_str(data.get("caption", "")), newline_before_tags=True
         )
-        cleaned_caption = _smart_trim(cleaned_caption, hard_lim)
-        # One more pass after trim to remove any clipped quote artifacts.
-        cleaned_caption = _sanitize_caption_text(
-            cleaned_caption, newline_before_tags=True
-        )
-        if len(cleaned_caption) > hard_lim:
-            cleaned_caption = _smart_trim(cleaned_caption, hard_lim)
+        # No truncation - keep caption as-is
         data["caption"] = cleaned_caption
         if p == "youtube":
             title = _sanitize_caption_text(
                 _extract_str(data.get("title", "")), newline_before_tags=False
             )
-            data["title"] = _smart_trim(title, 80)
+            data["title"] = title
 
     with open(os.path.join(output_dir, "captions.json"), "w", encoding="utf-8") as f:
         json.dump(captions, f, ensure_ascii=False, indent=2)
