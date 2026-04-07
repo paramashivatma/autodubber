@@ -202,14 +202,49 @@ def build_dubbed_video(
             f"  seg#{seg['id']}: orig={orig_dur:.2f}s tts={tts_dur:.2f}s gap={gap:.2f}s",
         )
 
-        if tts_dur > orig_dur + 0.05:
-            stretch = tts_dur / orig_dur
-            log("BUILD", f"    → stretch {stretch:.3f}x")
+        # Always match video to TTS duration (with 1.5x cap)
+        target_dur = min(tts_dur, orig_dur * 1.5)  # Cap at 1.5x
+        stretch = target_dur / orig_dur
+
+        if stretch > 1.05:  # Stretch video (TTS > Original)
+            log("BUILD", f"    → stretch {stretch:.3f}x (capped at 1.5x)")
             stretched = _slow(seg_raw, seg_out, stretch)
             if not stretched:
                 log("BUILD", f"    → WARNING: stretch failed, A/V may be out of sync")
-            actual_seg_dur = _actual_duration(seg_out) or tts_dur
-        else:
+            actual_seg_dur = _actual_duration(seg_out) or target_dur
+        elif stretch < 0.95:  # Speed up video (TTS < Original)
+            log("BUILD", f"    → speed up {stretch:.3f}x")
+            # Use ffmpeg to speed up video
+            r = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    seg_raw,
+                    "-filter:v",
+                    f"setpts={stretch}*PTS",
+                    "-an",
+                    "-r",
+                    "30",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "22",
+                    seg_out,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if r.returncode != 0:
+                log("BUILD", f"    → WARNING: speed up failed, using original")
+                shutil.copy(seg_raw, seg_out)
+                actual_seg_dur = orig_dur
+            else:
+                actual_seg_dur = _actual_duration(seg_out) or target_dur
+        else:  # No significant difference
             shutil.copy(seg_raw, seg_out)
             actual_seg_dur = _actual_duration(seg_out) or orig_dur
 
@@ -220,34 +255,29 @@ def build_dubbed_video(
 
         audio_path = seg.get("audio_path")
         if audio_path and os.path.exists(audio_path):
-            if tts_dur < orig_dur - 0.05:
-                target_ms = int(orig_dur * 1000)
-                padded_path = _pad_audio_with_silence(audio_path, target_ms)
-                if padded_path:
-                    audio_path = padded_path
-                    silence_ms = target_ms - int(tts_dur * 1000)
-                    log("BUILD", f"    → padded with {silence_ms}ms silence")
-                    overlay_dur = orig_dur
-                else:
-                    log(
-                        "BUILD",
-                        f"    → WARNING: padding failed, original audio may have gaps",
-                    )
-                    overlay_dur = tts_dur
-            else:
-                overlay_dur = tts_dur
+            # Video now matches TTS duration, so no padding needed
+            overlay_dur = tts_dur
             positions.append((audio_start, overlay_dur, audio_path))
             log("BUILD", f"    → audio overlay at {audio_start:.2f}s")
         else:
             log("BUILD", f"    → WARNING: No audio path for seg#{seg['id']}")
 
+    # Only include tail segment if it won't exceed audio duration
+    # Video duration should match audio duration to prevent chopped ending
     if prev < orig_total - 0.05:
         tf = os.path.join(tmp, "tail.mp4")
         _cut(video_path, prev, orig_total, tf)
         if os.path.exists(tf) and os.path.getsize(tf) > 500:
             actual_tail = _actual_duration(tf) or (orig_total - prev)
-            parts.append(tf)
-            cursor += actual_tail
+            # Calculate total audio duration
+            total_audio_dur = max([pos[0] + pos[1] for pos in positions], default=0)
+            # Only add tail if it won't exceed audio duration
+            if cursor + actual_tail <= total_audio_dur + 0.5:  # 0.5s tolerance
+                parts.append(tf)
+                cursor += actual_tail
+                log("BUILD", f"  → tail segment added: {actual_tail:.2f}s")
+            else:
+                log("BUILD", f"  → tail segment skipped (would exceed audio duration)")
 
     if not parts:
         raise RuntimeError("No video parts to concatenate.")

@@ -16,6 +16,7 @@ FALLBACK_VOICES = {
     "default": ["en-IN-NeerjaNeural"],
 }
 
+
 # Languages supported by OpenVoice V2
 OPENVOICE_LANGUAGES = {"en", "es", "fr", "zh", "ja", "ko"}
 
@@ -36,8 +37,8 @@ def _run_async(coro):
         return _loop.run_until_complete(coro)
 
 
-async def _synthesize(text, voice, path):
-    await edge_tts.Communicate(text, voice).save(path)
+async def _synthesize(text, voice, path, rate="+0%"):
+    await edge_tts.Communicate(text, voice, rate=rate).save(path)
 
 
 def _sanitize_text(text):
@@ -294,7 +295,7 @@ def generate_tts_audio(
                 # Exponential backoff: 5 attempts with increasing delays
                 for attempt in range(1, 6):
                     try:
-                        _run_async(_synthesize(text, current_voice, clip))
+                        _run_async(_synthesize(text, current_voice, clip, rate="+0%"))
 
                         # Verify file was created
                         if os.path.exists(clip) and os.path.getsize(clip) > 100:

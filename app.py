@@ -334,6 +334,7 @@ def run_dub_pipeline(
             raise FileNotFoundError(f"Not found: {video_path}")
         if progress_cb:
             progress_cb(5)
+            log("PROGRESS", "Progress callback called: 5%")
 
         # PARALLEL GROUP 1: BGM separation + Transcription run simultaneously
         bgm_path = None
@@ -361,6 +362,7 @@ def run_dub_pipeline(
 
         if progress_cb:
             progress_cb(30)
+            log("PROGRESS", "Progress callback called: 30%")
         status_cb(_stage_text(2, "Merge segments"))
         segs = merge_short_segments(segs)
         status_cb(_stage_text(3, "Translate"))
@@ -380,6 +382,7 @@ def run_dub_pipeline(
             )
         if progress_cb:
             progress_cb(43)
+            log("PROGRESS", "Progress callback called: 43%")
 
         # PARALLEL GROUP 2: TTS/Video Build + Vision extraction run simultaneously
         status_cb(_stage_text(4, "Generate TTS"))
@@ -392,6 +395,7 @@ def run_dub_pipeline(
         )
         if progress_cb:
             progress_cb(58)
+            log("PROGRESS", "Progress callback called: 58%")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             build_future = pool.submit(
@@ -412,6 +416,7 @@ def run_dub_pipeline(
 
         if progress_cb:
             progress_cb(78)
+            log("PROGRESS", "Progress callback called: 78%")
         if vision_meta.get("used_fallback"):
             status_cb(
                 _backup_warning(
@@ -426,6 +431,7 @@ def run_dub_pipeline(
             _log_api_summary()
             if progress_cb:
                 progress_cb(100)
+                log("PROGRESS", "Progress callback called: 100% (dub-only mode)")
             done_cb(success=True, msg="Dubbing complete.", pub_results={})
             return
 
@@ -441,6 +447,7 @@ def run_dub_pipeline(
         )
         if progress_cb:
             progress_cb(88)
+            log("PROGRESS", "Progress callback called: 88%")
         if caption_meta.get("used_fallback"):
             status_cb(
                 _backup_warning(
@@ -464,6 +471,7 @@ def run_dub_pipeline(
             status_cb(_stage_text(8, "Skip teasers"))
         if progress_cb:
             progress_cb(93)
+            log("PROGRESS", "Progress callback called: 93%")
 
         status_cb(_stage_text(9, "Review captions"))
         _log_api_summary()
@@ -559,7 +567,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.19")
+        self.title("Video Dubber v1.20")
         self.geometry("860x720")
         self.minsize(780, 620)
         self.resizable(True, True)
@@ -2280,6 +2288,10 @@ class App(tk.Tk):
                 if progress_pct is not None:
                     self.progress["value"] = progress_pct
                     self.progress_var.set(f"Progress: {progress_pct}%")
+                    log(
+                        "PROGRESS",
+                        f"Status callback progress: {progress_pct}% - {message}",
+                    )
                 # Keep status bar aligned with pipeline activity stages/warnings.
                 if str(message).startswith("Stage ") or str(message).startswith("⚠"):
                     self.status_var.set(message)
@@ -2290,6 +2302,7 @@ class App(tk.Tk):
             def _apply():
                 self.progress["value"] = pct
                 self.progress_var.set(f"Progress: {pct}%")
+                log("PROGRESS", f"Progress bar updated to {pct}%")
 
             self.after(0, _apply)
 

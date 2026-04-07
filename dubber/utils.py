@@ -210,7 +210,7 @@ SHORT_MINIMUMS = {"tiktok": 120, "twitter": 80, "threads": 160, "bluesky": 80}
 # Optimal engagement ranges for warning system (min, max)
 # Adjusted to balance engagement optimization with content preservation
 OPTIMAL_RANGES = {
-    "twitter": (100, 180),  # Tight platform - keep short
+    "twitter": (100, 280),  # Twitter now supports longer posts (280 chars)
     "threads": (160, 300),  # Moderate length
     "bluesky": (100, 200),  # Moderate length
     "instagram": (80, 500),  # Expanded - supports bullet-rich posts
