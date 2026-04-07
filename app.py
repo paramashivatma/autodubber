@@ -1,4 +1,4 @@
-import os, shutil, threading, tkinter as tk, concurrent.futures
+import os, shutil, threading, tkinter as tk, concurrent.futures, ctypes
 import re
 from tkinter import filedialog, ttk, messagebox
 
@@ -96,6 +96,16 @@ DUB_TOTAL_STAGES = 11
 
 def _stage_text(step, label, total=DUB_TOTAL_STAGES):
     return f"Stage {step}/{total} - {label}"
+
+
+def _bring_terminal_to_front():
+    """Bring the console/terminal window to the foreground (Windows only)."""
+    try:
+        ctypes.windll.user32.SetForegroundWindow(
+            ctypes.windll.kernel32.GetConsoleWindow()
+        )
+    except Exception:
+        pass  # Silently fail if not on Windows or if it doesn't work
 
 
 def _is_quota_reason(reason):
@@ -2135,6 +2145,9 @@ class App(tk.Tk):
         self.status_var.set("Keys saved.")
 
     def _run(self):
+        # Bring terminal to front so user can see logs
+        _bring_terminal_to_front()
+
         # Always run dub pipeline since mode selection is removed
         video = self.video_var.get().strip()
         if not video:
