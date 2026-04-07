@@ -1194,21 +1194,6 @@ class App(tk.Tk):
         ttk.Separator(self.t_dub, orient="horizontal").grid(
             row=next_row + 14, column=0, columnspan=3, sticky="ew", pady=8
         )
-        tk.Label(
-            self.t_dub, text="Pipeline activity", font=("Segoe UI Semibold", 11)
-        ).grid(row=next_row + 15, column=0, sticky="w", **pad)
-        self.dub_results = tk.Text(self.t_dub, width=84, height=8, font=("Consolas", 9))
-        self.dub_results.grid(
-            row=next_row + 16,
-            column=0,
-            columnspan=3,
-            padx=12,
-            pady=(0, 8),
-            sticky="nsew",
-        )
-        self.t_dub.grid_rowconfigure(next_row + 16, weight=1)
-        self._style_text_area(self.dub_results)
-
         self.t_media_tab = tk.Frame(self.nb, bg=self._colors["panel"], padx=0, pady=0)
         self.nb.add(self.t_media_tab, text="  Flyer / Image  ")
         self.t_media = self._create_scrollable_tab(self.t_media_tab)
@@ -1553,48 +1538,10 @@ class App(tk.Tk):
             False, "Flyer cleared. Process flyer to enable publishing."
         )
 
-    def _clear_dub_results(self):
-        """Clear dub results"""
-        self.dub_results.delete(1.0, tk.END)
-
-    def _update_dub_results(self, message):
-        """Update dub results with new message"""
-        self.dub_results.insert(tk.END, f"{message}\n")
-        self.dub_results.see(tk.END)  # Auto-scroll to bottom
-
     def _update_flyer_results(self, message):
         """Update flyer results with new message"""
         self.flyer_results.insert(tk.END, f"{message}\n")
         self.flyer_results.see(tk.END)
-
-    def _start_activity_mirror(self, target):
-        """Mirror shared terminal logs into the requested activity box."""
-        self._stop_activity_mirror(target)
-
-        def _listener(line, tag, msg):
-            if target == "dub":
-                self._queue_ui(lambda: self._update_dub_results(line))
-            elif target == "flyer":
-                self._queue_ui(lambda: self._update_flyer_results(line))
-
-        add_log_subscriber(_listener)
-        if target == "dub":
-            self._dub_log_listener = _listener
-        elif target == "flyer":
-            self._flyer_log_listener = _listener
-
-    def _stop_activity_mirror(self, target):
-        """Detach mirrored log stream from the requested activity box."""
-        if target == "dub":
-            listener = getattr(self, "_dub_log_listener", None)
-            if listener:
-                remove_log_subscriber(listener)
-                self._dub_log_listener = None
-        elif target == "flyer":
-            listener = getattr(self, "_flyer_log_listener", None)
-            if listener:
-                remove_log_subscriber(listener)
-                self._flyer_log_listener = None
 
     def _browse_video(self):
         """Browse for video file"""
@@ -2194,9 +2141,6 @@ class App(tk.Tk):
             messagebox.showwarning("No input", "Paste a URL or browse for a video.")
             return
         self.run_btn.config(state="disabled")
-        self._clear_dub_results()  # Clear previous results
-        self.dub_results.insert(tk.END, "🔄 Starting dub pipeline...\n\n")
-        self._start_activity_mirror("dub")
         self.progress["value"] = 0
         self.progress_var.set("Progress: 0%")
         self.status_var.set("Validating API connections ...")
@@ -2240,18 +2184,11 @@ class App(tk.Tk):
                 f"⚠️ Some API checks failed:\n\n{msg}\n\nContinue anyway?",
             )
             if not proceed:
-                self.dub_results.insert(
-                    tk.END, f"❌ Aborted: {len(errors)} API check(s) failed\n\n"
-                )
                 self.progress["value"] = 0
                 self.progress_var.set("Progress: Failed ✗")
                 self.status_var.set("Aborted — API validation failed")
                 self.run_btn.config(state="normal")
                 return
-            else:
-                self.dub_results.insert(
-                    tk.END, "⚠️ Proceeding despite API warnings...\n\n"
-                )
         to_save = {}
         if gemini_vision:
             to_save["GEMINI_API_KEY"] = gemini_vision
@@ -2271,7 +2208,6 @@ class App(tk.Tk):
         # Create custom status callback for dub results
         def dub_status_callback(message, progress_pct=None):
             def _apply():
-                self._update_dub_results(message)
                 if progress_pct is not None:
                     self.progress["value"] = progress_pct
                     self.progress_var.set(f"Progress: {progress_pct}%")
@@ -2351,7 +2287,6 @@ class App(tk.Tk):
             self, captions, upload_manager=None, platforms=selected_platforms
         )
         if dlg.result is None:
-            self._stop_activity_mirror("dub")
             self.run_btn.config(state="normal")
             self.status_var.set("Publishing cancelled.")
             return
@@ -2364,7 +2299,6 @@ class App(tk.Tk):
         missing_account_envs.pop("bluesky", None)
         missing_account_envs.pop("youtube", None)
         if missing_account_envs:
-            self._stop_activity_mirror("dub")
             self._end_publish("dub")
             missing_lines = "\n".join(
                 f"- {platform}: {env_name}"
@@ -2375,7 +2309,6 @@ class App(tk.Tk):
                 "Add these keys to your .env:\n"
                 f"{missing_lines}"
             )
-            self._update_dub_results(f"❌ {msg.replace(chr(10), ' ')}")
             self.status_var.set("Publishing blocked: missing Zernio account IDs.")
             self.run_btn.config(state="normal")
             messagebox.showerror("Missing Zernio Account IDs", msg)
@@ -2387,7 +2320,6 @@ class App(tk.Tk):
             _expanded_publish_guard_platforms(selected_platforms),
         )
         if repost_blocks:
-            self._stop_activity_mirror("dub")
             self._end_publish("dub")
             lines = "\n".join(
                 f"- {_display_platform_name(item['platform'])}: previous {item['status']} at {item['timestamp']}"
@@ -2397,9 +2329,6 @@ class App(tk.Tk):
                 "Publishing is blocked because this exact content was already submitted on these platforms.\n\n"
                 "Please verify the live profiles/dashboards before reposting:\n"
                 f"{lines}"
-            )
-            self._update_dub_results(
-                f"⚠️ Duplicate-protection blocked repost. {lines.replace(chr(10), ' | ')}"
             )
             self.status_var.set("Duplicate-protection blocked repost.")
             self.run_btn.config(state="normal")
@@ -2418,7 +2347,6 @@ class App(tk.Tk):
 
         self.progress["value"] = 0
         self.progress_var.set("Progress: 0%")
-        self._update_dub_results(_stage_text(10, "Publish"))
         self.status_var.set(_stage_text(10, "Publish"))
 
         # Thread-safe progress callback for status bar updates
@@ -2497,11 +2425,6 @@ class App(tk.Tk):
                 if not error_msg and (ok > 0 or unconfirmed > 0):
                     try:
                         self._queue_ui(
-                            lambda: self._update_dub_results(
-                                _stage_text(11, "Log to Google Sheet")
-                            )
-                        )
-                        self._queue_ui(
                             lambda: self.status_var.set(
                                 _stage_text(11, "Log to Google Sheet")
                             )
@@ -2521,34 +2444,13 @@ class App(tk.Tk):
                         )
                         if sheet_success:
                             log("PUBLISH", f"✅ Google Sheet update: {sheet_msg}")
-                            self._queue_ui(
-                                lambda: self._update_dub_results(
-                                    f"✅ {_stage_text(11, 'Log to Google Sheet')} {sheet_msg}"
-                                )
-                            )
                         else:
                             log(
                                 "PUBLISH", f"⚠️ Google Sheet update skipped: {sheet_msg}"
                             )
-                            self._queue_ui(
-                                lambda: self._update_dub_results(
-                                    f"⚠️ {_stage_text(11, 'Log to Google Sheet')} {sheet_msg}"
-                                )
-                            )
 
                     except ImportError:
                         log("PUBLISH", "⚠️ Google Sheet logger not available")
-                        self._queue_ui(
-                            lambda: self._update_dub_results(
-                                "⚠️ Stage 11/11 - Google Sheet logger not available; skipped."
-                            )
-                        )
-                else:
-                    self._queue_ui(
-                        lambda: self._update_dub_results(
-                            "⚠️ Stage 11/11 - Recording on Google Sheet skipped."
-                        )
-                    )
 
                 try:
                     record_ambiguous_publish_results(video_path, approved, results)
@@ -2579,7 +2481,6 @@ class App(tk.Tk):
         threading.Thread(target=_publish, daemon=True).start()
 
     def _done_cb(self, success, msg, pub_results=None):
-        self._stop_activity_mirror("dub")
         self.progress["value"] = 100 if success else 0
         self.progress_var.set(
             "Progress: Complete ✓" if success else "Progress: Failed ✗"
