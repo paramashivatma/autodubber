@@ -318,7 +318,6 @@ def run_dub_pipeline(
     done_cb,
     dub_only=False,
     progress_cb=None,
-    clone_voice=False,
 ):
     reset_api_call_counts()
     try:
@@ -390,8 +389,6 @@ def run_dub_pipeline(
             segs,
             voice=voice,
             output_dir=WORKSPACE,
-            clone_voice=clone_voice,
-            source_video=video_path if clone_voice else None,
         )
         if progress_cb:
             progress_cb(58)
@@ -1118,18 +1115,8 @@ class App(tk.Tk):
         )
         self._sync_voice_options()
 
-        self.clone_voice_var = tk.BooleanVar(value=False)
-        clone_check = tk.Checkbutton(
-            self.t_dub,
-            text="Clone speaker's voice (OpenVoice)",
-            variable=self.clone_voice_var,
-            font=("Segoe UI", 9),
-        )
-        clone_check.grid(row=next_row + 4, column=0, columnspan=2, sticky="w", **pad)
         tk.Label(
             self.t_dub,
-            text="EN•ES•FR•ZH•JA•KO supported | Other → Edge TTS | GPU recommended",
-            fg=self._colors["muted"],
             font=("Segoe UI", 8),
         ).grid(
             row=next_row + 5, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 6)
@@ -2336,7 +2323,6 @@ class App(tk.Tk):
                 safe_done_callback,
                 self.dub_only_var.get(),
                 progress_callback,  # progress_cb — separate function for percentage updates
-                self.clone_voice_var.get(),  # clone_voice — enable OpenVoice cloning
             ),
             daemon=True,
         ).start()

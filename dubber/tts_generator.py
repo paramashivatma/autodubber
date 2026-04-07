@@ -17,9 +17,6 @@ FALLBACK_VOICES = {
 }
 
 
-# Languages supported by OpenVoice V2
-OPENVOICE_LANGUAGES = {"en", "es", "fr", "zh", "ja", "ko"}
-
 _loop = None
 
 
@@ -98,104 +95,6 @@ def _extract_reference_audio(video_path, output_path, duration=10):
     return None
 
 
-def _get_openvoice_model(model_dir=None):
-    """Initialize OpenVoice model, downloading if needed."""
-    if model_dir is None:
-        model_dir = os.path.join(
-            os.path.expanduser("~"), ".openvoice", "checkpoints_v2"
-        )
-
-    try:
-        from openvoice import se_extractor
-        from openvoice.api import BaseSpeakerTTS, ToneColorConverter
-
-        # Check if models exist
-        if not os.path.exists(model_dir):
-            log("TTS", "  Downloading OpenVoice V2 models...")
-            os.makedirs(model_dir, exist_ok=True)
-            # Models will be downloaded on first use
-            log("TTS", "  Models will download automatically on first use (~300MB)")
-
-        return model_dir, BaseSpeakerTTS, ToneColorConverter, se_extractor
-    except ImportError:
-        log("TTS", "  OpenVoice not installed. Install with: pip install openvoice")
-        return None, None, None, None
-
-
-def _synthesize_openvoice(
-    text, reference_audio, output_path, language="en", model_dir=None
-):
-    """Synthesize speech using OpenVoice with cloned voice."""
-    try:
-        from openvoice.api import BaseSpeakerTTS, ToneColorConverter
-        from openvoice import se_extractor
-
-        if model_dir is None:
-            model_dir = os.path.join(
-                os.path.expanduser("~"), ".openvoice", "checkpoints_v2"
-            )
-
-        os.makedirs(model_dir, exist_ok=True)
-
-        # Initialize base TTS
-        base_tts_path = os.path.join(model_dir, "base_speakers")
-        if not os.path.exists(base_tts_path):
-            log("TTS", "  Downloading base speaker models...")
-            # Download models programmatically
-            import urllib.request
-            import zipfile
-
-            # OpenVoice V2 models
-            model_url = "https://myshell-public-repo-host.s3.amazonaws.com/openvoice/checkpoints_v2/converter.zip"
-            zip_path = os.path.join(model_dir, "converter.zip")
-
-            if not os.path.exists(zip_path):
-                urllib.request.urlretrieve(model_url, zip_path)
-                with zipfile.ZipFile(zip_path, "r") as z:
-                    z.extractall(model_dir)
-
-        # Initialize tone color converter
-        converter = ToneColorConverter(
-            os.path.join(model_dir, "converter", "config.json"),
-            device="cpu",
-        )
-        converter.load_ckpt(os.path.join(model_dir, "converter", "checkpoint.pth"))
-
-        # Extract speaker embedding from reference audio
-        ref_embed = se_extractor.get_wav_np(reference_audio)[0]
-        ref_embed = ref_embed.unsqueeze(0)
-
-        # Get speaker embedding
-        target_se, audio_name = se_extractor._extract_sequential(
-            reference_audio, model_dir, device="cpu"
-        )
-
-        # Generate speech with base speaker
-        base_tts = BaseSpeakerTTS(
-            os.path.join(model_dir, "base_speakers", "config.json"),
-            device="cpu",
-        )
-        base_tts.load_ckpt(os.path.join(model_dir, "base_speakers", "checkpoint.pth"))
-
-        # Synthesize with cloned voice
-        base_tts.tts(text, output_path, speaker=language, sdp_ratio=0.2)
-
-        # Apply tone color conversion
-        converter.convert(
-            audio_ref=ref_embed,
-            audio_gen=output_path,
-            audio_out=output_path,
-        )
-
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 100:
-            return True
-        return False
-
-    except Exception as e:
-        log("TTS", f"  OpenVoice synthesis failed: {e}")
-        return False
-
-
 def _get_fallback_voices(primary_voice):
     """Get list of fallback voices for a given primary voice."""
     # Extract language code from voice (e.g., "gu-IN-NiranjanNeural" -> "gu-IN")
@@ -217,9 +116,6 @@ def generate_tts_audio(
     segments,
     voice="gu-IN-NiranjanNeural",
     output_dir="workspace",
-    clone_voice=False,
-    reference_audio=None,
-    source_video=None,
 ):
     """
     Generate TTS audio for each segment.
@@ -228,31 +124,10 @@ def generate_tts_audio(
         segments: List of segment dicts with 'translated' or 'text'
         voice: Edge TTS voice ID (e.g., "gu-IN-NiranjanNeural")
         output_dir: Output directory
-        clone_voice: If True, use OpenVoice for voice cloning
-        reference_audio: Path to reference audio for cloning (optional)
-        source_video: Path to source video (used to extract reference if not provided)
     """
     clips_dir = os.path.join(output_dir, "tts_clips")
     os.makedirs(clips_dir, exist_ok=True)
     log("TTS", f"Voice: {voice}  |  {len(segments)} segments")
-
-    # Determine target language from voice
-    lang_code = voice.split("-")[0] if "-" in voice else "en"
-    use_openvoice = clone_voice and lang_code in OPENVOICE_LANGUAGES
-
-    if use_openvoice:
-        log("TTS", "  Using OpenVoice for voice cloning")
-
-        # Extract reference audio if not provided
-        if not reference_audio and source_video:
-            ref_path = os.path.join(output_dir, "reference_voice.wav")
-            reference_audio = _extract_reference_audio(source_video, ref_path)
-
-        if not reference_audio or not os.path.exists(reference_audio):
-            log("TTS", "  Reference audio not available, falling back to Edge TTS")
-            use_openvoice = False
-        else:
-            log("TTS", f"  Reference audio: {reference_audio}")
 
     results = []
     skipped = []
@@ -273,21 +148,8 @@ def generate_tts_audio(
         success = False
         last_error = None
 
-        # Try OpenVoice first if enabled
-        if use_openvoice:
-            try:
-                if _synthesize_openvoice(
-                    text, reference_audio, clip, language=lang_code
-                ):
-                    success = True
-                    log("TTS", f"  OpenVoice synthesis successful")
-                else:
-                    log("TTS", "  OpenVoice failed, falling back to Edge TTS")
-            except Exception as e:
-                log("TTS", f"  OpenVoice error: {e}, falling back to Edge TTS")
-
-        # Fall back to Edge TTS
-        if not success:
+        # Edge TTS synthesis
+        for voice_idx, current_voice in enumerate(voices):
             for voice_idx, current_voice in enumerate(voices):
                 if voice_idx > 0:
                     log("TTS", f"  Trying fallback voice: {current_voice}")
