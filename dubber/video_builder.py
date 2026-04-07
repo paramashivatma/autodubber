@@ -262,22 +262,15 @@ def build_dubbed_video(
         else:
             log("BUILD", f"    → WARNING: No audio path for seg#{seg['id']}")
 
-    # Only include tail segment if it won't exceed audio duration
-    # Video duration should match audio duration to prevent chopped ending
+    # Always include tail segment (outro) to prevent chopping off the ending
     if prev < orig_total - 0.05:
         tf = os.path.join(tmp, "tail.mp4")
         _cut(video_path, prev, orig_total, tf)
         if os.path.exists(tf) and os.path.getsize(tf) > 500:
             actual_tail = _actual_duration(tf) or (orig_total - prev)
-            # Calculate total audio duration
-            total_audio_dur = max([pos[0] + pos[1] for pos in positions], default=0)
-            # Only add tail if it won't exceed audio duration
-            if cursor + actual_tail <= total_audio_dur + 0.5:  # 0.5s tolerance
-                parts.append(tf)
-                cursor += actual_tail
-                log("BUILD", f"  → tail segment added: {actual_tail:.2f}s")
-            else:
-                log("BUILD", f"  → tail segment skipped (would exceed audio duration)")
+            parts.append(tf)
+            cursor += actual_tail
+            log("BUILD", f"  → tail segment (outro) added: {actual_tail:.2f}s")
 
     if not parts:
         raise RuntimeError("No video parts to concatenate.")
