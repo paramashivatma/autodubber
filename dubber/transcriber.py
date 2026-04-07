@@ -7,6 +7,49 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3"
 MAX_FILE_MB = 25  # Groq limit
 
+# Post-processing dictionary for common transcription errors
+# Maps incorrect words (lowercase) to correct words
+TRANSCRIPTION_FIXES = {
+    # Sanskrit terms
+    "avyakta": "avyakta",
+    "object": "avyakta",  # Common mishearing of avyakta
+    "samadhi": "Samadhi",
+    "turiyatita": "Turiyatita",
+    "brahman": "Brahman",
+    "atman": "Atman",
+    "nirvikalpa": "Nirvikalpa",
+    # Proper names
+    "lithyananda": "Nithyananda",
+    "nithyananda": "Nithyananda",
+    "kailasa": "KAILASA",
+    "paramashiva": "Paramashivam",
+    # Common words
+    "uncertainity": "uncertainty",
+    "avyaktha": "avyakta",
+}
+
+
+def _apply_transcription_fixes(text):
+    """Apply post-processing fixes to transcription text."""
+    if not text:
+        return text
+
+    words = text.split()
+    fixed_words = []
+    for word in words:
+        # Check if word (lowercase) is in fixes
+        word_lower = word.lower().strip(".,!?;:")
+        if word_lower in TRANSCRIPTION_FIXES:
+            # Preserve original capitalization pattern
+            fixed = TRANSCRIPTION_FIXES[word_lower]
+            if word[0].isupper():
+                fixed = fixed.capitalize()
+            fixed_words.append(fixed)
+        else:
+            fixed_words.append(word)
+
+    return " ".join(fixed_words)
+
 
 def _extract_audio(video_path, out_wav):
     r = subprocess.run(
@@ -109,12 +152,14 @@ def _groq_transcribe(api_key, audio_path, language, output_dir):
         result = _transcribe_chunk(api_key, chunk_path, language)
         detected_lang = result.get("language", language)
         for seg in result.get("segments", []):
+            # Apply transcription fixes to correct common errors
+            fixed_text = _apply_transcription_fixes(seg["text"].strip())
             all_segments.append(
                 {
                     "id": seg.get("id", len(all_segments)),
                     "start": round(seg["start"] + time_offset, 3),
                     "end": round(seg["end"] + time_offset, 3),
-                    "text": seg["text"].strip(),
+                    "text": fixed_text,
                 }
             )
         # Advance offset by last segment end
@@ -142,12 +187,14 @@ def _local_transcribe(audio_path, language, model_size, output_dir):
             text = (getattr(seg, "text", "") or "").strip()
             if not text:
                 continue
+            # Apply transcription fixes to correct common errors
+            fixed_text = _apply_transcription_fixes(text)
             segments.append(
                 {
                     "id": i,
                     "start": round(float(seg.start), 3),
                     "end": round(float(seg.end), 3),
-                    "text": text,
+                    "text": fixed_text,
                 }
             )
         log(
