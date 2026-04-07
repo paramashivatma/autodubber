@@ -890,7 +890,7 @@ def generate_all_captions(
                         if new_len > old_len:
                             captions[p] = captions2.get(p, {})
                 except Exception as e:
-                    log("CAPTION", f"Regeneration failed for {p}: {e}")
+                    log("CAPTION", f"Regeneration failed for {bad_short}: {e}")
             elif bad_short:
                 log(
                     "CAPTION",
