@@ -272,6 +272,37 @@ def build_dubbed_video(
             cursor += actual_tail
             log("BUILD", f"  → tail segment (outro) added: {actual_tail:.2f}s")
 
+            # Extract audio from tail segment and add to audio track
+            # This ensures the outro plays with its original audio (speech or music)
+            tail_audio_path = os.path.join(tmp, "tail_audio.wav")
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    tf,
+                    "-vn",
+                    "-acodec",
+                    "pcm_s16le",
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    tail_audio_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if (
+                os.path.exists(tail_audio_path)
+                and os.path.getsize(tail_audio_path) > 100
+            ):
+                # Add tail audio to positions list
+                tail_audio_start = cursor - actual_tail
+                positions.append((tail_audio_start, actual_tail, tail_audio_path))
+                log("BUILD", f"  → tail audio overlay at {tail_audio_start:.2f}s")
+
     if not parts:
         raise RuntimeError("No video parts to concatenate.")
 
