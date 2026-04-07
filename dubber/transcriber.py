@@ -28,20 +28,53 @@ TRANSCRIPTION_FIXES = {
     "avyaktha": "avyakta",
 }
 
+# File to store user-approved transcription fixes
+TRANSCRIPTION_FIXES_FILE = os.path.join(
+    os.path.expanduser("~"), ".video_dubber_transcription_fixes.json"
+)
+
+
+def _load_user_fixes():
+    """Load user-approved transcription fixes from file."""
+    try:
+        if os.path.exists(TRANSCRIPTION_FIXES_FILE):
+            with open(TRANSCRIPTION_FIXES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_user_fixes(fixes):
+    """Save user-approved transcription fixes to file."""
+    try:
+        with open(TRANSCRIPTION_FIXES_FILE, "w", encoding="utf-8") as f:
+            json.dump(fixes, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        log("TRANSCRIBE", f"Failed to save transcription fixes: {e}")
+
+
+def _get_all_fixes():
+    """Get combined fixes from built-in and user-approved."""
+    all_fixes = dict(TRANSCRIPTION_FIXES)
+    all_fixes.update(_load_user_fixes())
+    return all_fixes
+
 
 def _apply_transcription_fixes(text):
     """Apply post-processing fixes to transcription text."""
     if not text:
         return text
 
+    all_fixes = _get_all_fixes()
     words = text.split()
     fixed_words = []
     for word in words:
         # Check if word (lowercase) is in fixes
         word_lower = word.lower().strip(".,!?;:")
-        if word_lower in TRANSCRIPTION_FIXES:
+        if word_lower in all_fixes:
             # Preserve original capitalization pattern
-            fixed = TRANSCRIPTION_FIXES[word_lower]
+            fixed = all_fixes[word_lower]
             if word[0].isupper():
                 fixed = fixed.capitalize()
             fixed_words.append(fixed)
@@ -49,6 +82,88 @@ def _apply_transcription_fixes(text):
             fixed_words.append(word)
 
     return " ".join(fixed_words)
+
+
+def _suggest_fix(original_word, suggested_word):
+    """Suggest a transcription fix for user approval."""
+    user_fixes = _load_user_fixes()
+
+    # Check if already in built-in or user fixes
+    word_lower = original_word.lower()
+    if word_lower in TRANSCRIPTION_FIXES or word_lower in user_fixes:
+        return False  # Already have a fix for this word
+
+    # Add to pending suggestions
+    pending_file = TRANSCRIPTION_FIXES_FILE.replace(".json", "_pending.json")
+    pending = {}
+    if os.path.exists(pending_file):
+        try:
+            with open(pending_file, "r", encoding="utf-8") as f:
+                pending = json.load(f)
+        except Exception:
+            pass
+
+    if word_lower not in pending:
+        pending[word_lower] = suggested_word
+        try:
+            with open(pending_file, "w", encoding="utf-8") as f:
+                json.dump(pending, f, indent=2, ensure_ascii=False)
+            log(
+                "TRANSCRIBE", f"  Suggested fix: '{original_word}' → '{suggested_word}'"
+            )
+            return True
+        except Exception:
+            pass
+
+    return False
+
+
+def get_pending_fixes():
+    """Get pending transcription fixes for user review."""
+    pending_file = TRANSCRIPTION_FIXES_FILE.replace(".json", "_pending.json")
+    if os.path.exists(pending_file):
+        try:
+            with open(pending_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def approve_fixes(fixes_to_approve):
+    """Approve pending transcription fixes and add to permanent dictionary."""
+    pending = get_pending_fixes()
+    user_fixes = _load_user_fixes()
+
+    approved_count = 0
+    for word, correction in fixes_to_approve.items():
+        if word in pending:
+            user_fixes[word.lower()] = correction
+            approved_count += 1
+
+    if approved_count > 0:
+        _save_user_fixes(user_fixes)
+        # Clear approved items from pending
+        pending_file = TRANSCRIPTION_FIXES_FILE.replace(".json", "_pending.json")
+        remaining = {k: v for k, v in pending.items() if k not in fixes_to_approve}
+        try:
+            with open(pending_file, "w", encoding="utf-8") as f:
+                json.dump(remaining, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+        log("TRANSCRIBE", f"Approved {approved_count} transcription fixes")
+
+    return approved_count
+
+
+def clear_pending_fixes():
+    """Clear all pending transcription fixes."""
+    pending_file = TRANSCRIPTION_FIXES_FILE.replace(".json", "_pending.json")
+    try:
+        if os.path.exists(pending_file):
+            os.remove(pending_file)
+    except Exception:
+        pass
 
 
 def _extract_audio(video_path, out_wav):
