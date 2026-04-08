@@ -20,6 +20,8 @@ TRANSCRIPTION_FIXES = {
     "nirvikalpa": "Nirvikalpa",
     # Proper names
     "lithyananda": "Nithyananda",
+    "lithuania": "Nithyananda",
+    "lithuanian": "Nithyananda",
     "nithyananda": "Nithyananda",
     "kailasa": "KAILASA",
     "paramashiva": "Paramashivam",
@@ -28,10 +30,148 @@ TRANSCRIPTION_FIXES = {
     "avyaktha": "avyakta",
 }
 
+# Known words and their common mishearings for auto-learn pattern matching
+# Format: correct_word -> list of common mishearings
+KNOWN_WORDS_MISHEARINGS = {
+    # Sanskrit terms
+    "avyakta": ["object", "obstruct", "abject", "a vyakta", "avyak tha"],
+    "samadhi": ["somebody", "sam ahi", "some ahi", "sama dhi"],
+    "turiyatita": ["turkey tita", "turi ya tita", "turi ya teeta"],
+    "brahman": ["brahmin", "broad man", "bra man", "brah man"],
+    "atman": ["at man", "adman", "atman", "at man"],
+    "nirvikalpa": ["near vikalpa", "nir vikalpa", "near vikal fa"],
+    "paramashiva": ["parama shiva", "parama sheva", "parama sheeba"],
+    "paramashivam": ["parama shivam", "parama shevam", "parama sheebam"],
+    # Proper names
+    "nithyananda": [
+        "lithyananda",
+        "lithuania",
+        "lithuanian",
+        "nithya nanda",
+        "with yananda",
+        "nit ya nanda",
+        "nith yananda",
+    ],
+    "kailasa": ["kyle asa", "kai lasa", "kai lasa", "ky lasa"],
+    "kailaas": ["kyle as", "kai las", "kai laas"],
+    "spH": ["s p h", "sph", "s. p. h."],
+    "bhagavan": ["bhagwan", "bhagawaan", "bhag van"],
+    "paramashivatma": ["parama shivatma", "parama shiva atma"],
+}
+
 # File to store user-approved transcription fixes
 TRANSCRIPTION_FIXES_FILE = os.path.join(
     os.path.expanduser("~"), ".video_dubber_transcription_fixes.json"
 )
+
+
+def _levenshtein_distance(s1, s2):
+    """Calculate the Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+
+    return previous_row[-1]
+
+
+def _similar_words(word1, word2, threshold=0.75):
+    """Check if two words are similar using Levenshtein distance."""
+    if len(word1) < 3 or len(word2) < 3:
+        return False
+
+    word1_lower = word1.lower()
+    word2_lower = word2.lower()
+
+    # Exact match after lowercase
+    if word1_lower == word2_lower:
+        return True
+
+    # Check if one contains the other (for compound words)
+    if word2_lower in word1_lower or word1_lower in word2_lower:
+        # Only if the shorter word is at least 60% of the longer word
+        shorter = min(len(word1_lower), len(word2_lower))
+        longer = max(len(word1_lower), len(word2_lower))
+        if shorter / longer >= 0.6:
+            return True
+
+    # Levenshtein distance ratio
+    distance = _levenshtein_distance(word1_lower, word2_lower)
+    max_len = max(len(word1_lower), len(word2_lower))
+    similarity = 1 - (distance / max_len)
+
+    return similarity >= threshold
+
+
+def _detect_potential_errors(transcribed_text):
+    """
+    Detect potential transcription errors using pattern matching.
+    Returns list of (original_word, suggested_correction) tuples.
+    """
+    if not transcribed_text:
+        return []
+
+    suggestions = []
+    words = transcribed_text.split()
+    all_fixes = _get_all_fixes()
+
+    for word in words:
+        word_lower = word.lower().strip(".,!?;:")
+
+        # Skip if already in fixes
+        if word_lower in all_fixes:
+            continue
+
+        # Skip very short words
+        if len(word_lower) < 4:
+            continue
+
+        # Check each known word's common mishearings
+        for correct_word, mishearings in KNOWN_WORDS_MISHEARINGS.items():
+            # Check exact mishearing match
+            for mishearing in mishearings:
+                if word_lower == mishearing.lower():
+                    suggestions.append((word, correct_word))
+                    break
+            else:
+                # Check similarity if no exact match
+                if _similar_words(word_lower, correct_word):
+                    # Make sure it's not already suggested
+                    if not any(s[1] == correct_word for s in suggestions):
+                        suggestions.append((word, correct_word))
+
+    return suggestions
+
+
+def _auto_learn_from_transcription(transcribed_text):
+    """
+    Auto-learn potential transcription errors and add to pending fixes.
+    Returns number of new suggestions added.
+    """
+    if not transcribed_text:
+        return 0
+
+    suggestions = _detect_potential_errors(transcribed_text)
+    added_count = 0
+
+    for original, correction in suggestions:
+        if _suggest_fix(original, correction):
+            added_count += 1
+
+    if added_count > 0:
+        log("TRANSCRIBE", f"Auto-learned {added_count} potential transcription fix(es)")
+
+    return added_count
 
 
 def _load_user_fixes():
@@ -351,6 +491,11 @@ def transcribe_audio(
         segments, detected = _local_transcribe(
             wav_path, language, model_size, output_dir
         )
+
+    # Auto-learn potential transcription errors
+    log("TRANSCRIBE", "Running auto-learn for transcription fixes...")
+    full_text = " ".join(seg.get("text", "") for seg in segments)
+    _auto_learn_from_transcription(full_text)
 
     out_path = os.path.join(output_dir, "transcript.json")
     with open(out_path, "w", encoding="utf-8") as f:

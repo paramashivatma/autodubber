@@ -574,7 +574,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.21")
+        self.title("Video Dubber v1.22")
         self.geometry("700x720")
         self.minsize(620, 620)
         self.resizable(True, True)
