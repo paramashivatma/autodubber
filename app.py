@@ -574,7 +574,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.20")
+        self.title("Video Dubber v1.21")
         self.geometry("700x720")
         self.minsize(620, 620)
         self.resizable(True, True)
@@ -1370,6 +1370,21 @@ class App(tk.Tk):
         )
         self.cleanup_btn.pack(side="left", padx=6)
 
+        self.review_fixes_btn = tk.Button(
+            bot,
+            text="Review Fixes",
+            width=12,
+            bg=self._colors["accent"],
+            fg="white",
+            font=("Segoe UI Semibold", 9),
+            command=self._review_transcription_fixes,
+            relief="flat",
+            bd=0,
+            padx=10,
+            pady=6,
+        )
+        self.review_fixes_btn.pack(side="left", padx=6)
+
         center_frame = tk.Frame(bot, bg=self._colors["panel"])
         center_frame.pack(side="left", expand=True, fill="x", padx=12)
 
@@ -2128,6 +2143,95 @@ class App(tk.Tk):
             messagebox.showerror(
                 "Cleanup Failed", f"Failed to clean workspace: {str(e)}"
             )
+
+    def _review_transcription_fixes(self):
+        """Show minimal dialog to review and approve pending transcription fixes."""
+        try:
+            from dubber.transcriber import get_pending_fixes, approve_fixes
+
+            pending = get_pending_fixes()
+            if not pending:
+                messagebox.showinfo(
+                    "No Fixes", "No pending transcription fixes to review."
+                )
+                return
+
+            # Create simple dialog
+            dialog = tk.Toplevel(self)
+            dialog.title("Review Transcription Fixes")
+            dialog.geometry("400x300")
+            dialog.transient(self)
+            dialog.grab_set()
+
+            tk.Label(
+                dialog,
+                text=f"Pending fixes ({len(pending)}):",
+                font=("Segoe UI", 10, "bold"),
+            ).pack(pady=(10, 5))
+
+            # Listbox with fixes
+            listbox = tk.Listbox(dialog, width=50, height=10)
+            listbox.pack(padx=10, pady=5, fill="both", expand=True)
+
+            for word, correction in pending.items():
+                listbox.insert(tk.END, f"'{word}' → '{correction}'")
+
+            # Button frame
+            btn_frame = tk.Frame(dialog)
+            btn_frame.pack(pady=10)
+
+            def approve_selected():
+                selected = listbox.curselection()
+                if not selected:
+                    messagebox.showwarning(
+                        "No Selection", "Please select fixes to approve."
+                    )
+                    return
+
+                words_to_approve = {}
+                for idx in selected:
+                    item = listbox.get(idx)
+                    if "→" in item:
+                        parts = item.split("→")
+                        if len(parts) == 2:
+                            word = parts[0].strip().strip("'")
+                            correction = parts[1].strip().strip("'")
+                            words_to_approve[word] = correction
+
+                if words_to_approve:
+                    count = approve_fixes(words_to_approve)
+                    messagebox.showinfo("Success", f"Approved {count} fix(es).")
+                    dialog.destroy()
+
+            def approve_all():
+                count = approve_fixes(pending)
+                messagebox.showinfo("Success", f"Approved all {count} fix(es).")
+                dialog.destroy()
+
+            tk.Button(
+                btn_frame,
+                text="Approve Selected",
+                command=approve_selected,
+                bg=self._colors["success"],
+                fg="white",
+            ).pack(side="left", padx=5)
+
+            tk.Button(
+                btn_frame,
+                text="Approve All",
+                command=approve_all,
+                bg=self._colors["accent"],
+                fg="white",
+            ).pack(side="left", padx=5)
+
+            tk.Button(
+                btn_frame,
+                text="Close",
+                command=dialog.destroy,
+            ).pack(side="left", padx=5)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to review fixes: {str(e)}")
 
     def _save_keys(self):
         to_save = {}
