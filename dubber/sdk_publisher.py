@@ -6,6 +6,7 @@ Replaces complex custom publishing with official SDK
 import os
 import mimetypes
 import subprocess
+import time
 from zernio import (
     Zernio,
     ZernioAPIError,
@@ -16,8 +17,12 @@ from zernio import (
 )
 from dubber.config import get_platform_accounts
 from dubber.bluesky_poster import get_bluesky_poster
+from dubber.publish_guard import reserve_publish_attempt
 from dubber.youtube_poster import get_selected_youtube_targets, publish_direct_youtube
 from dubber.utils import log, PLATFORM_LIMITS
+
+TWITTER_RETRY_ATTEMPTS = 3
+TWITTER_RETRY_BACKOFF_SECONDS = (5, 15)
 
 
 def _dedupe_platform_names(platforms):
@@ -149,6 +154,7 @@ def _probe_video_duration_seconds(path):
 
 def _publish_direct_bluesky(
     content,
+    guard_media_path,
     progress_cb=None,
     total_platforms=1,
     done_offset=0,
@@ -162,6 +168,57 @@ def _publish_direct_bluesky(
     poster = get_bluesky_poster()
     if not getattr(poster, "enabled", False):
         msg = "Skipped: direct Bluesky credentials are missing or login failed."
+        log("BLUESKY", msg)
+        if progress_cb:
+            progress_cb(done_offset + 1, total_platforms, "bluesky", "skipped")
+        return {
+            "bluesky": {
+                "status": "skipped",
+                "platform": "bluesky",
+                "error": msg,
+                "error_message": msg,
+            }
+        }
+
+    reserve = reserve_publish_attempt(
+        guard_media_path,
+        {"bluesky": {"caption": content}},
+        "bluesky",
+        note="Direct Bluesky publish reserved",
+    )
+
+
+def _is_twitter_retryable_result(result):
+    """Return True for transient X/Twitter media upload failures worth retrying."""
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("platform", "")).strip().lower() != "twitter":
+        return False
+
+    status = str(result.get("status", "")).strip().lower()
+    error_text = str(
+        result.get("error")
+        or result.get("error_message")
+        or ""
+    ).strip().lower()
+
+    transient_markers = (
+        "service unavailable",
+        '"status":503',
+        "status 503",
+        "chunked upload append",
+        "media upload failed",
+        "temporarily unavailable",
+        "upstream connect error",
+    )
+    return status in {"error", "pending"} and any(
+        marker in error_text for marker in transient_markers
+    )
+    if reserve.get("blocked"):
+        msg = (
+            f"Skipped duplicate publish attempt: previous {reserve.get('status')} "
+            f"at {reserve.get('timestamp')}"
+        )
         log("BLUESKY", msg)
         if progress_cb:
             progress_cb(done_offset + 1, total_platforms, "bluesky", "skipped")
@@ -235,6 +292,26 @@ def _publish_direct_youtube_accounts(
         youtube_description = "Published via AutoDubber"
 
     for idx, alias in enumerate(youtube_targets, start=1):
+        reserve = reserve_publish_attempt(
+            video_path,
+            captions,
+            alias,
+            note="Direct YouTube publish reserved",
+        )
+        if reserve.get("blocked"):
+            msg = (
+                f"Skipped duplicate publish attempt: previous {reserve.get('status')} "
+                f"at {reserve.get('timestamp')}"
+            )
+            results[alias] = {
+                "status": "skipped",
+                "platform": alias,
+                "error": msg,
+                "error_message": msg,
+            }
+            if progress_cb:
+                progress_cb(done_offset + idx, total_platforms, alias, "skipped")
+            continue
         if progress_cb:
             progress_cb(done_offset + idx - 1, total_platforms, alias, "posting")
         result = publish_direct_youtube(
@@ -312,25 +389,50 @@ def _run_single_platform_publish(
 ):
     """Publish a single platform and normalize the result using existing handlers."""
     platform_name = platform_entry["platform"]
+    platform_key = str(platform_name).strip().lower()
 
     try:
-        post_result = _publish_single_platform(
-            api_key,
-            platform_entry,
-            media_items,
-            platform_specific_contents,
-            default_content,
-            publish_now,
-            scheduled_for,
+        attempts = (
+            TWITTER_RETRY_ATTEMPTS if platform_key == "twitter" else 1
         )
-        parsed = _extract_publish_results(
-            post_result,
-            [platform_name],
-            progress_cb=progress_cb,
-            done=processed_count,
-            total=total_platforms,
-        )
-        results.update(parsed)
+        for attempt in range(1, attempts + 1):
+            post_result = _publish_single_platform(
+                api_key,
+                platform_entry,
+                media_items,
+                platform_specific_contents,
+                default_content,
+                publish_now,
+                scheduled_for,
+            )
+            parsed = _extract_publish_results(
+                post_result,
+                [platform_name],
+                progress_cb=progress_cb,
+                done=processed_count,
+                total=total_platforms,
+            )
+
+            retryable = _is_twitter_retryable_result(parsed.get(platform_name))
+            if not retryable or attempt >= attempts:
+                results.update(parsed)
+                break
+
+            wait_seconds = TWITTER_RETRY_BACKOFF_SECONDS[min(
+                attempt - 1, len(TWITTER_RETRY_BACKOFF_SECONDS) - 1
+            )]
+            err_text = parsed.get(platform_name, {}).get("error_message") or "retryable Twitter publish failure"
+            log(
+                "PUBLISH",
+                f"  ⚠️ twitter transient failure on attempt {attempt}/{attempts}: {err_text}",
+            )
+            log(
+                "PUBLISH",
+                f"  🔁 Retrying twitter publish in {wait_seconds}s...",
+            )
+            if progress_cb:
+                progress_cb(processed_count, total_platforms, platform_name, "posting")
+            time.sleep(wait_seconds)
     except ZernioAuthenticationError as exc:
         log("PUBLISH", f"  ❌ Authentication failed: Invalid API key - {exc}")
         raise ZernioAuthenticationError(
@@ -556,7 +658,9 @@ def _extract_publish_results(
                 if status_l == "published":
                     progress_cb(min(done + i + 1, total), total, platform_name, "ok")
                 elif duplicate_live_like:
-                    progress_cb(min(done + i + 1, total), total, platform_name, "ok")
+                    progress_cb(
+                        min(done + i + 1, total), total, platform_name, "likely_live"
+                    )
                 elif bluesky_unconfirmed:
                     progress_cb(
                         min(done + i + 1, total), total, platform_name, "unconfirmed"
@@ -575,7 +679,7 @@ def _extract_publish_results(
                 or (post_id and post_id != "unknown")
             )
             if duplicate_live_like:
-                success = True
+                success = False
             elif bluesky_unconfirmed:
                 success = False
 
@@ -621,13 +725,13 @@ def _extract_publish_results(
                     error_message or f"Publish failed with status={status}"
                 )
 
-            if success:
-                log("PUBLISH", f"  ✅ {platform_name}: ok (ID: {post_id})")
-            elif duplicate_live_like:
+            if duplicate_live_like:
                 log(
                     "PUBLISH",
                     f"  ✅ {platform_name}: likely already live (duplicate response)",
                 )
+            elif success:
+                log("PUBLISH", f"  ✅ {platform_name}: ok (ID: {post_id})")
             elif bluesky_unconfirmed:
                 log("PUBLISH", f"  ⚠️ {platform_name}: unconfirmed (slow processing)")
             else:
@@ -834,6 +938,7 @@ def publish_with_sdk(
                     bluesky_video = None
             direct_bluesky_results = _publish_direct_bluesky(
                 bluesky_content,
+                bluesky_video or ((image_paths or [None])[0]),
                 progress_cb=progress_cb,
                 total_platforms=total_publish_targets,
                 done_offset=0,
@@ -885,23 +990,23 @@ def publish_with_sdk(
         if progress_cb:
             progress_cb(sdk_offset, total_publish_targets, "sdk", "initializing")
 
-        # Prepare media URLs - upload video if needed
-        media_urls = []
+        # Prepare media items - upload video/images if needed
+        media_items = []
         if upload_results:
             # Add main video
             main_video_url = upload_results.get("main_video")
             if main_video_url:
-                media_urls.append(main_video_url)
+                media_items.append({"type": "video", "url": main_video_url})
                 log("PUBLISH", f"  ✅ Main video: {main_video_url[:50]}...")
 
             # Add teaser videos
             for platform, teaser_url in upload_results.items():
                 if platform.startswith("teaser_") and teaser_url:
-                    media_urls.append(teaser_url)
+                    media_items.append({"type": "video", "url": teaser_url})
                     log("PUBLISH", f"  ✅ Teaser {platform}: {teaser_url[:50]}...")
 
-        # If no media URLs, we need to upload the video or images
-        if not media_urls and fallback_files:
+        # If no media items, we need to upload the video or images
+        if not media_items and fallback_files:
             log("PUBLISH", "🔄 No media URLs found, need to upload files...")
             log(
                 "PUBLISH",
@@ -944,7 +1049,7 @@ def publish_with_sdk(
                                 f"Upload response missing public URL: {result}"
                             )
 
-                    media_urls.append(video_url)  # Add single URL to list
+                    media_items.append({"type": "video", "url": video_url})
                     log("PUBLISH", f"  ✅ Main video uploaded: {video_url[:50]}...")
                 except Exception as e:
                     log("PUBLISH", f"  ❌ Upload failed: {e}")
@@ -979,7 +1084,7 @@ def publish_with_sdk(
                                     f"Upload response missing public URL: {result}"
                                 )
 
-                        media_urls.append(img_url)
+                        media_items.append({"type": "image", "url": img_url})
                         log("PUBLISH", f"  ✅ Main image uploaded: {img_url[:50]}...")
                     except Exception as e:
                         log("PUBLISH", f"  ❌ Upload failed: {e}")
@@ -1011,7 +1116,7 @@ def publish_with_sdk(
                                         f"Upload response missing public URL: {result}"
                                     )
 
-                            media_urls.append(img_url)
+                            media_items.append({"type": "image", "url": img_url})
                             log(
                                 "PUBLISH",
                                 f"  ✅ Uploaded additional image {i + 1}: {img_url[:50]}...",
@@ -1131,13 +1236,13 @@ def publish_with_sdk(
 
         log("PUBLISH", f"🚀 Creating post for {len(platform_list)} platforms...")
         log("PUBLISH", f"  Content: {default_content[:100]}...")
-        log("PUBLISH", f"  Media: {len(media_urls)} files")
+        log("PUBLISH", f"  Media: {len(media_items)} files")
         log("PUBLISH", f"  Platforms: {[p['platform'] for p in platform_list]}")
         log("PUBLISH", f"  Publish Now: {publish_now}")
 
         # Debug: Print the exact SDK call
-        if media_urls:
-            media_items_count = len(media_urls)
+        if media_items:
+            media_items_count = len(media_items)
             log(
                 "PUBLISH",
                 f"  SDK Call: client.posts.create(media_items={media_items_count} items, content={len(default_content)} chars, platforms={len(platform_list)} platforms)",
@@ -1148,11 +1253,6 @@ def publish_with_sdk(
                 f"  SDK Call: client.posts.create(content={len(default_content)} chars, platforms={len(platform_list)} platforms)",
             )
 
-        media_items = (
-            [{"type": "video", "url": url} for url in media_urls]
-            if media_urls
-            else None
-        )
         if not media_items:
             video_required_platforms = ["youtube", "tiktok"]
             platforms_without_media = [
@@ -1202,6 +1302,32 @@ def publish_with_sdk(
                 )
                 continue
             attempted_platforms.add(platform_key)
+
+            reserve = reserve_publish_attempt(
+                main_video_path
+                or (fallback_files.get("main_image") if fallback_files else None),
+                captions,
+                platform_name,
+                note="Zernio platform publish reserved",
+            )
+            if reserve.get("blocked"):
+                msg = (
+                    f"Skipped duplicate publish attempt: previous {reserve.get('status')} "
+                    f"at {reserve.get('timestamp')}"
+                )
+                log("PUBLISH", f"  ⚠️ {platform_name}: {msg}")
+                if progress_cb:
+                    progress_cb(
+                        processed_count + 1, total_platforms, platform_name, "skipped"
+                    )
+                results[platform_name] = {
+                    "status": "skipped",
+                    "platform": platform_name,
+                    "error": msg,
+                    "error_message": msg,
+                }
+                processed_count += 1
+                continue
 
             if progress_cb:
                 progress_cb(processed_count, total_platforms, platform_name, "posting")

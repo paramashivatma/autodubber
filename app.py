@@ -332,6 +332,37 @@ def run_dub_pipeline(
 ):
     reset_api_call_counts()
     try:
+        stage_weights = {
+            "download": 0.08,
+            "transcribe": 0.22,
+            "merge": 0.04,
+            "translate": 0.12,
+            "tts": 0.12,
+            "build_and_vision": 0.24,
+            "captions": 0.10,
+            "teasers": 0.08,
+        }
+        ordered_stages = list(stage_weights.keys())
+        cumulative = {}
+        total_weight = 0.0
+        for stage_name in ordered_stages:
+            cumulative[stage_name] = total_weight
+            total_weight += stage_weights[stage_name]
+
+        def _emit_stage_progress(stage_name, fraction=1.0):
+            if not progress_cb:
+                return
+            base = cumulative.get(stage_name, 0.0)
+            weight = stage_weights.get(stage_name, 0.0)
+            pct = round(
+                ((base + (weight * max(0.0, min(1.0, fraction)))) / total_weight) * 100
+            )
+            progress_cb(max(0, min(100, pct)))
+            log(
+                "PROGRESS",
+                f"Progress callback called: {pct}% ({stage_name} {fraction:.2f})",
+            )
+
         shutil.rmtree(WORKSPACE, ignore_errors=True)
         os.makedirs(WORKSPACE, exist_ok=True)
 
@@ -342,9 +373,7 @@ def run_dub_pipeline(
             video_path = video_input
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Not found: {video_path}")
-        if progress_cb:
-            progress_cb(5)
-            log("PROGRESS", "Progress callback called: 5%")
+        _emit_stage_progress("download", 1.0)
 
         # PARALLEL GROUP 1: BGM separation + Transcription run simultaneously
         bgm_path = None
@@ -370,11 +399,10 @@ def run_dub_pipeline(
 
             segs = transcribe_future.result()
 
-        if progress_cb:
-            progress_cb(30)
-            log("PROGRESS", "Progress callback called: 30%")
+        _emit_stage_progress("transcribe", 1.0)
         status_cb(_stage_text(2, "Merge segments"))
         segs = merge_short_segments(segs)
+        _emit_stage_progress("merge", 1.0)
         status_cb(_stage_text(3, "Translate"))
         if is_economy_mode():
             status_cb("ℹ Economy mode: translation uses Google-first routing.")
@@ -390,9 +418,7 @@ def run_dub_pipeline(
                     "Google Translate",
                 )
             )
-        if progress_cb:
-            progress_cb(43)
-            log("PROGRESS", "Progress callback called: 43%")
+        _emit_stage_progress("translate", 1.0)
 
         # PARALLEL GROUP 2: TTS/Video Build + Vision extraction run simultaneously
         status_cb(_stage_text(4, "Generate TTS"))
@@ -401,9 +427,7 @@ def run_dub_pipeline(
             voice=voice,
             output_dir=WORKSPACE,
         )
-        if progress_cb:
-            progress_cb(58)
-            log("PROGRESS", "Progress callback called: 58%")
+        _emit_stage_progress("tts", 1.0)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             build_future = pool.submit(
@@ -416,15 +440,13 @@ def run_dub_pipeline(
                 output_dir=WORKSPACE,
             )
             vision_future = pool.submit(
-                extract_vision, segs, gemini_vision_key, WORKSPACE, True
+                extract_vision, segs, gemini_vision_key, WORKSPACE, True, tgt_lang
             )
 
             build_future.result()  # wait for video build
             vision, vision_meta = vision_future.result()
 
-        if progress_cb:
-            progress_cb(78)
-            log("PROGRESS", "Progress callback called: 78%")
+        _emit_stage_progress("build_and_vision", 1.0)
         if vision_meta.get("used_fallback"):
             status_cb(
                 _backup_warning(
@@ -437,9 +459,7 @@ def run_dub_pipeline(
         if dub_only:
             status_cb("Dub-only mode complete. Output: workspace/output.mp4")
             _log_api_summary()
-            if progress_cb:
-                progress_cb(100)
-                log("PROGRESS", "Progress callback called: 100% (dub-only mode)")
+            _emit_stage_progress("teasers", 1.0)
             done_cb(success=True, msg="Dubbing complete.", pub_results={})
             return
 
@@ -453,9 +473,7 @@ def run_dub_pipeline(
             return_meta=True,
             selected_platforms=selected_platforms,
         )
-        if progress_cb:
-            progress_cb(88)
-            log("PROGRESS", "Progress callback called: 88%")
+        _emit_stage_progress("captions", 1.0)
         if caption_meta.get("used_fallback"):
             status_cb(
                 _backup_warning(
@@ -477,9 +495,7 @@ def run_dub_pipeline(
             teaser_path = teaser_paths.get("instagram")
         else:
             status_cb(_stage_text(8, "Skip teasers"))
-        if progress_cb:
-            progress_cb(93)
-            log("PROGRESS", "Progress callback called: 93%")
+        _emit_stage_progress("teasers", 1.0)
 
         status_cb(_stage_text(9, "Review captions"))
         _log_api_summary()
@@ -575,7 +591,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.23")
+        self.title("Video Dubber v1.24")
         self.geometry("700x720")
         self.minsize(620, 620)
         self.resizable(True, True)
@@ -695,15 +711,6 @@ class App(tk.Tk):
                 ("!selected", [1, 1, 1, 0]),
             ],
         )
-        style.configure(
-            "Modern.Horizontal.TProgressbar",
-            troughcolor=self._colors["panel"],
-            background=self._colors["accent"],
-            bordercolor=self._colors["border"],
-            lightcolor=self._colors["accent"],
-            darkcolor=self._colors["accent"],
-        )
-
     def _style_text_area(self, widget):
         widget.configure(
             bg=self._colors["input"],
@@ -1019,27 +1026,17 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-        self.progress_var = tk.StringVar(value="Ready")
         progress_frame = tk.Frame(self, bg=self._colors["panel"])
         progress_frame.pack(fill="x", padx=16, pady=(0, 4))
         self.progress_label = tk.Label(
             progress_frame,
-            textvariable=self.progress_var,
+            textvariable=self.status_var,
             fg=self._colors["muted"],
             bg=self._colors["panel"],
             font=("Segoe UI", 9),
-            width=18,
             anchor="w",
         )
-        self.progress_label.pack(side="left")
-        self.progress = ttk.Progressbar(
-            progress_frame,
-            mode="determinate",
-            maximum=100,
-            value=0,
-            style="Modern.Horizontal.TProgressbar",
-        )
-        self.progress.pack(side="right", fill="x", expand=True, padx=(8, 0))
+        self.progress_label.pack(side="left", fill="x", expand=True)
 
         self.nb = ttk.Notebook(self, style="Modern.TNotebook")
         self.nb.pack(fill="both", expand=True, padx=16, pady=6)
@@ -1874,7 +1871,6 @@ class App(tk.Tk):
                 self.flyer_results.insert(tk.END, "\n")
                 self.flyer_results.see(tk.END)
 
-            self.progress.stop()
             self.status_var.set("Review flyer captions — edit if needed, then approve.")
             flyer_dialog_captions = {
                 platform: publish_captions.get(platform, {"caption": ""})
@@ -1891,8 +1887,6 @@ class App(tk.Tk):
 
             # Start publishing
             self.status_var.set("Publishing flyer...")
-            self.progress["value"] = 0
-            self.progress_var.set("Progress: 0%")
             self._start_activity_mirror("flyer")
             _save_env(
                 {
@@ -1987,10 +1981,6 @@ class App(tk.Tk):
     def _flyer_publish_done(self, successful, total, results):
         """Handle flyer publishing completion"""
         self._stop_activity_mirror("flyer")
-        self.progress["value"] = 100 if successful else 0
-        self.progress_var.set(
-            "Progress: Complete ✓" if successful else "Progress: Failed ✗"
-        )
         self.flyer_results.insert(tk.END, "\n📊 Publish Results:\n")
         self.flyer_results.insert(tk.END, "=" * 40 + "\n")
         failure_lines = []
@@ -2259,8 +2249,6 @@ class App(tk.Tk):
             messagebox.showwarning("No input", "Paste a URL or browse for a video.")
             return
         self.run_btn.config(state="disabled")
-        self.progress["value"] = 0
-        self.progress_var.set("Progress: 0%")
         self.status_var.set("Validating API connections ...")
 
         selected = [p for p, v in self._plat_vars.items() if v.get()]
@@ -2302,8 +2290,6 @@ class App(tk.Tk):
                 f"⚠️ Some API checks failed:\n\n{msg}\n\nContinue anyway?",
             )
             if not proceed:
-                self.progress["value"] = 0
-                self.progress_var.set("Progress: Failed ✗")
                 self.status_var.set("Aborted — API validation failed")
                 self.run_btn.config(state="normal")
                 return
@@ -2326,13 +2312,6 @@ class App(tk.Tk):
         # Create custom status callback for dub results
         def dub_status_callback(message, progress_pct=None):
             def _apply():
-                if progress_pct is not None:
-                    self.progress["value"] = progress_pct
-                    self.progress_var.set(f"Progress: {progress_pct}%")
-                    log(
-                        "PROGRESS",
-                        f"Status callback progress: {progress_pct}% - {message}",
-                    )
                 # Keep status bar aligned with pipeline activity stages/warnings.
                 if str(message).startswith("Stage ") or str(message).startswith("⚠"):
                     self.status_var.set(message)
@@ -2340,12 +2319,7 @@ class App(tk.Tk):
             self.after(0, _apply)
 
         def progress_callback(pct):
-            def _apply():
-                self.progress["value"] = pct
-                self.progress_var.set(f"Progress: {pct}%")
-                log("PROGRESS", f"Progress bar updated to {pct}%")
-
-            self.after(0, _apply)
+            return None
 
         # Test callback immediately
         dub_status_callback("🔄 Initializing dub pipeline...")
@@ -2397,7 +2371,6 @@ class App(tk.Tk):
         done_cb,
         teaser_paths=None,
     ):
-        self.progress.stop()
         self.status_var.set("Review captions — edit if needed, then approve.")
 
         # Show review dialog (simplified without parallel uploads for now)
@@ -2463,8 +2436,6 @@ class App(tk.Tk):
                     except Exception:
                         pass
 
-        self.progress["value"] = 0
-        self.progress_var.set("Progress: 0%")
         self.status_var.set(_stage_text(10, "Publish"))
 
         # Thread-safe progress callback for status bar updates
@@ -2576,7 +2547,6 @@ class App(tk.Tk):
                     log("PUBLISH", f"⚠️ Publish guard update failed: {guard_error}")
 
                 self._queue_ui(lambda: self.run_btn.config(state="normal"))
-                self._queue_ui(self.progress.stop)
                 self._queue_ui(lambda: self.status_var.set(msg))
                 log("PUBLISH", f"✅ Publishing completed: {msg}")
                 _safe_done(
@@ -2586,7 +2556,6 @@ class App(tk.Tk):
             except Exception as e:
                 log("PUBLISH", f"❌ Publishing error: {e}")
                 self._queue_ui(lambda: self.run_btn.config(state="normal"))
-                self._queue_ui(self.progress.stop)
                 self._queue_ui(lambda: self.status_var.set(f"Publishing failed: {e}"))
                 _safe_done(
                     success=False,
@@ -2599,10 +2568,6 @@ class App(tk.Tk):
         threading.Thread(target=_publish, daemon=True).start()
 
     def _done_cb(self, success, msg, pub_results=None):
-        self.progress["value"] = 100 if success else 0
-        self.progress_var.set(
-            "Progress: Complete ✓" if success else "Progress: Failed ✗"
-        )
         self.status_var.set(msg)
         self.run_btn.config(state="normal")
         if pub_results:
@@ -2643,9 +2608,6 @@ class App(tk.Tk):
 
     def _update_progress(self, done, total, platform, status):
         """Thread-safe progress update for publishing"""
-        # Debug logging
-        print(f"[STATUS] Progress update: {platform} -> {status} ({done}/{total})")
-
         if status == "posting":
             self.status_var.set(f"Posting to {_display_platform_name(platform)} ...")
         elif status == "ok":
