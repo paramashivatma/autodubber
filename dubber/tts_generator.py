@@ -27,15 +27,16 @@ def _run_async(coro):
         asyncio.set_event_loop(_loop)
     try:
         return _loop.run_until_complete(coro)
-    except Exception:
-        _loop.close()
-        _loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_loop)
-        return _loop.run_until_complete(coro)
+    except Exception as e:
+        log("TTS", f"  Coroutine error: {type(e).__name__}: {str(e)[:200]}")
+        raise e
 
 
 async def _synthesize(text, voice, path, rate="+0%"):
-    await edge_tts.Communicate(text, voice, rate=rate).save(path)
+    log("TTS", f"  Starting synthesis: voice={voice}, text_len={len(text)}")
+    communicate = edge_tts.Communicate(text, voice, rate=rate)
+    await communicate.save(path)
+    log("TTS", f"  Synthesis complete: {path}")
 
 
 def _sanitize_text(text):
@@ -150,49 +151,72 @@ def generate_tts_audio(
 
         # Edge TTS synthesis
         for voice_idx, current_voice in enumerate(voices):
-            for voice_idx, current_voice in enumerate(voices):
-                if voice_idx > 0:
-                    log("TTS", f"  Trying fallback voice: {current_voice}")
+            if voice_idx > 0:
+                log("TTS", f"  Trying fallback voice: {current_voice}")
+                # Add delay before fallback to give primary voice time to recover
+                time.sleep(3)
 
-                # Exponential backoff: 5 attempts with increasing delays
-                for attempt in range(1, 6):
-                    try:
-                        _run_async(_synthesize(text, current_voice, clip, rate="+0%"))
+            # More attempts for primary voice (8), fewer for fallback (5)
+            max_attempts = 8 if voice_idx == 0 else 5
+            log("TTS", f"  Voice: {current_voice}, max attempts: {max_attempts}")
 
-                        # Verify file was created
-                        if os.path.exists(clip) and os.path.getsize(clip) > 100:
-                            success = True
-                            if voice_idx > 0:
-                                log(
-                                    "TTS",
-                                    f"  Success with fallback voice: {current_voice}",
-                                )
-                            break
-                        else:
-                            raise RuntimeError("Generated file is empty or too small")
+            log("TTS", f"  About to enter attempt loop, max_attempts={max_attempts}")
+            for attempt in range(1, max_attempts + 1):
+                log("TTS", f"  Attempt {attempt}/{max_attempts} for {current_voice}")
+                try:
+                    log("TTS", f"  Creating coroutine...")
+                    coro = _synthesize(text, current_voice, clip, rate="+0%")
+                    log("TTS", f"  Running coroutine...")
+                    _run_async(coro)
+                    log("TTS", f"  Coroutine completed")
 
-                    except Exception as e:
-                        last_error = e
-                        error_msg = str(e)
+                    # Verify file was created
+                    if os.path.exists(clip) and os.path.getsize(clip) > 100:
+                        success = True
+                        if voice_idx > 0:
+                            log(
+                                "TTS",
+                                f"  Success with fallback voice: {current_voice}",
+                            )
+                        break
+                    else:
+                        log(
+                            "TTS",
+                            f"  File check failed: exists={os.path.exists(clip)}, size={os.path.getsize(clip) if os.path.exists(clip) else 0}",
+                        )
+                        raise RuntimeError("Generated file is empty or too small")
 
-                        # Log specific error types
-                        if "403" in error_msg or "Forbidden" in error_msg:
-                            log("TTS", f"  Attempt {attempt}: Rate limited (403)")
-                        elif "404" in error_msg or "Not Found" in error_msg:
-                            log("TTS", f"  Attempt {attempt}: Voice not found (404)")
-                        elif "timeout" in error_msg.lower():
-                            log("TTS", f"  Attempt {attempt}: Timeout")
-                        else:
-                            log("TTS", f"  Attempt {attempt}: {error_msg[:100]}")
+                except Exception as e:
+                    last_error = e
+                    error_msg = str(e)
 
-                        # Exponential backoff: 2s, 4s, 8s, 16s
-                        if attempt < 5:
-                            delay = 2**attempt
-                            log("TTS", f"  Retrying in {delay}s...")
-                            time.sleep(delay)
+                    # Log specific error types
+                    if "403" in error_msg or "Forbidden" in error_msg:
+                        log(
+                            "TTS",
+                            f"  Attempt {attempt}/{max_attempts}: Rate limited (403)",
+                        )
+                    elif "404" in error_msg or "Not Found" in error_msg:
+                        log(
+                            "TTS",
+                            f"  Attempt {attempt}/{max_attempts}: Voice not found (404)",
+                        )
+                    elif "timeout" in error_msg.lower():
+                        log("TTS", f"  Attempt {attempt}/{max_attempts}: Timeout")
+                    else:
+                        log(
+                            "TTS",
+                            f"  Attempt {attempt}/{max_attempts}: {error_msg[:100]}",
+                        )
 
-                if success:
-                    break
+                    # Exponential backoff: 2s, 4s, 8s, 16s, 32s, 64s, 128s
+                    if attempt < max_attempts:
+                        delay = min(2**attempt, 30)  # Cap at 30 seconds
+                        log("TTS", f"  Retrying in {delay}s...")
+                        time.sleep(delay)
+
+            if success:
+                break
 
         if not success:
             log("TTS", f"  FAILED seg#{seg_id} after all attempts and fallbacks")

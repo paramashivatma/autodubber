@@ -3,6 +3,7 @@ import re
 from tkinter import filedialog, ttk, messagebox
 
 import json
+import sys
 
 try:
     from PIL import Image, ImageTk
@@ -574,7 +575,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.22")
+        self.title("Video Dubber v1.23")
         self.geometry("700x720")
         self.minsize(620, 620)
         self.resizable(True, True)
@@ -2676,5 +2677,127 @@ class App(tk.Tk):
                 self.status_var.set(f"Processing {platform}...")
 
 
+def run_cli():
+    """
+    CLI mode:
+    python app.py input.mp4 output.mp4
+    """
+
+    if len(sys.argv) < 3:
+        print(
+            "Usage: python app.py input.mp4 output.mp4 [--voice VOICE_LABEL] [--target-lang LANGUAGE]"
+        )
+        print(
+            'Example: python app.py input.mp4 output.mp4 --voice "Gujarati - Niranjan (M)" --target-lang Gujarati'
+        )
+        sys.exit(1)
+
+    input_video = sys.argv[1]
+    output_video = sys.argv[2]
+
+    if not os.path.exists(input_video):
+        print("ERROR: Input file not found")
+        sys.exit(1)
+
+    print(f"[CLI] Starting dub for: {input_video}")
+
+    # Parse optional arguments
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Dub video to target language")
+    parser.add_argument("input", help="Input video file")
+    parser.add_argument("output", help="Output video file")
+    parser.add_argument(
+        "--voice",
+        default="Gujarati - Niranjan (M)",
+        help="TTS voice (default: Gujarati - Niranjan (M))",
+    )
+    parser.add_argument(
+        "--target-lang", default="Gujarati", help="Target language (default: Gujarati)"
+    )
+    parser.add_argument(
+        "--source-lang", default="English", help="Source language (default: English)"
+    )
+
+    args = parser.parse_args()
+
+    # Get voice ID from label
+    voice_label = args.voice
+    if voice_label in VOICES:
+        voice = VOICES[voice_label]
+    else:
+        # Try to find by partial match
+        matching = [v for v in VOICES.keys() if voice_label.lower() in v.lower()]
+        if matching:
+            voice = VOICES[matching[0]]
+            print(f"[CLI] Using voice: {matching[0]}")
+        else:
+            print(f"[CLI] Warning: Voice '{voice_label}' not found, using default")
+            voice = VOICES["Gujarati - Niranjan (M)"]
+
+    model_size = "large"
+    src_lang = LANGUAGES.get(args.source_lang, "en")
+    tgt_lang = LANGUAGES.get(args.target_lang, "gu")
+
+    print(f"[CLI] Voice: {voice}, Source: {src_lang}, Target: {tgt_lang}")
+
+    # Flags
+    use_bgm = True
+    bgm_volume = 0.35
+
+    # API keys (read from env already handled internally)
+    gemini = get_gemini_api_key()
+    mistral = get_mistral_api_key()
+    zernio = get_zernio_api_key()
+
+    # No publishing in CLI mode
+    selected_platforms = []
+    publish_now = False
+    scheduled_for = None
+
+    def status_cb(msg):
+        print(f"[STATUS] {msg}")
+
+    def caption_ready_cb(**kwargs):
+        # Skip review + publishing completely
+        pass
+
+    def done_cb(success, msg, pub_results=None):
+        print(f"[DONE] {msg}")
+        sys.exit(0 if success else 1)
+
+    try:
+        run_dub_pipeline(
+            video_input=input_video,
+            voice=voice,
+            model_size=model_size,
+            src_lang=src_lang,
+            tgt_lang=tgt_lang,
+            use_bgm=use_bgm,
+            bgm_volume=bgm_volume,
+            gemini_vision_key=gemini,
+            mistral_key=mistral,
+            zernio_key=zernio,
+            selected_platforms=selected_platforms,
+            publish_now=publish_now,
+            scheduled_for=scheduled_for,
+            auto_teaser=False,
+            manual_teaser_path="",
+            image_paths=[],
+            status_cb=status_cb,
+            caption_ready_cb=caption_ready_cb,
+            done_cb=done_cb,
+            dub_only=True,  # 🔥 IMPORTANT: skip captions/publishing
+            progress_cb=lambda p: print(f"[PROGRESS] {p}%"),
+        )
+
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    App().mainloop()
+    if len(sys.argv) > 1:
+        run_cli()
+    else:
+        App().mainloop()

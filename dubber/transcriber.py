@@ -7,6 +7,29 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3"
 MAX_FILE_MB = 25  # Groq limit
 
+
+def _ffprobe_duration(path):
+    """Get video duration using ffprobe."""
+    r = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return float(r.stdout.strip())
+    except ValueError:
+        raise RuntimeError(f"ffprobe failed for: {path}\n{r.stderr}")
+
+
 # Post-processing dictionary for common transcription errors
 # Maps incorrect words (lowercase) to correct words
 TRANSCRIPTION_FIXES = {
@@ -496,6 +519,85 @@ def transcribe_audio(
     log("TRANSCRIBE", "Running auto-learn for transcription fixes...")
     full_text = " ".join(seg.get("text", "") for seg in segments)
     _auto_learn_from_transcription(full_text)
+
+    # Check for tail segment (remaining video after last segment)
+    try:
+        total_duration = _ffprobe_duration(video_path)
+        if segments:
+            last_segment_end = max(seg.get("end", 0) for seg in segments)
+            tail_duration = total_duration - last_segment_end
+
+            # Add tail segment if there's significant remaining video (>0.5s)
+            if tail_duration > 0.5:
+                log(
+                    "TRANSCRIBE",
+                    f"Extracting tail segment audio ({last_segment_end:.2f}s to {total_duration:.2f}s)...",
+                )
+
+                # Extract tail audio
+                tail_audio_path = os.path.join(output_dir, "tail_audio.wav")
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-ss",
+                        str(last_segment_end),
+                        "-i",
+                        wav_path,
+                        "-t",
+                        str(tail_duration),
+                        "-ar",
+                        "16000",
+                        "-ac",
+                        "1",
+                        tail_audio_path,
+                    ],
+                    capture_output=True,
+                    timeout=30,
+                )
+
+                # Transcribe tail audio
+                tail_text = ""
+                if (
+                    os.path.exists(tail_audio_path)
+                    and os.path.getsize(tail_audio_path) > 1000
+                ):
+                    log("TRANSCRIBE", "Transcribing tail segment...")
+                    try:
+                        if groq_key:
+                            tail_result, _ = _groq_transcribe(
+                                groq_key, tail_audio_path, None, output_dir
+                            )
+                            if tail_result:
+                                tail_text = tail_result[0].get("text", "")
+                        else:
+                            tail_result, _ = _local_transcribe(
+                                tail_audio_path, language, model_size, output_dir
+                            )
+                            if tail_result:
+                                tail_text = tail_result[0].get("text", "")
+
+                        log("TRANSCRIBE", f"Tail segment text: {tail_text[:50]}...")
+                    except Exception as e:
+                        log("TRANSCRIBE", f"Tail transcription failed: {e}")
+                        tail_text = "..."
+
+                # Add tail segment
+                next_id = max(seg.get("id", 0) for seg in segments) + 1
+                tail_segment = {
+                    "id": next_id,
+                    "start": last_segment_end,
+                    "end": total_duration,
+                    "text": tail_text,
+                    "is_tail": True,  # Flag to identify tail segment
+                }
+                segments.append(tail_segment)
+                log(
+                    "TRANSCRIBE",
+                    f"Added tail segment: {last_segment_end:.2f}s to {total_duration:.2f}s ({tail_duration:.2f}s)",
+                )
+    except Exception as e:
+        log("TRANSCRIBE", f"Could not check for tail segment: {e}")
 
     out_path = os.path.join(output_dir, "transcript.json")
     with open(out_path, "w", encoding="utf-8") as f:

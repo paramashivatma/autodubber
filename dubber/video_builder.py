@@ -202,12 +202,12 @@ def build_dubbed_video(
             f"  seg#{seg['id']}: orig={orig_dur:.2f}s tts={tts_dur:.2f}s gap={gap:.2f}s",
         )
 
-        # Always match video to TTS duration (with 1.5x cap)
-        target_dur = min(tts_dur, orig_dur * 1.5)  # Cap at 1.5x
+        # Match video to TTS duration (no cap - prioritize audio quality)
+        target_dur = tts_dur
         stretch = target_dur / orig_dur
 
         if stretch > 1.05:  # Stretch video (TTS > Original)
-            log("BUILD", f"    → stretch {stretch:.3f}x (capped at 1.5x)")
+            log("BUILD", f"    → stretch {stretch:.3f}x to match TTS")
             stretched = _slow(seg_raw, seg_out, stretch)
             if not stretched:
                 log("BUILD", f"    → WARNING: stretch failed, A/V may be out of sync")
@@ -255,10 +255,13 @@ def build_dubbed_video(
 
         audio_path = seg.get("audio_path")
         if audio_path and os.path.exists(audio_path):
-            # Video now matches TTS duration, so no padding needed
-            overlay_dur = tts_dur
+            # Trim audio to match video duration to prevent overlap with next segment
+            overlay_dur = min(tts_dur, actual_seg_dur)
             positions.append((audio_start, overlay_dur, audio_path))
-            log("BUILD", f"    → audio overlay at {audio_start:.2f}s")
+            log(
+                "BUILD",
+                f"    → audio overlay at {audio_start:.2f}s for {overlay_dur:.2f}s",
+            )
         else:
             log("BUILD", f"    → WARNING: No audio path for seg#{seg['id']}")
 
