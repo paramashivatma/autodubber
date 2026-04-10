@@ -19,7 +19,6 @@ from dubber import (
     build_dubbed_video,
     extract_vision,
     generate_all_captions,
-    generate_teasers,
     log,
     find_ambiguous_repost_blocks,
     record_ambiguous_publish_results,
@@ -340,7 +339,7 @@ def run_dub_pipeline(
             "tts": 0.12,
             "build_and_vision": 0.24,
             "captions": 0.10,
-            "teasers": 0.08,
+            "shared_media": 0.08,
         }
         ordered_stages = list(stage_weights.keys())
         cumulative = {}
@@ -459,7 +458,7 @@ def run_dub_pipeline(
         if dub_only:
             status_cb("Dub-only mode complete. Output: workspace/output.mp4")
             _log_api_summary()
-            _emit_stage_progress("teasers", 1.0)
+            _emit_stage_progress("shared_media", 1.0)
             done_cb(success=True, msg="Dubbing complete.", pub_results={})
             return
 
@@ -483,26 +482,19 @@ def run_dub_pipeline(
                 )
             )
 
-        teaser_path = None
-        teaser_paths = {}
-        if manual_teaser_path and os.path.exists(manual_teaser_path):
-            status_cb(_stage_text(8, "Use manual teaser"))
-            teaser_path = manual_teaser_path
-            teaser_paths = {p: manual_teaser_path for p in PLATFORMS}
-        elif auto_teaser:
-            status_cb(_stage_text(8, "Generate teasers"))
-            teaser_paths = generate_teasers(OUTPUT_FILE, segs, captions, WORKSPACE)
-            teaser_path = teaser_paths.get("instagram")
-        else:
-            status_cb(_stage_text(8, "Skip teasers"))
-        _emit_stage_progress("teasers", 1.0)
+        if auto_teaser or manual_teaser_path:
+            log(
+                "PIPELINE",
+                "Teaser clip generation is disabled in the standard publish flow. "
+                "Using the shared dubbed video for every platform.",
+            )
+        status_cb(_stage_text(8, "Use shared dubbed video"))
+        _emit_stage_progress("shared_media", 1.0)
 
         status_cb(_stage_text(9, "Review captions"))
         _log_api_summary()
         caption_ready_cb(
             captions=captions,
-            teaser_path=teaser_path,
-            teaser_paths=teaser_paths,
             video_path=OUTPUT_FILE,
             zernio_key=zernio_key,
             selected_platforms=selected_platforms,
@@ -591,7 +583,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.24")
+        self.title("Video Dubber v1.25")
         self.geometry("700x720")
         self.minsize(620, 620)
         self.resizable(True, True)
@@ -988,6 +980,7 @@ class App(tk.Tk):
 
     def _build_ui(self):
         pad = {"padx": 12, "pady": 6}
+        self.status_var = tk.StringVar(value=f"Ready. {mode_label()}.")
 
         header = tk.Frame(self, bg=self._colors["panel"], relief="solid", bd=1)
         header.pack(fill="x", padx=16, pady=(14, 8))
@@ -1136,7 +1129,7 @@ class App(tk.Tk):
         self.dub_only_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
             self.t_dub,
-            text="Dub only — skip captions, teasers & publishing",
+            text="Dub only — skip platform captions and publishing",
             variable=self.dub_only_var,
             font=("Segoe UI", 9),
         ).grid(row=next_row + 7, column=0, columnspan=3, sticky="w", **pad)
@@ -1221,7 +1214,7 @@ class App(tk.Tk):
             self.t_media,
             row=2,
             title="Pipeline mode:",
-            hint="This also affects flyer OCR/caption generation fallbacks and teaser generation cost.",
+            hint="This also affects flyer OCR and caption-generation fallbacks.",
         )
 
         ttk.Separator(self.t_media, orient="horizontal").grid(
@@ -1464,7 +1457,6 @@ class App(tk.Tk):
         self._set_flyer_publish_ready(False)
 
         status_frame = tk.Frame(self, bg=self._colors["panel"], relief="solid", bd=1)
-        self.status_var = tk.StringVar(value=f"Ready. {mode_label()}.")
         status_label = tk.Label(
             status_frame,
             textvariable=self.status_var,
@@ -2306,7 +2298,7 @@ class App(tk.Tk):
         if to_save:
             _save_env(to_save)
 
-        # No manual teaser needed for dub pipeline - use auto generation
+        # Teaser clips are disabled for the shared-video publish flow.
         manual_teaser = ""
 
         # Create custom status callback for dub results
@@ -2343,8 +2335,8 @@ class App(tk.Tk):
                 selected,
                 self.dub_publish_now_var.get(),
                 sched,
-                True,
-                manual_teaser,  # auto_teaser=True, manual_teaser=""
+                False,
+                manual_teaser,
                 list(self._image_paths),
                 dub_status_callback,
                 self._caption_ready_cb,
@@ -2361,17 +2353,17 @@ class App(tk.Tk):
     def _show_review(
         self,
         captions,
-        teaser_path,
-        video_path,
-        zernio_key,
-        selected_platforms,
-        publish_now,
-        scheduled_for,
-        image_paths,
-        done_cb,
+        teaser_path=None,
+        video_path="",
+        zernio_key="",
+        selected_platforms=None,
+        publish_now=True,
+        scheduled_for=None,
+        image_paths=None,
+        done_cb=None,
         teaser_paths=None,
     ):
-        self.status_var.set("Review captions — edit if needed, then approve.")
+        self.status_var.set("Review platform-specific captions, then approve.")
 
         # Show review dialog (simplified without parallel uploads for now)
         dlg = ReviewDialog(
@@ -2452,8 +2444,6 @@ class App(tk.Tk):
                     platforms=selected_platforms,
                     scheduled_for=scheduled_for if not publish_now else None,
                     publish_now=publish_now,
-                    teaser_path=teaser_path,
-                    teaser_paths=teaser_paths,
                     image_paths=image_paths,
                     output_dir=WORKSPACE,
                     progress_cb=_thread_safe_progress,

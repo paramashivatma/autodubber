@@ -186,34 +186,6 @@ def _publish_direct_bluesky(
         "bluesky",
         note="Direct Bluesky publish reserved",
     )
-
-
-def _is_twitter_retryable_result(result):
-    """Return True for transient X/Twitter media upload failures worth retrying."""
-    if not isinstance(result, dict):
-        return False
-    if str(result.get("platform", "")).strip().lower() != "twitter":
-        return False
-
-    status = str(result.get("status", "")).strip().lower()
-    error_text = str(
-        result.get("error")
-        or result.get("error_message")
-        or ""
-    ).strip().lower()
-
-    transient_markers = (
-        "service unavailable",
-        '"status":503',
-        "status 503",
-        "chunked upload append",
-        "media upload failed",
-        "temporarily unavailable",
-        "upstream connect error",
-    )
-    return status in {"error", "pending"} and any(
-        marker in error_text for marker in transient_markers
-    )
     if reserve.get("blocked"):
         msg = (
             f"Skipped duplicate publish attempt: previous {reserve.get('status')} "
@@ -263,6 +235,34 @@ def _is_twitter_retryable_result(result):
                 "error_message": str(exc),
             }
         }
+
+
+def _is_twitter_retryable_result(result):
+    """Return True for transient X/Twitter media upload failures worth retrying."""
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("platform", "")).strip().lower() != "twitter":
+        return False
+
+    status = str(result.get("status", "")).strip().lower()
+    error_text = str(
+        result.get("error")
+        or result.get("error_message")
+        or ""
+    ).strip().lower()
+
+    transient_markers = (
+        "service unavailable",
+        '"status":503',
+        "status 503",
+        "chunked upload append",
+        "media upload failed",
+        "temporarily unavailable",
+        "upstream connect error",
+    )
+    return status in {"error", "pending"} and any(
+        marker in error_text for marker in transient_markers
+    )
 
 
 def _publish_direct_youtube_accounts(
@@ -1376,9 +1376,6 @@ def publish_to_platforms_sdk(
     platforms,
     scheduled_for=None,
     publish_now=True,
-    teaser_path=None,
-    teaser_paths=None,
-    teaser_captions=None,
     image_paths=None,
     output_dir="workspace",
     progress_cb=None,
