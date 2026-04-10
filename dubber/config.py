@@ -28,13 +28,26 @@ def read_env_file(path=ENV_FILE) -> Dict[str, str]:
     if not env_path.exists():
         return env
 
+    try:
+        from dotenv import dotenv_values
+
+        parsed = dotenv_values(env_path)
+        for key, value in parsed.items():
+            key = str(key or "").strip()
+            value = _clean(value)
+            if key and value:
+                env[key] = value
+        return env
+    except Exception:
+        pass
+
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        value = value.strip()
+        value = value.strip().strip("'").strip('"')
         if key and value:
             env[key] = value
     return env
@@ -63,8 +76,32 @@ def save_env_updates(updates: Dict[str, str], path=ENV_FILE) -> Dict[str, str]:
             merged[clean_key] = clean_value
 
     env_path = Path(path)
-    lines = [f"{key}={merged[key]}\n" for key in sorted(merged.keys())]
-    env_path.write_text("".join(lines), encoding="utf-8")
+    existing_lines = []
+    if env_path.exists():
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    emitted = set()
+    output_lines = []
+    for raw_line in existing_lines:
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in raw_line:
+            output_lines.append(raw_line)
+            continue
+        key, _ = raw_line.split("=", 1)
+        clean_key = key.strip()
+        if clean_key in merged:
+            output_lines.append(f"{clean_key}={merged[clean_key]}")
+            emitted.add(clean_key)
+        else:
+            output_lines.append(raw_line)
+
+    missing_keys = [key for key in sorted(merged.keys()) if key not in emitted]
+    if missing_keys and output_lines and output_lines[-1].strip():
+        output_lines.append("")
+    for key in missing_keys:
+        output_lines.append(f"{key}={merged[key]}")
+
+    env_path.write_text("\n".join(output_lines).rstrip() + "\n", encoding="utf-8")
     sync_process_env(merged)
     return merged
 
@@ -89,6 +126,55 @@ def get_mistral_api_key(explicit=None) -> str:
     if explicit_value:
         return explicit_value
     return first_env("MISTRAL_API_KEY", "OPENROUTER_API_KEY")
+
+
+def get_glm_api_key(explicit=None) -> str:
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value
+    return first_env("GLM_API_KEY")
+
+
+def get_glm_base_url(explicit=None) -> str:
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value
+    return first_env("GLM_BASE_URL", default="https://api.modal.com/v1/glm-5")
+
+
+def get_glm_model(explicit=None) -> str:
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value
+    return first_env("GLM_MODEL", default="zai-org/GLM-5.1-FP8")
+
+
+def get_glm_max_tokens(explicit=None) -> int:
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        try:
+            return max(1, int(explicit_value))
+        except Exception:
+            pass
+    raw = first_env("GLM_MAX_TOKENS", default="")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except Exception:
+            pass
+    return 2048
+
+
+def is_glm_caption_eval_enabled(explicit=None) -> bool:
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value.lower() in {"1", "true", "yes", "on"}
+    return first_env("GLM_CAPTION_EVAL", default="").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def get_zernio_api_key(explicit=None) -> str:

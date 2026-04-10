@@ -1,7 +1,14 @@
 import os, json, time
 import httpx
 import re
-from .config import get_mistral_api_key
+from .config import (
+    get_glm_api_key,
+    get_glm_base_url,
+    get_glm_max_tokens,
+    get_glm_model,
+    get_mistral_api_key,
+    is_glm_caption_eval_enabled,
+)
 from .runtime_config import is_economy_mode, is_quality_mode
 from .utils import (
     log,
@@ -650,53 +657,219 @@ def _priority_aware_trim(caption, max_chars, platform):
     return result
 
 
-def _call_mistral(api_key, prompt, max_retries=None):
+def _call_mistral(api_key, prompt, max_retries=None, stats=None):
     """Use actual Mistral API instead of OpenRouter."""
+    return _call_chat_provider(
+        provider_name="mistral",
+        api_key=api_key,
+        prompt=prompt,
+        url="https://api.mistral.ai/v1/chat/completions",
+        model="mistral-large-latest",
+        max_retries=max_retries,
+        stats=stats,
+    )
+
+
+def _extract_chat_message_content(content):
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+            elif isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+        return "\n".join(parts).strip()
+    return str(content or "").strip()
+
+
+def _call_chat_provider(
+    provider_name,
+    api_key,
+    prompt,
+    url,
+    model,
+    max_retries=None,
+    timeout=None,
+    stats=None,
+):
     if max_retries is None:
         max_retries = 1 if is_economy_mode() else 3
     max_tokens = 4096 if is_economy_mode() else 8192
-    timeout = 75 if is_economy_mode() else 120
-    url = "https://api.mistral.ai/v1/chat/completions"
+    timeout = timeout or (75 if is_economy_mode() else 120)
+    provider_label = str(provider_name or "provider").upper()
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json; charset=utf-8",
     }
     payload = {
-        "model": "mistral-large-latest",
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "top_p": 0.8,
         "max_tokens": max_tokens,
     }
     for attempt in range(1, max_retries + 1):
-        track_api_call("mistral")
+        if stats is not None:
+            stats["api_calls"] = stats.get("api_calls", 0) + 1
+        track_api_call(provider_name)
+        started = time.perf_counter()
         try:
             r = httpx.post(url, headers=headers, json=payload, timeout=timeout)
             if r.status_code == 429:
                 wait = 2**attempt  # exponential backoff: 2s, 4s, 8s
+                if stats is not None:
+                    stats["retries"] = stats.get("retries", 0) + 1
                 log(
                     "CAPTION",
-                    f"[RETRY] 429 — waiting {wait}s (attempt {attempt}/{max_retries})",
+                    f"[{provider_label}] [RETRY] 429 — waiting {wait}s (attempt {attempt}/{max_retries})",
                 )
                 time.sleep(wait)
                 continue
             r.raise_for_status()
-            track_api_success("mistral")
+            elapsed = round(time.perf_counter() - started, 3)
+            if stats is not None:
+                stats["latency_seconds"] = round(
+                    stats.get("latency_seconds", 0.0) + elapsed, 3
+                )
+            track_api_success(provider_name)
             response_json = r.json()
             usage = response_json.get("usage", {})
+            message = {}
+            choices = response_json.get("choices") or []
+            if choices:
+                message = choices[0].get("message", {}) or {}
+            content = _extract_chat_message_content(message.get("content"))
+            if not content:
+                raise RuntimeError(f"{provider_label} returned empty content.")
             log(
                 "CAPTION",
-                f"[SUCCESS] Tokens in:{usage.get('prompt_tokens', '?')} out:{usage.get('completion_tokens', '?')}",
+                f"[{provider_label}] [SUCCESS] Tokens in:{usage.get('prompt_tokens', '?')} out:{usage.get('completion_tokens', '?')}",
             )
-            return response_json["choices"][0]["message"]["content"].strip()
+            return content
         except Exception as e:
-            log("CAPTION", f"[FAIL] attempt {attempt}: {e}")
+            if stats is not None:
+                stats.setdefault("errors", []).append(str(e))
+            log("CAPTION", f"[{provider_label}] [FAIL] attempt {attempt}: {e}")
             if attempt == max_retries:
                 raise
             wait = 2**attempt
-            log("CAPTION", f"[RETRY] waiting {wait}s before retry...")
+            if stats is not None:
+                stats["retries"] = stats.get("retries", 0) + 1
+            log("CAPTION", f"[{provider_label}] [RETRY] waiting {wait}s before retry...")
             time.sleep(wait)
-    raise RuntimeError(f"Mistral API failed after {max_retries} retries.")
+    raise RuntimeError(
+        f"{provider_label} API failed after {max_retries} retries."
+    )
+
+
+def _call_glm(api_key, prompt, max_retries=None, stats=None):
+    if max_retries is None:
+        max_retries = 1 if is_economy_mode() else 3
+    timeout = 75 if is_economy_mode() else 120
+    provider_label = "GLM"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+    payload = {
+        "prompt": prompt,
+        "max_tokens": get_glm_max_tokens(),
+        "model": get_glm_model(),
+    }
+
+    for attempt in range(1, max_retries + 1):
+        if stats is not None:
+            stats["api_calls"] = stats.get("api_calls", 0) + 1
+        track_api_call("glm")
+        started = time.perf_counter()
+        try:
+            r = httpx.post(
+                get_glm_base_url(),
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+            )
+            if r.status_code == 429:
+                wait = 2**attempt
+                if stats is not None:
+                    stats["retries"] = stats.get("retries", 0) + 1
+                log(
+                    "CAPTION",
+                    f"[{provider_label}] [RETRY] 429 — waiting {wait}s (attempt {attempt}/{max_retries})",
+                )
+                time.sleep(wait)
+                continue
+            if r.status_code >= 500:
+                body_preview = (r.text or "").strip()[:400]
+                raise RuntimeError(
+                    f"HTTP {r.status_code} from Modal GLM endpoint. Body: {body_preview or '<empty>'}"
+                )
+            r.raise_for_status()
+            elapsed = round(time.perf_counter() - started, 3)
+            if stats is not None:
+                stats["latency_seconds"] = round(
+                    stats.get("latency_seconds", 0.0) + elapsed, 3
+                )
+            track_api_success("glm")
+            response_json = r.json()
+            content = (
+                response_json.get("text")
+                or response_json.get("response")
+                or response_json.get("completion")
+                or response_json.get("output")
+                or ""
+            )
+            if not content and isinstance(response_json.get("choices"), list):
+                choices = response_json.get("choices") or []
+                if choices:
+                    message = choices[0].get("message", {}) or {}
+                    content = _extract_chat_message_content(message.get("content"))
+            content = _extract_chat_message_content(content)
+            if not content:
+                raise RuntimeError(
+                    f"GLM returned empty content. Response keys: {sorted(response_json.keys())}"
+                )
+            log("CAPTION", f"[{provider_label}] [SUCCESS] Modal-native response received")
+            return content
+        except Exception as e:
+            if stats is not None:
+                stats.setdefault("errors", []).append(str(e))
+            log("CAPTION", f"[{provider_label}] [FAIL] attempt {attempt}: {e}")
+            if attempt == max_retries:
+                raise
+            wait = 2**attempt
+            if stats is not None:
+                stats["retries"] = stats.get("retries", 0) + 1
+            log("CAPTION", f"[{provider_label}] [RETRY] waiting {wait}s before retry...")
+            time.sleep(wait)
+    raise RuntimeError(f"{provider_label} API failed after {max_retries} retries.")
+
+
+def _provider_label(provider_name):
+    return {
+        "mistral": "Mistral Caption API",
+        "glm": "GLM Caption API",
+    }.get(str(provider_name or "").lower(), str(provider_name or "caption provider"))
+
+
+def _provider_model(provider_name):
+    provider_name = str(provider_name or "").lower()
+    if provider_name == "mistral":
+        return "mistral-large-latest"
+    if provider_name == "glm":
+        return get_glm_model()
+    return ""
+
+
+def _call_caption_provider(provider_name, api_key, prompt, stats=None):
+    provider_name = str(provider_name or "").lower()
+    if provider_name == "glm":
+        return _call_glm(api_key, prompt, stats=stats)
+    return _call_mistral(api_key, prompt, stats=stats)
 
 
 def _parse_raw(raw):
@@ -786,6 +959,313 @@ def _strict_validate(captions):
     return True, "ok"
 
 
+def _save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _build_provider_stats(provider_name):
+    return {
+        "provider": provider_name,
+        "label": _provider_label(provider_name),
+        "model": _provider_model(provider_name),
+        "api_calls": 0,
+        "retries": 0,
+        "latency_seconds": 0.0,
+        "errors": [],
+        "warnings": [],
+        "status": "pending",
+    }
+
+
+def _normalize_provider_output(captions, target_platforms):
+    return {p: captions.get(p, {}) for p in target_platforms if p in captions}
+
+
+def _run_caption_provider(
+    provider_name,
+    api_key,
+    prompt,
+    target_platforms,
+    target_language,
+):
+    stats = _build_provider_stats(provider_name)
+    captions = {}
+    log("CAPTION", f"Calling {_provider_label(provider_name)} ...")
+    raw = _call_caption_provider(provider_name, api_key, prompt, stats=stats)
+    captions = _parse_raw(raw)
+    captions = _normalize_provider_output(captions, target_platforms)
+
+    missing, empty = _validate_schema(captions, target_platforms=target_platforms)
+    if missing:
+        stats["warnings"].append(f"missing:{','.join(sorted(missing))}")
+        log("CAPTION", f"  WARNING: Missing platforms: {missing}")
+    if empty:
+        stats["warnings"].append(f"empty:{','.join(sorted(empty))}")
+        log("CAPTION", f"  WARNING: Empty captions: {empty}")
+
+    bad_script = [
+        p
+        for p, d in captions.items()
+        if not _contains_target_script(d.get("caption", ""), target_language)
+    ]
+    if bad_script and _language_meta(target_language).get("script_ranges"):
+        stats["warnings"].append(f"script:{','.join(sorted(bad_script))}")
+        log(
+            "CAPTION",
+            f"  WARNING: Non-{_language_meta(target_language)['name']} output in {bad_script}",
+        )
+
+    bad_short = [
+        p
+        for p, mins in SHORT_MINIMUMS.items()
+        if p in target_platforms
+        if len(captions.get(p, {}).get("caption", "")) < mins
+    ]
+    if bad_short and is_quality_mode():
+        log(
+            "CAPTION",
+            f"  Short captions on {bad_short} from {provider_name} — retrying ...",
+        )
+        twitter_instruction = ""
+        if "twitter" in bad_short:
+            twitter_instruction = (
+                "For twitter specifically, keep the regenerated caption between 180 and 240 characters "
+                "and never exceed 250 characters including hashtags. "
+            )
+        retry_prompt = (
+            f"{prompt}\n\nCRITICAL: Your previous output for {bad_short} was too short. "
+            f"Minimums: TikTok=80 chars, Twitter=180 chars, Threads=200 chars, Bluesky=180 chars. "
+            f"{twitter_instruction}"
+            f"Write LONGER complete sentences. Fill the limit without exceeding any platform max. "
+            f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
+        )
+        try:
+            raw2 = _call_caption_provider(provider_name, api_key, retry_prompt, stats=stats)
+            captions2 = _parse_raw(raw2)
+            for p in bad_short:
+                new_len = len(captions2.get(p, {}).get("caption", ""))
+                old_len = len(captions.get(p, {}).get("caption", ""))
+                if new_len > old_len:
+                    captions[p] = captions2.get(p, {})
+        except Exception as e:
+            stats["warnings"].append(f"short_retry_failed:{','.join(sorted(bad_short))}")
+            log("CAPTION", f"Regeneration failed for {bad_short}: {e}")
+    elif bad_short:
+        stats["warnings"].append(f"short:{','.join(sorted(bad_short))}")
+        log(
+            "CAPTION",
+            f"  Economy mode: accepting short captions for {bad_short} without regeneration.",
+        )
+
+    for p, data in captions.items():
+        caption = data.get("caption", "")
+
+        if p in ["instagram", "facebook", "youtube", "tiktok"]:
+            missing_both = (
+                "#kailasa" not in caption.lower()
+                or "#nithyananda" not in caption.lower()
+            )
+            if missing_both and is_quality_mode():
+                log("CAPTION", f"Missing required tags for {p} — regenerating...")
+                try:
+                    retry_prompt = (
+                        f"{prompt}\n\nCRITICAL: The previous caption for {p} was missing required hashtags. "
+                        f"Must include both #KAILASA and #Nithyananda hashtags. "
+                        f"Regenerate the caption for {p} with proper hashtags. "
+                        f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
+                    )
+                    raw_retry = _call_caption_provider(
+                        provider_name, api_key, retry_prompt, stats=stats
+                    )
+                    new_captions = _parse_raw(raw_retry)
+                    if new_captions.get(p) and new_captions[p].get("caption"):
+                        captions[p] = new_captions[p]
+                        caption = captions[p]["caption"]
+                        log("CAPTION", f"Regenerated caption for {p}")
+                except Exception as e:
+                    stats["warnings"].append(f"tag_retry_failed:{p}")
+                    log("CAPTION", f"Failed to regenerate {p}: {e}")
+            elif missing_both:
+                captions[p]["caption"] = _append_required_hashtags(p, caption)
+                caption = captions[p]["caption"]
+                log("CAPTION", f"Economy mode: appended required hashtags for {p}.")
+        elif p in ["threads", "bluesky"]:
+            missing_tag = "#kailasa" not in caption.lower()
+            if missing_tag and is_quality_mode():
+                log(
+                    "CAPTION",
+                    f"Missing required #KAILASA tag for {p} — regenerating...",
+                )
+                try:
+                    retry_prompt = (
+                        f"{prompt}\n\nCRITICAL: The previous caption for {p} was missing required #KAILASA hashtag. "
+                        f"Must include #KAILASA hashtag. "
+                        f"Regenerate the caption for {p} with proper hashtag. "
+                        f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
+                    )
+                    raw_retry = _call_caption_provider(
+                        provider_name, api_key, retry_prompt, stats=stats
+                    )
+                    new_captions = _parse_raw(raw_retry)
+                    if new_captions.get(p) and new_captions[p].get("caption"):
+                        captions[p] = new_captions[p]
+                        caption = captions[p]["caption"]
+                        log("CAPTION", f"Regenerated caption for {p}")
+                except Exception as e:
+                    stats["warnings"].append(f"kailasa_retry_failed:{p}")
+                    log("CAPTION", f"Failed to regenerate {p}: {e}")
+            elif missing_tag:
+                captions[p]["caption"] = _append_required_hashtags(p, caption)
+                caption = captions[p]["caption"]
+                log("CAPTION", f"Economy mode: appended required hashtags for {p}.")
+
+        if _language_meta(target_language).get("script_ranges") and p in [
+            "instagram",
+            "facebook",
+            "youtube",
+            "threads",
+            "bluesky",
+        ]:
+            if (
+                not _contains_target_script(caption, target_language)
+                and is_quality_mode()
+            ):
+                log(
+                    "CAPTION",
+                    f"No {_language_meta(target_language)['name']} script detected in {p} caption — regenerating...",
+                )
+                try:
+                    retry_prompt = (
+                        f"{prompt}\n\nCRITICAL: The previous caption for {p} was not clearly written in {_language_meta(target_language)['name']}. "
+                        f"Must be written in {_language_meta(target_language)['name']}. "
+                        f"Regenerate the caption for {p} in proper {_language_meta(target_language)['name']}. "
+                        f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
+                    )
+                    raw_retry = _call_caption_provider(
+                        provider_name, api_key, retry_prompt, stats=stats
+                    )
+                    new_captions = _parse_raw(raw_retry)
+                    if new_captions.get(p) and new_captions[p].get("caption"):
+                        captions[p] = new_captions[p]
+                        caption = captions[p]["caption"]
+                        log("CAPTION", f"Regenerated caption for {p}")
+                except Exception as e:
+                    stats["warnings"].append(f"script_retry_failed:{p}")
+                    log("CAPTION", f"Regeneration failed for {p}: {e}")
+
+        hard_lim = PLATFORM_LIMITS.get(p, 2000)
+        opt_range = OPTIMAL_RANGES.get(p)
+
+        if len(caption) > hard_lim:
+            stats["warnings"].append(f"too_long:{p}")
+            log(
+                "CAPTION",
+                f"Caption exceeds hard limit for {p} ({len(caption)} > {hard_lim}) — keeping as-is",
+            )
+
+        if opt_range:
+            opt_min, opt_max = opt_range
+            if len(caption) < opt_min:
+                stats["warnings"].append(f"below_optimal:{p}")
+                log(
+                    "CAPTION",
+                    f"Caption short for {p} ({len(caption)} < {opt_min} optimal)",
+                )
+            elif len(caption) > opt_max:
+                overage_pct = ((len(caption) - opt_max) / opt_max) * 100
+                log(
+                    "CAPTION",
+                    f"Caption long for {p} ({len(caption)} > {opt_max} optimal, {overage_pct:.0f}% over)",
+                )
+
+                if overage_pct >= 30:
+                    _, hashtags = _extract_trailing_hashtags(caption)
+                    _, cta = _extract_cta_links(caption)
+                    tag_count = (
+                        len([w for w in hashtags.split() if w.startswith("#")])
+                        if hashtags
+                        else 0
+                    )
+
+                    trimmed = _priority_aware_trim(caption, opt_max, p)
+                    min_len = SHORT_MINIMUMS.get(p, 80)
+                    if len(trimmed) < min_len:
+                        stats["warnings"].append(f"trim_aborted:{p}")
+                        log(
+                            "CAPTION",
+                            f"  WARNING: Trimmed too short ({len(trimmed)} < {min_len}), keeping original",
+                        )
+                    else:
+                        captions[p]["caption"] = trimmed
+                        caption = trimmed
+                        log(
+                            "CAPTION",
+                            f"→ Body trimmed (smart boundary) | Hashtags preserved ({tag_count} tags) | CTA preserved ({len(cta)} chars)",
+                        )
+                else:
+                    log("CAPTION", "→ Within tolerance, keeping as-is")
+
+    for p, data in captions.items():
+        cleaned_caption = _sanitize_caption_text(
+            _extract_str(data.get("caption", "")), newline_before_tags=True
+        )
+        data["caption"] = cleaned_caption
+        if p == "youtube":
+            title = _sanitize_caption_text(
+                _extract_str(data.get("title", "")), newline_before_tags=False
+            )
+            data["title"] = title
+
+    stats["status"] = "ok"
+    return captions, stats
+
+
+def _write_caption_files(output_dir, captions, target_platforms, basename="captions.json"):
+    _save_json(os.path.join(output_dir, basename), captions)
+    for p in target_platforms:
+        data = captions.get(p, {})
+        prefix = (
+            f"TITLE: {data['title']}\n\n"
+            if p == "youtube" and data.get("title")
+            else ""
+        )
+        suffix = "" if basename == "captions.json" else f".{os.path.splitext(basename)[0]}"
+        with open(
+            os.path.join(output_dir, f"caption_{p}{suffix}.txt"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write(prefix + data.get("caption", ""))
+
+
+def _build_eval_summary(live_provider, live_captions, eval_provider, eval_captions, target_platforms):
+    per_platform = {}
+    for platform in target_platforms:
+        live_entry = live_captions.get(platform, {})
+        eval_entry = eval_captions.get(platform, {})
+        live_caption = _extract_str(live_entry.get("caption", ""))
+        eval_caption = _extract_str(eval_entry.get("caption", ""))
+        item = {
+            "live_length": len(live_caption),
+            "eval_length": len(eval_caption),
+            "captions_match": live_caption == eval_caption,
+        }
+        if platform == "youtube":
+            item["live_title_length"] = len(_extract_str(live_entry.get("title", "")))
+            item["eval_title_length"] = len(_extract_str(eval_entry.get("title", "")))
+            item["titles_match"] = _extract_str(live_entry.get("title", "")) == _extract_str(
+                eval_entry.get("title", "")
+            )
+        per_platform[platform] = item
+    return {
+        "live_provider": live_provider,
+        "eval_provider": eval_provider,
+        "platforms_compared": target_platforms,
+        "per_platform": per_platform,
+    }
+
+
 def generate_all_captions(
     vision_data,
     api_key=None,
@@ -800,6 +1280,14 @@ def generate_all_captions(
         "used_fallback": False,
         "reason": "",
         "provider": "mistral_caption",
+        "live_provider": "mistral",
+        "provider_stats": {},
+        "evaluation": {
+            "enabled": False,
+            "provider": "glm",
+            "status": "not_run",
+            "files": [],
+        },
     }
     main_topic = vision_data.get("main_topic", "")
     conflict = vision_data.get("core_conflict", "")
@@ -826,81 +1314,30 @@ def generate_all_captions(
     )
     captions = {}
     mistral_key = get_mistral_api_key(api_key)
+    glm_key = get_glm_api_key()
+    glm_eval_enabled = is_glm_caption_eval_enabled()
     mode_name = "Economy" if is_economy_mode() else "Quality"
     log("CAPTION", f"Mode: {mode_name}")
 
     if mistral_key:
         try:
-            log("CAPTION", "Calling Mistral ...")
-            raw = _call_mistral(mistral_key, prompt)
-            captions = _parse_raw(raw)
-            captions = {
-                p: captions.get(p, {}) for p in target_platforms if p in captions
-            }
-
-            # Schema validation
-            missing, empty = _validate_schema(
-                captions, target_platforms=target_platforms
+            captions, mistral_stats = _run_caption_provider(
+                "mistral",
+                mistral_key,
+                prompt,
+                target_platforms,
+                target_language,
             )
-            if missing:
-                log("CAPTION", f"  WARNING: Missing platforms: {missing}")
-            if empty:
-                log("CAPTION", f"  WARNING: Empty captions: {empty}")
-
-            # Target-language script check where detectable
-            bad_script = [
-                p
-                for p, d in captions.items()
-                if not _contains_target_script(d.get("caption", ""), target_language)
-            ]
-            if bad_script and _language_meta(target_language).get("script_ranges"):
-                log(
-                    "CAPTION",
-                    f"  WARNING: Non-{_language_meta(target_language)['name']} output in {bad_script}",
-                )
-
-            # Short caption check + single retry
-            bad_short = [
-                p
-                for p, mins in SHORT_MINIMUMS.items()
-                if p in target_platforms
-                if len(captions.get(p, {}).get("caption", "")) < mins
-            ]
-            if bad_short and is_quality_mode():
-                log("CAPTION", f"  Short captions on {bad_short} — retrying ...")
-                twitter_instruction = ""
-                if "twitter" in bad_short:
-                    twitter_instruction = (
-                        "For twitter specifically, keep the regenerated caption between 180 and 240 characters "
-                        "and never exceed 250 characters including hashtags. "
-                    )
-                retry_prompt = (
-                    f"{prompt}\n\nCRITICAL: Your previous output for {bad_short} was too short. "
-                    f"Minimums: TikTok=80 chars, Twitter=180 chars, Threads=200 chars, Bluesky=180 chars. "
-                    f"{twitter_instruction}"
-                    f"Write LONGER complete sentences. Fill the limit without exceeding any platform max. "
-                    f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
-                )
-                try:
-                    raw2 = _call_mistral(mistral_key, retry_prompt)
-                    captions2 = _parse_raw(raw2)
-                    for p in bad_short:
-                        new_len = len(captions2.get(p, {}).get("caption", ""))
-                        old_len = len(captions.get(p, {}).get("caption", ""))
-                        if new_len > old_len:
-                            captions[p] = captions2.get(p, {})
-                except Exception as e:
-                    log("CAPTION", f"Regeneration failed for {bad_short}: {e}")
-            elif bad_short:
-                log(
-                    "CAPTION",
-                    f"  Economy mode: accepting short captions for {bad_short} without regeneration.",
-                )
-
+            meta["provider_stats"]["mistral"] = mistral_stats
         except Exception as e:
             log("CAPTION", f"Error: {e} — fallback.")
             meta["used_fallback"] = True
             meta["reason"] = str(e)
+            meta["provider_stats"]["mistral"] = {
+                **_build_provider_stats("mistral"),
+                "status": "error",
+                "errors": [str(e)],
+            }
             captions = _fallback_captions(
                 vision_data,
                 target_language=target_language,
@@ -910,6 +1347,11 @@ def generate_all_captions(
         log("CAPTION", "No key — fallback.")
         meta["used_fallback"] = True
         meta["reason"] = "No Mistral API key"
+        meta["provider_stats"]["mistral"] = {
+            **_build_provider_stats("mistral"),
+            "status": "missing_key",
+            "errors": ["No Mistral API key"],
+        }
         captions = _fallback_captions(
             vision_data,
             target_language=target_language,
@@ -943,180 +1385,90 @@ def generate_all_captions(
         for p in missing_after_parse:
             captions[p] = fallback_map.get(p, {"caption": ""})
 
-    # Additional validation for required tags and character limits
-    for p, data in captions.items():
-        caption = data.get("caption", "")
-
-        # Check for required hashtags per platform
-        if p in ["instagram", "facebook", "youtube", "tiktok"]:
-            # These platforms need both #KAILASA and #Nithyananda
-            if (
-                "#kailasa" not in caption.lower()
-                or "#nithyananda" not in caption.lower()
-            ) and is_quality_mode():
-                log("CAPTION", f"Missing required tags for {p} — regenerating...")
-                try:
-                    # Build regeneration prompt
-                    retry_prompt = (
-                        f"{prompt}\n\nCRITICAL: The previous caption for {p} was missing required hashtags. "
-                        f"Must include both #KAILASA and #Nithyananda hashtags. "
-                        f"Regenerate the caption for {p} with proper hashtags. "
-                        f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
-                    )
-                    raw = _call_mistral(mistral_key, retry_prompt)
-                    new_captions = _parse_raw(raw)
-                    if new_captions.get(p) and new_captions[p].get("caption"):
-                        captions[p] = new_captions[p]
-                        log("CAPTION", f"Regenerated caption for {p}")
-                except Exception as e:
-                    log("CAPTION", f"Failed to regenerate {p}: {e}")
-            elif (
-                "#kailasa" not in caption.lower()
-                or "#nithyananda" not in caption.lower()
-            ):
-                captions[p]["caption"] = _append_required_hashtags(p, caption)
-                caption = captions[p]["caption"]
-                log("CAPTION", f"Economy mode: appended required hashtags for {p}.")
-        elif p in ["threads", "bluesky"]:
-            # These platforms only need #KAILASA
-            if "#kailasa" not in caption.lower() and is_quality_mode():
-                log(
-                    "CAPTION",
-                    f"Missing required #KAILASA tag for {p} — regenerating...",
-                )
-                try:
-                    # Build regeneration prompt
-                    retry_prompt = (
-                        f"{prompt}\n\nCRITICAL: The previous caption for {p} was missing required #KAILASA hashtag. "
-                        f"Must include #KAILASA hashtag. "
-                        f"Regenerate the caption for {p} with proper hashtag. "
-                        f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
-                    )
-                    raw = _call_mistral(mistral_key, retry_prompt)
-                    new_captions = _parse_raw(raw)
-                    if new_captions.get(p) and new_captions[p].get("caption"):
-                        captions[p] = new_captions[p]
-                        log("CAPTION", f"Regenerated caption for {p}")
-                except Exception as e:
-                    log("CAPTION", f"Failed to regenerate {p}: {e}")
-            elif "#kailasa" not in caption.lower():
-                captions[p]["caption"] = _append_required_hashtags(p, caption)
-                caption = captions[p]["caption"]
-                log("CAPTION", f"Economy mode: appended required hashtags for {p}.")
-
-        # Check target-language script where detectable
-        if _language_meta(target_language).get("script_ranges") and p in [
-            "instagram",
-            "facebook",
-            "youtube",
-            "threads",
-            "bluesky",
-        ]:
-            if (
-                not _contains_target_script(caption, target_language)
-                and is_quality_mode()
-            ):
-                log(
-                    "CAPTION",
-                    f"No {_language_meta(target_language)['name']} script detected in {p} caption — regenerating...",
-                )
-                try:
-                    retry_prompt = (
-                        f"{prompt}\n\nCRITICAL: The previous caption for {p} was not clearly written in {_language_meta(target_language)['name']}. "
-                        f"Must be written in {_language_meta(target_language)['name']}. "
-                        f"Regenerate the caption for {p} in proper {_language_meta(target_language)['name']}. "
-                        f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
-                    )
-                    raw = _call_mistral(mistral_key, retry_prompt)
-                    new_captions = _parse_raw(raw)
-                    if new_captions.get(p) and new_captions[p].get("caption"):
-                        captions[p] = new_captions[p]
-                        log("CAPTION", f"Regenerated caption for {p}")
-                except Exception as e:
-                    log("CAPTION", f"Regeneration failed for {p}: {e}")
-
-        # Check character limits
-        hard_lim = PLATFORM_LIMITS.get(p, 2000)
-        opt_range = OPTIMAL_RANGES.get(p)
-
-        if len(caption) > hard_lim:
-            log(
-                "CAPTION",
-                f"Caption exceeds hard limit for {p} ({len(caption)} > {hard_lim}) — keeping as-is",
-            )
-
-        # Optimal range check with 30% threshold for trimming
-        if opt_range:
-            opt_min, opt_max = opt_range
-            if len(caption) < opt_min:
-                log(
-                    "CAPTION",
-                    f"Caption short for {p} ({len(caption)} < {opt_min} optimal)",
-                )
-            elif len(caption) > opt_max:
-                overage_pct = ((len(caption) - opt_max) / opt_max) * 100
-                log(
-                    "CAPTION",
-                    f"Caption long for {p} ({len(caption)} > {opt_max} optimal, {overage_pct:.0f}% over)",
-                )
-
-                # Only trim if ≥30% over optimal
-                if overage_pct >= 30:
-                    # Extract info for logging
-                    _, hashtags = _extract_trailing_hashtags(caption)
-                    _, cta = _extract_cta_links(caption)
-                    tag_count = (
-                        len([w for w in hashtags.split() if w.startswith("#")])
-                        if hashtags
-                        else 0
-                    )
-
-                    trimmed = _priority_aware_trim(caption, opt_max, p)
-
-                    # Safety: if trimming produces too-short result, keep original
-                    min_len = SHORT_MINIMUMS.get(p, 80)
-                    if len(trimmed) < min_len:
-                        log(
-                            "CAPTION",
-                            f"  WARNING: Trimmed too short ({len(trimmed)} < {min_len}), keeping original",
-                        )
-                    else:
-                        captions[p]["caption"] = trimmed
-                        log(
-                            "CAPTION",
-                            f"→ Body trimmed (smart boundary) | Hashtags preserved ({tag_count} tags) | CTA preserved ({len(cta)} chars)",
-                        )
-                else:
-                    log(
-                        "CAPTION",
-                        f"→ Within tolerance, keeping as-is",
-                    )
-
     for p, data in captions.items():
         cleaned_caption = _sanitize_caption_text(
             _extract_str(data.get("caption", "")), newline_before_tags=True
         )
-        # No truncation - keep caption as-is
         data["caption"] = cleaned_caption
         if p == "youtube":
-            title = _sanitize_caption_text(
+            data["title"] = _sanitize_caption_text(
                 _extract_str(data.get("title", "")), newline_before_tags=False
             )
-            data["title"] = title
 
-    with open(os.path.join(output_dir, "captions.json"), "w", encoding="utf-8") as f:
-        json.dump(captions, f, ensure_ascii=False, indent=2)
-    for p in target_platforms:
-        data = captions.get(p, {})
-        prefix = (
-            f"TITLE: {data['title']}\n\n"
-            if p == "youtube" and data.get("title")
-            else ""
+    _write_caption_files(output_dir, captions, target_platforms, basename="captions.json")
+
+    if glm_eval_enabled and mistral_key and not meta["used_fallback"]:
+        meta["evaluation"]["enabled"] = True
+        if glm_key:
+            try:
+                glm_captions, glm_stats = _run_caption_provider(
+                    "glm",
+                    glm_key,
+                    prompt,
+                    target_platforms,
+                    target_language,
+                )
+                meta["provider_stats"]["glm"] = glm_stats
+                summary = _build_eval_summary(
+                    "mistral",
+                    captions,
+                    "glm",
+                    glm_captions,
+                    target_platforms,
+                )
+                mistral_file = os.path.join(output_dir, "captions_mistral_eval.json")
+                glm_file = os.path.join(output_dir, "captions_glm_eval.json")
+                summary_file = os.path.join(output_dir, "captions_eval_summary.json")
+                meta_file = os.path.join(output_dir, "captions_provider_meta.json")
+                _save_json(mistral_file, captions)
+                _save_json(glm_file, glm_captions)
+                _save_json(summary_file, summary)
+                meta["evaluation"]["status"] = "ok"
+                meta["evaluation"]["files"] = [
+                    mistral_file,
+                    glm_file,
+                    summary_file,
+                    meta_file,
+                ]
+                _save_json(meta_file, meta)
+                log("CAPTION", "GLM caption evaluation artifacts saved.")
+            except Exception as e:
+                meta["provider_stats"]["glm"] = {
+                    **_build_provider_stats("glm"),
+                    "status": "error",
+                    "errors": [str(e)],
+                }
+                meta["evaluation"]["status"] = "error"
+                meta["evaluation"]["reason"] = str(e)
+                meta_file = os.path.join(output_dir, "captions_provider_meta.json")
+                meta["evaluation"]["files"] = [meta_file]
+                _save_json(meta_file, meta)
+                log("CAPTION", f"GLM caption evaluation failed: {e}")
+        else:
+            meta["evaluation"]["status"] = "missing_key"
+            meta["evaluation"]["reason"] = "GLM_CAPTION_EVAL enabled but no GLM_API_KEY found"
+            meta["provider_stats"]["glm"] = {
+                **_build_provider_stats("glm"),
+                "status": "missing_key",
+                "errors": ["No GLM_API_KEY found"],
+            }
+            meta_file = os.path.join(output_dir, "captions_provider_meta.json")
+            meta["evaluation"]["files"] = [meta_file]
+            _save_json(meta_file, meta)
+            log("CAPTION", "GLM caption evaluation skipped: no GLM API key.")
+    elif glm_eval_enabled:
+        meta["evaluation"]["enabled"] = True
+        meta["evaluation"]["status"] = "skipped_live_provider_unavailable"
+        meta["evaluation"]["reason"] = (
+            "Mistral live captions were unavailable, so GLM side-by-side evaluation was skipped."
         )
-        with open(
-            os.path.join(output_dir, f"caption_{p}.txt"), "w", encoding="utf-8"
-        ) as f:
-            f.write(prefix + data.get("caption", ""))
+        meta_file = os.path.join(output_dir, "captions_provider_meta.json")
+        meta["evaluation"]["files"] = [meta_file]
+        _save_json(meta_file, meta)
+    else:
+        meta_file = os.path.join(output_dir, "captions_provider_meta.json")
+        _save_json(meta_file, meta)
+
     log("CAPTION", f"All captions saved ({len(target_platforms)} platforms).")
     return (captions, meta) if return_meta else captions
 
