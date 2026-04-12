@@ -24,6 +24,7 @@ from dubber import (
     record_ambiguous_publish_results,
 )
 from dubber.api_validator import validate_all_keys
+from dubber.caption_generator import _priority_aware_trim
 from dubber.utils import (
     PLATFORMS,
     PLATFORM_LIMITS,
@@ -41,6 +42,9 @@ from dubber.runtime_config import get_pipeline_mode, is_economy_mode, mode_label
 from dubber.config import (
     load_env_into_process,
     save_env_updates,
+    get_dub_source_lang,
+    get_dub_target_lang,
+    get_dub_voice,
     get_gemini_api_key,
     get_mistral_api_key,
     get_zernio_api_key,
@@ -52,6 +56,8 @@ WORKSPACE = "workspace"
 OUTPUT_FILE = "output.mp4"
 
 VOICES = {
+    "English - Ryan (M)": "en-GB-RyanNeural",
+    "English - Sonia (F)": "en-GB-SoniaNeural",
     "Gujarati - Niranjan (M)": "gu-IN-NiranjanNeural",
     "Gujarati - Dhwani (F)": "gu-IN-DhwaniNeural",
     "Hindi - Madhur (M)": "hi-IN-MadhurNeural",
@@ -60,13 +66,15 @@ VOICES = {
     "Tamil - Pallavi (F)": "ta-IN-PallaviNeural",
     "Telugu - Mohan (M)": "te-IN-MohanNeural",
     "Telugu - Shruti (F)": "te-IN-ShrutiNeural",
+    "Kannada - Gagan (M)": "kn-IN-GaganNeural",
+    "Kannada - Sapna (F)": "kn-IN-SapnaNeural",
+    "Malayalam - Midhun (M)": "ml-IN-MidhunNeural",
+    "Malayalam - Sobhana (F)": "ml-IN-SobhanaNeural",
     "Bengali - Pradeep (M)": "bn-BD-PradeepNeural",
     "Bengali - Nabanita (F)": "bn-BD-NabanitaNeural",
     "Spanish (Colombia) - Gonzalo (M)": "es-CO-GonzaloNeural",
     "Russian - Dmitry (M)": "ru-RU-DmitryNeural",
     "Russian - Svetlana (F)": "ru-RU-SvetlanaNeural",
-    "English - Ryan (M)": "en-GB-RyanNeural",
-    "English - Sonia (F)": "en-GB-SoniaNeural",
 }
 LANGUAGES = {
     "English": "en",
@@ -81,15 +89,20 @@ LANGUAGES = {
     "Russian": "ru",
 }
 LANGUAGE_DEFAULT_VOICE = {
+    "English": "English - Ryan (M)",
     "Gujarati": "Gujarati - Niranjan (M)",
     "Hindi": "Hindi - Madhur (M)",
     "Tamil": "Tamil - Valluvar (M)",
     "Telugu": "Telugu - Mohan (M)",
+    "Kannada": "Kannada - Gagan (M)",
+    "Malayalam": "Malayalam - Midhun (M)",
     "Bengali": "Bengali - Pradeep (M)",
     "Spanish": "Spanish (Colombia) - Gonzalo (M)",
     "Russian": "Russian - Dmitry (M)",
-    "English": "English - Ryan (M)",
 }
+
+LANGUAGE_CODE_TO_NAME = {code.lower(): name for name, code in LANGUAGES.items()}
+VOICE_ID_TO_LABEL = {voice_id: label for label, voice_id in VOICES.items()}
 
 DUB_TOTAL_STAGES = 11
 
@@ -138,6 +151,29 @@ def _load_env():
 
 def _save_env(data):
     save_env_updates(data)
+
+
+def _resolve_language_name(raw_value, fallback="English"):
+    value = str(raw_value or "").strip()
+    if not value:
+        return fallback
+    if value in LANGUAGES:
+        return value
+    return LANGUAGE_CODE_TO_NAME.get(value.lower(), fallback)
+
+
+def _resolve_voice_label(raw_value, target_language="English"):
+    value = str(raw_value or "").strip()
+    if not value:
+        return LANGUAGE_DEFAULT_VOICE.get(target_language, list(VOICES.keys())[0])
+    if value in VOICES:
+        return value
+    if value in VOICE_ID_TO_LABEL:
+        return VOICE_ID_TO_LABEL[value]
+    for label, voice_id in VOICES.items():
+        if value.lower() == label.lower() or value.lower() == voice_id.lower():
+            return label
+    return LANGUAGE_DEFAULT_VOICE.get(target_language, list(VOICES.keys())[0])
 
 
 def _canonicalize_env_keys(env):
@@ -301,6 +337,7 @@ def _log_api_summary():
     log("API_USAGE", f"--- API Call Summary ---")
     log("API_USAGE", f"Gemini API calls: {counts.get('gemini', 0)}")
     log("API_USAGE", f"Mistral API calls: {counts.get('mistral', 0)}")
+    log("API_USAGE", f"GLM API calls: {counts.get('glm', 0)}")
     log("API_USAGE", f"Groq API calls: {counts.get('groq', 0)}")
     log("API_USAGE", f"Total API calls: {counts.get('total', 0)}")
     log("API_USAGE", f"------------------------")
@@ -328,6 +365,7 @@ def run_dub_pipeline(
     done_cb,
     dub_only=False,
     progress_cb=None,
+    output_path=OUTPUT_FILE,
 ):
     reset_api_call_counts()
     try:
@@ -365,9 +403,15 @@ def run_dub_pipeline(
         shutil.rmtree(WORKSPACE, ignore_errors=True)
         os.makedirs(WORKSPACE, exist_ok=True)
 
+        source_metadata = {}
         if is_url(video_input):
             status_cb("Downloading video ...")
-            video_path = download_video(video_input, WORKSPACE)
+            download_result = download_video(video_input, WORKSPACE)
+            if isinstance(download_result, dict):
+                video_path = download_result.get("video_path", "")
+                source_metadata = download_result.get("source_metadata") or {}
+            else:
+                video_path = download_result
         else:
             video_path = video_input
         if not os.path.exists(video_path):
@@ -433,7 +477,7 @@ def run_dub_pipeline(
                 build_dubbed_video,
                 video_path=video_path,
                 segments=segs,
-                output_path=OUTPUT_FILE,
+                output_path=output_path,
                 bgm_path=bgm_path,
                 bgm_volume=bgm_volume,
                 output_dir=WORKSPACE,
@@ -456,7 +500,7 @@ def run_dub_pipeline(
             )
 
         if dub_only:
-            status_cb("Dub-only mode complete. Output: workspace/output.mp4")
+            status_cb(f"Dub-only mode complete. Output: {output_path}")
             _log_api_summary()
             _emit_stage_progress("shared_media", 1.0)
             done_cb(success=True, msg="Dubbing complete.", pub_results={})
@@ -471,6 +515,7 @@ def run_dub_pipeline(
             target_language=tgt_lang,
             return_meta=True,
             selected_platforms=selected_platforms,
+            source_metadata=source_metadata,
         )
         _emit_stage_progress("captions", 1.0)
         if caption_meta.get("used_fallback"):
@@ -495,7 +540,7 @@ def run_dub_pipeline(
         _log_api_summary()
         caption_ready_cb(
             captions=captions,
-            video_path=OUTPUT_FILE,
+            video_path=output_path,
             zernio_key=zernio_key,
             selected_platforms=selected_platforms,
             publish_now=publish_now,
@@ -561,16 +606,17 @@ def run_publish_only(
                     captions[p]["title"] = ""
 
         status_cb("Waiting for caption review ...")
-        primary = image_paths[0] if image_paths else (teaser_path or "")
+        primary_image = image_paths[0] if image_paths else ""
         caption_ready_cb(
             captions=captions,
             teaser_path=teaser_path,
-            video_path=primary,
+            video_path="",
+            main_image_path=primary_image,
             zernio_key=zernio_key,
             selected_platforms=selected_platforms,
             publish_now=publish_now,
             scheduled_for=scheduled_for,
-            image_paths=image_paths[1:] if len(image_paths) > 1 else [],
+            image_paths=image_paths,
             done_cb=done_cb,
         )
     except Exception as e:
@@ -851,9 +897,7 @@ class App(tk.Tk):
         text = self._normalize_caption_text(caption)
         if len(text) <= limit:
             return text, False, limit
-        ellipsis = "..."
-        cut = max(0, limit - len(ellipsis))
-        trimmed = text[:cut].rstrip() + ellipsis
+        trimmed = _priority_aware_trim(text, limit, platform)
         return trimmed, True, limit
 
     def _normalize_caption_text(self, caption):
@@ -956,6 +1000,45 @@ class App(tk.Tk):
         except RuntimeError:
             return False
 
+    def _start_activity_mirror(self, kind):
+        """Reflect long-running flyer activity in the status bar without relying on Tk internals."""
+        if kind != "flyer":
+            return
+        self._flyer_status_before_activity = self.status_var.get()
+        self.status_var.set("Processing flyer...")
+        for widget_name in ("process_flyer_btn", "publish_flyer_btn"):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                try:
+                    widget.config(state="disabled")
+                except Exception:
+                    pass
+        try:
+            self.configure(cursor="watch")
+            self.update_idletasks()
+        except Exception:
+            pass
+
+    def _stop_activity_mirror(self, kind):
+        """Restore flyer UI state after processing or publishing completes."""
+        if kind != "flyer":
+            return
+        widget = getattr(self, "process_flyer_btn", None)
+        if widget is not None:
+            try:
+                widget.config(state="normal")
+            except Exception:
+                pass
+        if getattr(self, "_flyer_publish_ready", False):
+            self._set_flyer_publish_ready(True)
+        else:
+            self._set_flyer_publish_ready(False)
+        try:
+            self.configure(cursor="")
+            self.update_idletasks()
+        except Exception:
+            pass
+
     def _try_begin_publish(self, kind):
         """Return True only for the first active publish of a given kind."""
         with self._publish_state_lock:
@@ -1041,6 +1124,11 @@ class App(tk.Tk):
         self.t_dub.configure(padx=16, pady=12)
         self.t_dub.grid_columnconfigure(1, weight=1)
         self.pipeline_mode_var = tk.StringVar(value=get_pipeline_mode())
+        default_src_lang = _resolve_language_name(get_dub_source_lang(), "English")
+        default_tgt_lang = _resolve_language_name(get_dub_target_lang(), "English")
+        default_voice_label = _resolve_voice_label(
+            get_dub_voice(), target_language=default_tgt_lang
+        )
 
         tk.Label(
             self.t_dub, text="1) Source Input", font=("Segoe UI Semibold", 11)
@@ -1075,9 +1163,7 @@ class App(tk.Tk):
         tk.Label(self.t_dub, text="Voice:", font=("Segoe UI", 10)).grid(
             row=next_row + 1, column=0, sticky="w", **pad
         )
-        self.voice_var = tk.StringVar(
-            value=LANGUAGE_DEFAULT_VOICE.get("Gujarati", list(VOICES.keys())[0])
-        )
+        self.voice_var = tk.StringVar(value=default_voice_label)
         self.voice_combo = ttk.Combobox(
             self.t_dub,
             textvariable=self.voice_var,
@@ -1090,7 +1176,7 @@ class App(tk.Tk):
         tk.Label(self.t_dub, text="Source lang:", font=("Segoe UI", 10)).grid(
             row=next_row + 2, column=0, sticky="w", **pad
         )
-        self.src_lang_var = tk.StringVar(value="English")
+        self.src_lang_var = tk.StringVar(value=default_src_lang)
         ttk.Combobox(
             self.t_dub,
             textvariable=self.src_lang_var,
@@ -1102,7 +1188,7 @@ class App(tk.Tk):
         tk.Label(self.t_dub, text="Target lang:", font=("Segoe UI", 10)).grid(
             row=next_row + 3, column=0, sticky="w", **pad
         )
-        self.tgt_lang_var = tk.StringVar(value="Gujarati")
+        self.tgt_lang_var = tk.StringVar(value=default_tgt_lang)
         self.tgt_lang_combo = ttk.Combobox(
             self.t_dub,
             textvariable=self.tgt_lang_var,
@@ -1265,7 +1351,7 @@ class App(tk.Tk):
         self.generate_captions_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             self.t_media,
-            text="Generate Gujarati captions",
+            text="Generate platform captions",
             variable=self.generate_captions_var,
             font=("Segoe UI", 9),
         ).grid(row=media_row + 6, column=0, columnspan=3, sticky="w", padx=12)
@@ -1517,7 +1603,7 @@ class App(tk.Tk):
         return matches or list(VOICES.keys())
 
     def _sync_voice_options(self):
-        target_language = self.tgt_lang_var.get() or "Gujarati"
+        target_language = self.tgt_lang_var.get() or "English"
         options = self._voice_options_for_language(target_language)
         if hasattr(self, "voice_combo"):
             self.voice_combo["values"] = options
@@ -1648,15 +1734,21 @@ class App(tk.Tk):
                         tk.END, f"❌ Text extraction failed: {str(e)}\n\n"
                     )
 
-            # Generate Gujarati captions
+            # Generate platform captions
             if self.generate_captions_var.get() and extracted_text:
-                self.flyer_results.insert(
-                    tk.END, "🎨 Generating Gujarati captions...\n"
-                )
                 try:
-                    from dubber.image_processor import generate_gujarati_captions
+                    from dubber.image_processor import generate_platform_captions
 
-                    captions = generate_gujarati_captions(extracted_text, gemini_key)
+                    target_name = self.tgt_lang_var.get().strip() or "English"
+                    target_language = LANGUAGES.get(target_name, "en")
+                    self.flyer_results.insert(
+                        tk.END, f"🎨 Generating {target_name} captions...\n"
+                    )
+                    captions = generate_platform_captions(
+                        extracted_text,
+                        target_language=target_language,
+                        api_key=gemini_key,
+                    )
                     if isinstance(captions, dict) and "error" not in captions:
                         self.flyer_results.insert(
                             tk.END, "✅ Generated captions for all platforms\n"
@@ -1683,7 +1775,12 @@ class App(tk.Tk):
                     from dubber.image_processor import generate_teaser_content
 
                     teaser = generate_teaser_content(
-                        extracted_text, captions, gemini_key
+                        extracted_text,
+                        captions,
+                        api_key=gemini_key,
+                        target_language=LANGUAGES.get(
+                            self.tgt_lang_var.get().strip() or "English", "en"
+                        ),
                     )
                     if isinstance(teaser, dict) and "error" not in teaser:
                         self.flyer_results.insert(
@@ -2355,6 +2452,7 @@ class App(tk.Tk):
         captions,
         teaser_path=None,
         video_path="",
+        main_image_path=None,
         zernio_key="",
         selected_platforms=None,
         publish_now=True,
@@ -2397,8 +2495,13 @@ class App(tk.Tk):
             messagebox.showerror("Missing Zernio Account IDs", msg)
             return
 
+        media_guard_path = (
+            video_path
+            or main_image_path
+            or ((image_paths or [None])[0] if image_paths else None)
+        )
         repost_blocks = find_ambiguous_repost_blocks(
-            video_path,
+            media_guard_path,
             approved,
             _expanded_publish_guard_platforms(selected_platforms),
         )
@@ -2437,6 +2540,23 @@ class App(tk.Tk):
 
         def _publish():
             try:
+                if video_path:
+                    fallback_files = {"main_video": video_path}
+                else:
+                    all_images = list(image_paths or [])
+                    primary_image = main_image_path or (all_images[0] if all_images else None)
+                    additional_images = list(all_images)
+                    if (
+                        primary_image
+                        and additional_images
+                        and additional_images[0] == primary_image
+                    ):
+                        additional_images = additional_images[1:]
+                if not video_path:
+                    fallback_files = {
+                        "main_image": primary_image,
+                        "additional_images": additional_images,
+                    }
                 results = publish_to_platforms_sdk(
                     api_key=zernio_key,
                     video_path=video_path,
@@ -2447,7 +2567,7 @@ class App(tk.Tk):
                     image_paths=image_paths,
                     output_dir=WORKSPACE,
                     progress_cb=_thread_safe_progress,
-                    fallback_files={"main_video": video_path},  # Pass video for upload
+                    fallback_files=fallback_files,
                 )
 
                 error_msg = _extract_error_message(results)
@@ -2518,7 +2638,7 @@ class App(tk.Tk):
                             publish_results=results,
                             duration=self._get_media_duration_text(video_path),
                             source_lang=self.src_lang_var.get() or "English",
-                            target_lang=self.tgt_lang_var.get() or "Gujarati",
+                            target_lang=self.tgt_lang_var.get() or "English",
                             content_format="video",
                         )
                         if sheet_success:
@@ -2642,12 +2762,15 @@ def run_cli():
         print(
             'Example: python app.py input.mp4 output.mp4 --voice "Gujarati - Niranjan (M)" --target-lang Gujarati'
         )
+        print(
+            'Example: python app.py input.mp4 output.mp4 --voice "English - Ryan (M)" --target-lang English'
+        )
         sys.exit(1)
 
     input_video = sys.argv[1]
     output_video = sys.argv[2]
 
-    if not os.path.exists(input_video):
+    if not os.path.exists(input_video) and not is_url(input_video):
         print("ERROR: Input file not found")
         sys.exit(1)
 
@@ -2661,11 +2784,11 @@ def run_cli():
     parser.add_argument("output", help="Output video file")
     parser.add_argument(
         "--voice",
-        default="Gujarati - Niranjan (M)",
-        help="TTS voice (default: Gujarati - Niranjan (M))",
+        default="English - Ryan (M)",
+        help="TTS voice (default: English - Ryan (M))",
     )
     parser.add_argument(
-        "--target-lang", default="Gujarati", help="Target language (default: Gujarati)"
+        "--target-lang", default="English", help="Target language (default: English)"
     )
     parser.add_argument(
         "--source-lang", default="English", help="Source language (default: English)"
@@ -2684,12 +2807,15 @@ def run_cli():
             voice = VOICES[matching[0]]
             print(f"[CLI] Using voice: {matching[0]}")
         else:
-            print(f"[CLI] Warning: Voice '{voice_label}' not found, using default")
-            voice = VOICES["Gujarati - Niranjan (M)"]
+            fallback_label = LANGUAGE_DEFAULT_VOICE.get(args.target_lang, "English - Ryan (M)")
+            print(
+                f"[CLI] Warning: Voice '{voice_label}' not found, using default for {args.target_lang}: {fallback_label}"
+            )
+            voice = VOICES.get(fallback_label, VOICES["English - Ryan (M)"])
 
     model_size = "large"
     src_lang = LANGUAGES.get(args.source_lang, "en")
-    tgt_lang = LANGUAGES.get(args.target_lang, "gu")
+    tgt_lang = LANGUAGES.get(args.target_lang, "en")
 
     print(f"[CLI] Voice: {voice}, Source: {src_lang}, Target: {tgt_lang}")
 
@@ -2708,7 +2834,10 @@ def run_cli():
     scheduled_for = None
 
     def status_cb(msg):
-        print(f"[STATUS] {msg}")
+        text = f"[STATUS] {msg}"
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe)
 
     def caption_ready_cb(**kwargs):
         # Skip review + publishing completely
@@ -2741,6 +2870,7 @@ def run_cli():
             done_cb=done_cb,
             dub_only=True,  # 🔥 IMPORTANT: skip captions/publishing
             progress_cb=lambda p: print(f"[PROGRESS] {p}%"),
+            output_path=args.output,
         )
 
     except Exception as e:

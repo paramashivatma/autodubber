@@ -2,6 +2,10 @@ import os, subprocess, shutil
 from pydub import AudioSegment
 from .utils import log
 
+SMALL_GAP_KEEP = 0.08
+MEDIUM_GAP_KEEP = 0.18
+THOUGHT_PAUSE_KEEP = 0.32
+
 
 def _ffprobe_duration(path):
     r = subprocess.run(
@@ -94,6 +98,24 @@ def _actual_duration(path):
         return None
 
 
+def _target_gap(prev_seg, seg, raw_gap):
+    if raw_gap <= 0.05:
+        return 0.0
+
+    prev_complete = bool((prev_seg or {}).get("is_complete_thought", False))
+    current_pause = float(seg.get("pause_before", raw_gap) or 0.0)
+
+    if raw_gap >= 1.2:
+        return raw_gap
+    if raw_gap >= 0.7:
+        return max(min(raw_gap, 0.55), THOUGHT_PAUSE_KEEP if prev_complete else MEDIUM_GAP_KEEP)
+    if prev_complete:
+        return min(raw_gap, max(current_pause, THOUGHT_PAUSE_KEEP))
+    if raw_gap <= 0.2:
+        return min(raw_gap, SMALL_GAP_KEEP)
+    return min(raw_gap, MEDIUM_GAP_KEEP)
+
+
 def _pad_audio_with_silence(audio_path, target_dur_ms):
     """Pad audio with silence to reach target duration (in milliseconds)."""
     if not audio_path or not os.path.exists(audio_path):
@@ -177,17 +199,22 @@ def build_dubbed_video(
     positions = []
     prev = 0.0
     cursor = 0.0
+    prev_seg = None
 
     for i, seg in enumerate(segs):
         seg_start = seg["start"]
         seg_end = min(seg["end"], orig_total)
         orig_dur = max(seg_end - seg_start, 0.1)
-        tts_dur = seg.get("audio_dur_ms", orig_dur * 1000) / 1000.0
-        gap = seg_start - prev
+        audio_path = seg.get("audio_path")
+        audio_dur_ms = seg.get("audio_dur_ms", orig_dur * 1000)
+        tts_dur = audio_dur_ms / 1000.0
+        raw_gap = seg_start - prev
+        gap = _target_gap(prev_seg, seg, raw_gap)
 
-        if gap > 0.05:
+        if raw_gap > 0.05 and gap > 0.01:
             gf = os.path.join(tmp, f"gap_{i:04d}.mp4")
-            _cut(video_path, prev, seg_start, gf)
+            gap_start = max(prev, seg_start - gap)
+            _cut(video_path, gap_start, seg_start, gf)
             if os.path.exists(gf) and os.path.getsize(gf) > 500:
                 actual_gap = _actual_duration(gf) or gap
                 parts.append(gf)
@@ -199,10 +226,10 @@ def build_dubbed_video(
 
         log(
             "BUILD",
-            f"  seg#{seg['id']}: orig={orig_dur:.2f}s tts={tts_dur:.2f}s gap={gap:.2f}s",
+            f"  seg#{seg['id']}: orig={orig_dur:.2f}s tts={tts_dur:.2f}s gap={gap:.2f}s (raw {raw_gap:.2f}s)",
         )
 
-        # Match video to TTS duration (no cap - prioritize audio quality)
+        # Preserve natural TTS pacing; only retime video to match spoken audio.
         target_dur = tts_dur
         stretch = target_dur / orig_dur
 
@@ -252,8 +279,8 @@ def build_dubbed_video(
         parts.append(seg_out)
         cursor += actual_seg_dur
         prev = seg_end
+        prev_seg = seg
 
-        audio_path = seg.get("audio_path")
         if audio_path and os.path.exists(audio_path):
             # Trim audio to match video duration to prevent overlap with next segment
             overlay_dur = min(tts_dur, actual_seg_dur)
@@ -265,6 +292,17 @@ def build_dubbed_video(
         else:
             log("BUILD", f"    → WARNING: No audio path for seg#{seg['id']}")
 
+    # Preserve any silent tail after the final voiced segment so outros are kept intact.
+    trailing_gap = orig_total - prev
+    if trailing_gap > 0.05:
+        tail_file = os.path.join(tmp, "tail_outro.mp4")
+        _cut(video_path, prev, orig_total, tail_file)
+        if os.path.exists(tail_file) and os.path.getsize(tail_file) > 500:
+            actual_tail = _actual_duration(tail_file) or trailing_gap
+            parts.append(tail_file)
+            cursor += actual_tail
+            log("BUILD", f"  preserved trailing outro: {actual_tail:.2f}s")
+
     if not parts:
         raise RuntimeError("No video parts to concatenate.")
 
@@ -274,7 +312,8 @@ def build_dubbed_video(
         shutil.rmtree(tmp, ignore_errors=True)
         raise RuntimeError("Concat failed.")
 
-    total_ms = int(cursor * 1000) + 500
+    joined_duration = _actual_duration(joined) or cursor
+    total_ms = int(joined_duration * 1000) + 500
     tts_track = AudioSegment.silent(duration=total_ms)
     for audio_start, overlay_dur, cp in positions:
         try:

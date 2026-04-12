@@ -11,13 +11,33 @@ FALLBACK_VOICES = {
     "te-IN": ["te-IN-MohanNeural", "te-IN-ShrutiNeural"],
     "kn-IN": ["kn-IN-GaganNeural", "kn-IN-SapnaNeural"],
     "ml-IN": ["ml-IN-MidhunNeural", "ml-IN-SobhanaNeural"],
-    "bn-IN": ["bn-IN-BashkarNeural", "bn-IN-TanishaaNeural"],
-    "en-IN": ["en-IN-NeerjaNeural", "en-IN-PrabhatNeural"],
-    "default": ["en-IN-NeerjaNeural"],
+    "bn-BD": ["bn-BD-PradeepNeural", "bn-BD-NabanitaNeural"],
+    "en-GB": ["en-GB-RyanNeural", "en-GB-SoniaNeural"],
+    "es-CO": ["es-CO-GonzaloNeural", "es-CO-SalomeNeural"],
+    "ru-RU": ["ru-RU-DmitryNeural", "ru-RU-SvetlanaNeural"],
+    "default": ["en-GB-RyanNeural", "en-GB-SoniaNeural"],
 }
 
 
 _loop = None
+LETTER_SPELLED_ACRONYMS = {
+    "AI",
+    "AGI",
+    "API",
+    "APIs",
+    "CPU",
+    "CPUs",
+    "GPU",
+    "GPUs",
+    "GPT",
+    "IT",
+    "LLM",
+    "LLMs",
+    "ML",
+    "NLP",
+    "UI",
+    "UX",
+}
 
 
 def _run_async(coro):
@@ -61,6 +81,100 @@ def _sanitize_text(text):
         text = text[:4997] + "..."
 
     return text
+
+
+def _spell_letters(token):
+    return " ".join(list(token))
+
+
+def _normalize_tts_pronunciation(text):
+    """Normalize known terms so TTS pronounces them more naturally."""
+    if not text:
+        return text
+
+    def replace_sacred_terms(match):
+        token = match.group(0)
+        lower = token.lower()
+        replacements = {
+            "agama": "Aagama",
+            "agamas": "Aagamas",
+            "atman": "Aatman",
+            "brahman": "Brahman",
+            "darshan": "Darshan",
+            "devi": "Devi",
+            "dharma": "Dharma",
+            "guru": "Guru",
+            "kailasa": "Kailaasa",
+            "linga": "Linga",
+            "mantra": "Mantra",
+            "mantras": "Mantras",
+            "moksha": "Moksha",
+            "murti": "Murti",
+            "prasad": "Prasaad",
+            "puja": "Pooja",
+            "sadhana": "Saadhana",
+            "samadhi": "Samaadhi",
+            "sanskrit": "Sanskrit",
+            "shakti": "Shakti",
+            "shaiva": "Shaiva",
+            "shastra": "Shaastra",
+            "shiva": "Shiva",
+            "sutra": "Sutra",
+            "tantra": "Tantra",
+            "tantras": "Tantras",
+            "upanishad": "Upanishad",
+            "upanishads": "Upanishads",
+            "veda": "Veda",
+            "vedanta": "Vedaanta",
+            "vedantic": "Vedaantic",
+            "vedas": "Vedas",
+            "yantra": "Yantra",
+            "yantras": "Yantras",
+        }
+        replacement = replacements.get(lower)
+        if not replacement:
+            return token
+        if token.isupper():
+            return replacement.upper()
+        if token[0].isupper():
+            return replacement
+        return replacement.lower()
+
+    normalized = re.sub(
+        r"\b(?:agama|agamas|atman|brahman|darshan|devi|dharma|guru|kailasa|linga|mantra|mantras|moksha|murti|prasad|puja|sadhana|samadhi|sanskrit|shakti|shaiva|shastra|shiva|sutra|tantra|tantras|upanishad|upanishads|veda|vedanta|vedantic|vedas|yantra|yantras)\b",
+        replace_sacred_terms,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    def replace_known(match):
+        token = match.group(0)
+        upper = token.upper()
+        suffix = ""
+        if upper.endswith("S") and upper[:-1] in LETTER_SPELLED_ACRONYMS:
+            suffix = " S"
+            upper = upper[:-1]
+        elif upper not in LETTER_SPELLED_ACRONYMS:
+            return token
+        spoken = _spell_letters(upper)
+        return f"{spoken}{suffix}"
+
+    normalized = re.sub(
+        r"\b(?:ai|agi|api|apis|cpu|cpus|gpu|gpus|gpt|it|llm|llms|ml|nlp|ui|ux)\b",
+        replace_known,
+        normalized,
+        flags=re.IGNORECASE,
+    )
+
+    def replace_hyphenated(match):
+        token = match.group(1)
+        if token.upper() in LETTER_SPELLED_ACRONYMS:
+            return f"{_spell_letters(token.upper())} {match.group(2).lstrip('-')}"
+        return match.group(0)
+
+    normalized = re.sub(r"\b([A-Za-z]{2,5})(-\d+)\b", replace_hyphenated, normalized)
+    normalized = re.sub(r"\b(([A-Z]\s+){1,5}[A-Z])-(\d+)\b", r"\1 \3", normalized)
+    return normalized
 
 
 def _extract_reference_audio(video_path, output_path, duration=10):
@@ -115,7 +229,7 @@ def _get_fallback_voices(primary_voice):
 
 def generate_tts_audio(
     segments,
-    voice="gu-IN-NiranjanNeural",
+    voice="en-GB-RyanNeural",
     output_dir="workspace",
 ):
     """
@@ -141,9 +255,12 @@ def generate_tts_audio(
     for idx, seg in enumerate(segments):
         seg_id = seg["id"]
         raw_text = (seg.get("translated") or seg.get("text", "")).strip()
-        text = _sanitize_text(raw_text)
+        tts_text = _normalize_tts_pronunciation(raw_text)
+        text = _sanitize_text(tts_text)
         clip = os.path.join(clips_dir, f"clip_{seg_id:04d}.wav")
 
+        if text != raw_text:
+            log("TTS", f"  Pronunciation normalized seg#{seg_id}: {raw_text[:70]} -> {text[:70]}")
         log("TTS", f"[{idx + 1}/{len(segments)}] seg#{seg_id}: {text[:70]}")
 
         success = False
@@ -229,7 +346,14 @@ def generate_tts_audio(
             continue
 
         dur_ms = len(AudioSegment.from_file(clip))
-        results.append({**seg, "audio_path": clip, "audio_dur_ms": dur_ms})
+        results.append(
+            {
+                **seg,
+                "tts_text": text,
+                "audio_path": clip,
+                "audio_dur_ms": dur_ms,
+            }
+        )
         log("TTS", f"  Generated {dur_ms}ms")
 
     if skipped:

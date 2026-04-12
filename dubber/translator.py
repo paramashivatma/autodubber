@@ -3,16 +3,80 @@ from .utils import log, track_api_call, track_api_success
 from .runtime_config import is_economy_mode
 from .config import get_gemini_api_key
 
-GUJARATI_RANGE = (0x0A80, 0x0AFF)
+LANGUAGE_SPECS = {
+    "en": {
+        "name": "English",
+        "script_ranges": [
+            (0x0041, 0x005A),
+            (0x0061, 0x007A),
+            (0x00C0, 0x00FF),
+        ],
+        "strict_script_validation": False,
+        "pivot_via_english": False,
+    },
+    "hi": {
+        "name": "Hindi",
+        "script_ranges": [(0x0900, 0x097F)],
+        "strict_script_validation": True,
+        "pivot_via_english": False,
+    },
+    "gu": {
+        "name": "Gujarati",
+        "script_ranges": [(0x0A80, 0x0AFF)],
+        "strict_script_validation": True,
+        "pivot_via_english": True,
+    },
+    "ta": {
+        "name": "Tamil",
+        "script_ranges": [(0x0B80, 0x0BFF)],
+        "strict_script_validation": True,
+        "pivot_via_english": False,
+    },
+    "te": {
+        "name": "Telugu",
+        "script_ranges": [(0x0C00, 0x0C7F)],
+        "strict_script_validation": True,
+        "pivot_via_english": False,
+    },
+    "kn": {
+        "name": "Kannada",
+        "script_ranges": [(0x0C80, 0x0CFF)],
+        "strict_script_validation": True,
+        "pivot_via_english": False,
+    },
+    "ml": {
+        "name": "Malayalam",
+        "script_ranges": [(0x0D00, 0x0D7F)],
+        "strict_script_validation": True,
+        "pivot_via_english": False,
+    },
+    "bn": {
+        "name": "Bengali",
+        "script_ranges": [(0x0980, 0x09FF)],
+        "strict_script_validation": True,
+        "pivot_via_english": False,
+    },
+    "es": {
+        "name": "Spanish",
+        "script_ranges": [
+            (0x0041, 0x005A),
+            (0x0061, 0x007A),
+            (0x00C0, 0x00FF),
+        ],
+        "strict_script_validation": False,
+        "pivot_via_english": False,
+    },
+    "ru": {
+        "name": "Russian",
+        "script_ranges": [(0x0400, 0x04FF)],
+        "strict_script_validation": True,
+        "pivot_via_english": False,
+    },
+}
 
-NON_GUJARATI_SCRIPTS = [
-    (0x0B80, 0x0BFF),  # Tamil
-    (0x0C00, 0x0C7F),  # Telugu
-    (0x0900, 0x097F),  # Devanagari
-    (0x0980, 0x09FF),  # Bengali
-    (0x0C80, 0x0CFF),  # Kannada
-    (0x0D00, 0x0D7F),  # Malayalam
-]
+LANGUAGE_NAMES = {
+    code: spec["name"] for code, spec in LANGUAGE_SPECS.items()
+}
 
 # Translation cache
 _cache_file = "translation_cache.json"
@@ -81,26 +145,25 @@ def _log_skip_once():
         )
 
 
-def _google_translate_text(text, target_language, source_hint="auto", use_pivot=True):
-    """Google Translate helper with optional English pivot for Gujarati quality."""
+def _google_translate_text(text, target_language, source_hint="auto", use_pivot=False):
+    """Google Translate helper with optional English pivot for language-specific quality."""
     from deep_translator import GoogleTranslator
 
     direct = GoogleTranslator(source="auto", target=target_language).translate(text)
-    if target_language != "gu":
+    spec = _language_spec(target_language)
+    if not spec.get("pivot_via_english"):
         return direct
 
-    if direct and _is_gujarati_script(direct) and not _has_foreign_script(direct):
+    if direct and _is_translation_acceptable(direct, target_language):
         return direct
 
     if use_pivot and source_hint != "en":
         try:
             english = GoogleTranslator(source="auto", target="en").translate(text)
-            pivoted = GoogleTranslator(source="en", target="gu").translate(english)
-            if (
-                pivoted
-                and _is_gujarati_script(pivoted)
-                and not _has_foreign_script(pivoted)
-            ):
+            pivoted = GoogleTranslator(source="en", target=target_language).translate(
+                english
+            )
+            if pivoted and _is_translation_acceptable(pivoted, target_language):
                 return pivoted
         except Exception as e:
             log("TRANSLATE", f"  Pivot error: {e}")
@@ -132,20 +195,39 @@ def _save_cache():
         log("TRANSLATE", f"[CACHE] Save failed: {e}")
 
 
-def _normalize_key(text, target_language="gu"):
+def _language_spec(target_language):
+    return LANGUAGE_SPECS.get(
+        str(target_language or "").lower(),
+        {
+            "name": str(target_language or "target language"),
+            "script_ranges": [],
+            "strict_script_validation": False,
+            "pivot_via_english": False,
+        },
+    )
+
+
+def _normalize_key(text, target_language="en"):
     """Normalize text for cache key, scoped by target language."""
     return f"{target_language}::{text.strip().lower()}"
 
 
-def _get_cached(text, target_language="gu"):
+def _get_cached(text, target_language="en"):
     """Get cached translation if exists."""
     key = _normalize_key(text, target_language)
-    return _translation_cache.get(key)
+    cached = _translation_cache.get(key)
+    if cached is None:
+        return None
+    if _is_translation_acceptable(cached, target_language):
+        return cached
+    log("TRANSLATE", "[CACHE_INVALID] Discarding stale cached translation")
+    _translation_cache.pop(key, None)
+    return None
 
 
-def _set_cached(text, translation, target_language="gu"):
+def _set_cached(text, translation, target_language="en"):
     """Cache translation if text is short enough."""
-    if len(text) < 300:
+    if len(text) < 300 and _is_translation_acceptable(translation, target_language):
         key = _normalize_key(text, target_language)
         _translation_cache[key] = translation
 
@@ -154,24 +236,62 @@ def _set_cached(text, translation, target_language="gu"):
 _load_cache()
 
 
-def _is_gujarati_script(text):
+def _count_alpha_chars(text):
+    return sum(1 for c in text if str(c).isalpha())
+
+
+def _count_chars_in_ranges(text, ranges):
+    count = 0
+    for c in text:
+        code = ord(c)
+        if any(start <= code <= end for start, end in ranges):
+            count += 1
+    return count
+
+
+def _is_expected_script(text, target_language):
     if not text:
         return False
-    guj_chars = sum(1 for c in text if GUJARATI_RANGE[0] <= ord(c) <= GUJARATI_RANGE[1])
-    return guj_chars / len(text) > 0.25
+    spec = _language_spec(target_language)
+    ranges = spec.get("script_ranges") or []
+    if not ranges:
+        return True
+    alpha_chars = _count_alpha_chars(text)
+    if alpha_chars == 0:
+        return True
+    return (_count_chars_in_ranges(text, ranges) / alpha_chars) > 0.25
 
 
-def _has_foreign_script(text):
+def _has_unexpected_script(text, target_language):
     if not text:
         return False
-    for start, end in NON_GUJARATI_SCRIPTS:
-        foreign = sum(1 for c in text if start <= ord(c) <= end)
-        if foreign / len(text) > 0.10:
-            return True
-    return False
+    spec = _language_spec(target_language)
+    expected_ranges = spec.get("script_ranges") or []
+    if not expected_ranges:
+        return False
+
+    unexpected_ranges = []
+    for code, other_spec in LANGUAGE_SPECS.items():
+        if code == str(target_language or "").lower():
+            continue
+        unexpected_ranges.extend(other_spec.get("script_ranges") or [])
+
+    alpha_chars = _count_alpha_chars(text)
+    if alpha_chars == 0:
+        return False
+    return (_count_chars_in_ranges(text, unexpected_ranges) / alpha_chars) > 0.10
 
 
-def _gemini_translate(text, source_hint="auto", target_language="gu"):
+def _is_translation_acceptable(text, target_language):
+    spec = _language_spec(target_language)
+    if not spec.get("strict_script_validation"):
+        return bool(text)
+    return bool(text) and _is_expected_script(text, target_language) and not _has_unexpected_script(
+        text, target_language
+    )
+
+
+def _gemini_translate(text, source_hint="auto", target_language="en"):
     from google import genai
     from google.genai import types
 
@@ -186,19 +306,7 @@ def _gemini_translate(text, source_hint="auto", target_language="gu"):
 
     client = genai.Client(api_key=api_key)
 
-    lang_names = {
-        "gu": "Gujarati",
-        "hi": "Hindi",
-        "ta": "Tamil",
-        "te": "Telugu",
-        "kn": "Kannada",
-        "ml": "Malayalam",
-        "bn": "Bengali",
-        "es": "Spanish",
-        "ru": "Russian",
-        "en": "English",
-        "auto": "the detected language",
-    }
+    lang_names = {**LANGUAGE_NAMES, "auto": "the detected language"}
 
     source_lang = lang_names.get(source_hint, source_hint)
     target_lang = lang_names.get(target_language, target_language)
@@ -266,19 +374,7 @@ def _gemini_translate_batch(texts, source_hint, target_language):
 
     client = genai.Client(api_key=api_key)
 
-    lang_names = {
-        "gu": "Gujarati",
-        "hi": "Hindi",
-        "ta": "Tamil",
-        "te": "Telugu",
-        "kn": "Kannada",
-        "ml": "Malayalam",
-        "bn": "Bengali",
-        "es": "Spanish",
-        "ru": "Russian",
-        "en": "English",
-        "auto": "the detected language",
-    }
+    lang_names = {**LANGUAGE_NAMES, "auto": "the detected language"}
     target_name = lang_names.get(target_language, target_language)
     source_name = lang_names.get(source_hint, source_hint)
 
@@ -336,7 +432,7 @@ Texts to translate:
     )
 
 
-def _mistral_translate(text, source_hint="auto", target_language="gu"):
+def _mistral_translate(text, source_hint="auto", target_language="en"):
     """Translate using Mistral API as fallback when Gemini fails."""
     from .config import get_mistral_api_key
     import httpx
@@ -345,19 +441,7 @@ def _mistral_translate(text, source_hint="auto", target_language="gu"):
     if not api_key:
         raise RuntimeError("No Mistral API key available for fallback translation.")
 
-    lang_names = {
-        "gu": "Gujarati",
-        "hi": "Hindi",
-        "ta": "Tamil",
-        "te": "Telugu",
-        "kn": "Kannada",
-        "ml": "Malayalam",
-        "bn": "Bengali",
-        "es": "Spanish",
-        "ru": "Russian",
-        "en": "English",
-        "auto": "English",
-    }
+    lang_names = {**LANGUAGE_NAMES, "auto": "English"}
 
     target_lang = lang_names.get(target_language, target_language)
     source_lang = lang_names.get(source_hint, "English")
@@ -412,19 +496,7 @@ def _mistral_translate_batch(texts, source_hint, target_language):
     if not api_key:
         raise RuntimeError("No Mistral API key available for fallback translation.")
 
-    lang_names = {
-        "gu": "Gujarati",
-        "hi": "Hindi",
-        "ta": "Tamil",
-        "te": "Telugu",
-        "kn": "Kannada",
-        "ml": "Malayalam",
-        "bn": "Bengali",
-        "es": "Spanish",
-        "ru": "Russian",
-        "en": "English",
-        "auto": "English",
-    }
+    lang_names = {**LANGUAGE_NAMES, "auto": "English"}
 
     target_name = lang_names.get(target_language, target_language)
     source_name = lang_names.get(source_hint, "English")
@@ -484,10 +556,7 @@ def _translate_segments_per_segment(texts, source_hint, target_language):
     translations = []
     for i, text in enumerate(texts):
         try:
-            if target_language == "gu":
-                translated = _translate_to_gujarati(text, source_hint)
-            else:
-                translated = _translate_generic(text, target_language)
+            translated = _translate_with_policy(text, target_language, source_hint)
         except Exception as e:
             log("TRANSLATE", f"  ERROR on text {i + 1}: {e} — using source text")
             translated = text
@@ -495,6 +564,25 @@ def _translate_segments_per_segment(texts, source_hint, target_language):
         translations.append(translated)
 
     return translations
+
+
+def _detect_source_hint(text):
+    text = text or ""
+    alpha_chars = _count_alpha_chars(text)
+    if alpha_chars == 0:
+        return "auto"
+
+    best_code = "en"
+    best_ratio = 0.0
+    for code, spec in LANGUAGE_SPECS.items():
+        ranges = spec.get("script_ranges") or []
+        if not ranges:
+            continue
+        ratio = _count_chars_in_ranges(text, ranges) / alpha_chars
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_code = code
+    return best_code if best_ratio > 0.10 else "en"
 
 
 def _parse_batch_response(response, expected_count):
@@ -540,189 +628,10 @@ def _parse_batch_response(response, expected_count):
     return translations
 
 
-def _translate_to_gujarati(text, source_hint="auto"):
-    # Check cache first
-    cached = _get_cached(text, "gu")
-    if cached:
-        log("TRANSLATE", "[CACHE_HIT] Using cached translation")
-        return cached
+def _translate_with_policy(text, target_language, source_hint="auto"):
+    spec = _language_spec(target_language)
+    language_name = spec.get("name", target_language)
 
-    if is_economy_mode():
-        result = _google_translate_text(
-            text, "gu", source_hint=source_hint, use_pivot=True
-        )
-        _set_cached(text, result or text, "gu")
-        return result or text
-
-    result = None
-    if _gemini_quota_exhausted:
-        _log_skip_once()
-    else:
-        try:
-            result = _gemini_translate(text, source_hint, "gu")
-            if (
-                result
-                and _is_gujarati_script(result)
-                and not _has_foreign_script(result)
-            ):
-                _set_cached(text, result, "gu")
-                return result
-            log(
-                "TRANSLATE",
-                "  Gemini output not clean Gujarati — falling back to Google Translate ...",
-            )
-        except Exception as e:
-            if _is_quota_exhausted_error(e):
-                _mark_quota_exhausted(e)
-            log(
-                "TRANSLATE",
-                f"  Gemini failed: {e} — falling back to Google Translate ...",
-            )
-
-    try:
-        result = _google_translate_text(
-            text, "gu", source_hint=source_hint, use_pivot=False
-        )
-    except Exception as e:
-        log("TRANSLATE", f"  Google Translate failed: {e} — returning original text")
-        _set_cached(text, text, "gu")
-        return text
-    if result and _is_gujarati_script(result) and not _has_foreign_script(result):
-        _set_cached(text, result, "gu")
-        return result
-
-    if source_hint != "en":
-        log("TRANSLATE", "  Trying English pivot ...")
-        try:
-            result2 = _google_translate_text(
-                text, "gu", source_hint=source_hint, use_pivot=True
-            )
-            if (
-                result2
-                and _is_gujarati_script(result2)
-                and not _has_foreign_script(result2)
-            ):
-                _set_cached(text, result2, "gu")
-                return result2
-        except Exception as e:
-            log("TRANSLATE", f"  Pivot error: {e}")
-
-    log(
-        "TRANSLATE",
-        "  WARNING: Could not get clean Gujarati — using best available result",
-    )
-    _set_cached(text, result or text, "gu")
-    return result or text
-
-
-def _translate_to_gujarati_batch(texts, source_hint="auto"):
-    """Batch translate multiple texts to Gujarati, using cache when available."""
-    if is_economy_mode():
-        log(
-            "TRANSLATE",
-            "  Economy mode: using Google Translate-first routing for batch.",
-        )
-        return [_translate_to_gujarati(t, source_hint) for t in texts]
-
-    cached_results = [_get_cached(t, "gu") for t in texts]
-    uncached_indices = [i for i, c in enumerate(cached_results) if c is None]
-    cached_count = len(texts) - len(uncached_indices)
-
-    if cached_count > 0:
-        log("TRANSLATE", f"  [CACHE] {cached_count}/{len(texts)} texts already cached")
-
-    if not uncached_indices:
-        return cached_results
-
-    uncached_texts = [texts[i] for i in uncached_indices]
-
-    try:
-        translations = _gemini_translate_batch(uncached_texts, source_hint, "gu")
-        if translations is not None:
-            validated_translations = []
-            for translation in translations:
-                if (
-                    translation
-                    and _is_gujarati_script(translation)
-                    and not _has_foreign_script(translation)
-                ):
-                    validated_translations.append(translation)
-                else:
-                    validated_translations.append(None)
-
-            if any(t is None for t in validated_translations):
-                log(
-                    "TRANSLATE",
-                    "  Some Gemini outputs not clean Gujarati — using Mistral fallback...",
-                )
-                try:
-                    mistral_results = _mistral_translate_batch(
-                        [
-                            texts[i]
-                            for i in uncached_indices
-                            if validated_translations[uncached_indices.index(i)] is None
-                        ],
-                        source_hint,
-                        "gu",
-                    )
-                    if mistral_results:
-                        for idx, result in zip(uncached_indices, mistral_results):
-                            if validated_translations[idx] is None:
-                                validated_translations[idx] = result
-                except Exception as e:
-                    log("TRANSLATE", f"  Mistral fallback failed: {e}")
-
-            if not any(t is None for t in validated_translations):
-                results = list(cached_results)
-                for idx, translation, text in zip(
-                    uncached_indices, validated_translations, uncached_texts
-                ):
-                    results[idx] = translation
-                    _set_cached(text, translation, "gu")
-                return results
-
-        if _gemini_quota_exhausted:
-            log("TRANSLATE", "  Gemini quota exhausted — trying Mistral fallback...")
-            try:
-                mistral_results = _mistral_translate_batch(
-                    uncached_texts, source_hint, "gu"
-                )
-                if mistral_results:
-                    results = list(cached_results)
-                    for idx, translation, text in zip(
-                        uncached_indices, mistral_results, uncached_texts
-                    ):
-                        results[idx] = translation
-                        _set_cached(text, translation, "gu")
-                    return results
-            except Exception as e:
-                log(
-                    "TRANSLATE",
-                    f"  Mistral fallback failed: {e} — using per-segment translation",
-                )
-                return _translate_segments_per_segment(texts, source_hint, "gu")
-
-        return _translate_segments_per_segment(texts, source_hint, "gu")
-
-    except Exception as e:
-        if _is_quota_exhausted_error(e):
-            _mark_quota_exhausted(e)
-        log(
-            "TRANSLATE",
-            f"  Translation batch failed: {e} — using per-segment translation",
-        )
-        return _translate_segments_per_segment(texts, source_hint, "gu")
-
-    except Exception as e:
-        log(
-            "TRANSLATE",
-            f"  Gemini batch failed: {e} — falling back to per-segment translation",
-        )
-        return _translate_segments_per_segment(texts, source_hint, "gu")
-
-
-def _translate_generic(text, target_language):
-    # Check cache first
     cached = _get_cached(text, target_language)
     if cached:
         log("TRANSLATE", "[CACHE_HIT] Using cached translation")
@@ -730,43 +639,77 @@ def _translate_generic(text, target_language):
 
     if is_economy_mode():
         result = _google_translate_text(
-            text, target_language, source_hint="auto", use_pivot=False
+            text,
+            target_language,
+            source_hint=source_hint,
+            use_pivot=spec.get("pivot_via_english", False),
         )
         _set_cached(text, result or text, target_language)
         return result or text
 
+    result = None
     if _gemini_quota_exhausted:
         _log_skip_once()
     else:
         try:
-            result = _gemini_translate(text, "auto", target_language)
-            _set_cached(text, result, target_language)
-            return result
+            result = _gemini_translate(text, source_hint, target_language)
+            if _is_translation_acceptable(result, target_language):
+                _set_cached(text, result, target_language)
+                return result
+            log(
+                "TRANSLATE",
+                f"  Gemini output not clean {language_name} — falling back to Google Translate ...",
+            )
         except Exception as e:
             if _is_quota_exhausted_error(e):
                 _mark_quota_exhausted(e)
             log(
                 "TRANSLATE",
-                f"  Gemini failed for {target_language}: {e} — using Google Translate",
+                f"  Gemini failed for {target_language}: {e} — falling back to Google Translate ...",
             )
-    result = _google_translate_text(
-        text, target_language, source_hint="auto", use_pivot=False
-    )
-    if result:
-        _set_cached(text, result, target_language)
-    else:
+
+    try:
+        result = _google_translate_text(
+            text, target_language, source_hint=source_hint, use_pivot=False
+        )
+    except Exception as e:
+        log("TRANSLATE", f"  Google Translate failed: {e} — returning original text")
         _set_cached(text, text, target_language)
+        return text
+    if _is_translation_acceptable(result, target_language):
+        _set_cached(text, result, target_language)
+        return result
+
+    if spec.get("pivot_via_english") and source_hint != "en":
+        log("TRANSLATE", "  Trying English pivot ...")
+        try:
+            result2 = _google_translate_text(
+                text, target_language, source_hint=source_hint, use_pivot=True
+            )
+            if _is_translation_acceptable(result2, target_language):
+                _set_cached(text, result2, target_language)
+                return result2
+        except Exception as e:
+            log("TRANSLATE", f"  Pivot error: {e}")
+
+    log(
+        "TRANSLATE",
+        f"  WARNING: Could not get clean {language_name} — using best available result",
+    )
+    _set_cached(text, result or text, target_language)
     return result or text
 
 
-def _translate_generic_batch(texts, target_language):
-    """Batch translate multiple texts to generic language, using cache when available."""
+def _translate_batch_with_policy(texts, target_language, source_hint="auto"):
+    """Batch translate multiple texts using per-language policy."""
+    spec = _language_spec(target_language)
+    language_name = spec.get("name", target_language)
     if is_economy_mode():
         log(
             "TRANSLATE",
-            f"  Economy mode: Google Translate-first for target={target_language}.",
+            f"  Economy mode: using Google Translate-first routing for {language_name} batch.",
         )
-        return [_translate_generic(t, target_language) for t in texts]
+        return [_translate_with_policy(t, target_language, source_hint) for t in texts]
 
     cached_results = [_get_cached(t, target_language) for t in texts]
     uncached_indices = [i for i, c in enumerate(cached_results) if c is None]
@@ -781,11 +724,54 @@ def _translate_generic_batch(texts, target_language):
     uncached_texts = [texts[i] for i in uncached_indices]
 
     try:
-        translations = _gemini_translate_batch(uncached_texts, "auto", target_language)
+        translations = _gemini_translate_batch(
+            uncached_texts, source_hint, target_language
+        )
         if translations is not None:
+            validated_translations = []
+            for translation in translations:
+                if _is_translation_acceptable(translation, target_language):
+                    validated_translations.append(translation)
+                else:
+                    validated_translations.append(None)
+
+            if any(t is None for t in validated_translations):
+                log(
+                    "TRANSLATE",
+                    f"  Some Gemini outputs not clean {language_name} — filling with fallback translations...",
+                )
+                missing_pairs = [
+                    (idx, text)
+                    for idx, text, translation in zip(
+                        uncached_indices, uncached_texts, validated_translations
+                    )
+                    if translation is None
+                ]
+                if missing_pairs:
+                    try:
+                        mistral_results = _mistral_translate_batch(
+                            [text for _, text in missing_pairs],
+                            source_hint,
+                            target_language,
+                        )
+                        if mistral_results:
+                            for (idx, _), result in zip(missing_pairs, mistral_results):
+                                local_index = uncached_indices.index(idx)
+                                if _is_translation_acceptable(result, target_language):
+                                    validated_translations[local_index] = result
+                    except Exception as e:
+                        log("TRANSLATE", f"  Mistral fallback failed: {e}")
+
+                    for idx, text in missing_pairs:
+                        local_index = uncached_indices.index(idx)
+                        if validated_translations[local_index] is None:
+                            validated_translations[local_index] = _translate_with_policy(
+                                text, target_language, source_hint
+                            )
+
             results = list(cached_results)
             for idx, translation, text in zip(
-                uncached_indices, translations, uncached_texts
+                uncached_indices, validated_translations, uncached_texts
             ):
                 results[idx] = translation
                 _set_cached(text, translation, target_language)
@@ -795,7 +781,7 @@ def _translate_generic_batch(texts, target_language):
             log("TRANSLATE", "  Gemini quota exhausted — trying Mistral fallback...")
             try:
                 mistral_results = _mistral_translate_batch(
-                    uncached_texts, "auto", target_language
+                    uncached_texts, source_hint, target_language
                 )
                 if mistral_results:
                     results = list(cached_results)
@@ -806,9 +792,15 @@ def _translate_generic_batch(texts, target_language):
                         _set_cached(text, translation, target_language)
                     return results
             except Exception as e:
-                log("TRANSLATE", f"  Mistral fallback failed: {e}")
+                log(
+                    "TRANSLATE",
+                    f"  Mistral fallback failed: {e} — using per-segment translation",
+                )
+                return _translate_segments_per_segment(
+                    texts, source_hint, target_language
+                )
 
-        return _translate_segments_per_segment(texts, "auto", target_language)
+        return _translate_segments_per_segment(texts, source_hint, target_language)
 
     except Exception as e:
         if _is_quota_exhausted_error(e):
@@ -817,28 +809,24 @@ def _translate_generic_batch(texts, target_language):
             "TRANSLATE",
             f"  Translation batch failed: {e} — using per-segment translation",
         )
-        return _translate_segments_per_segment(texts, "auto", target_language)
+        return _translate_segments_per_segment(texts, source_hint, target_language)
 
     except Exception as e:
         log(
             "TRANSLATE",
             f"  Gemini batch failed for {target_language}: {e} — falling back to per-segment translation",
         )
-        return _translate_segments_per_segment(texts, "auto", target_language)
+        return _translate_segments_per_segment(texts, source_hint, target_language)
 
 
-def translate_segments(segments, target_language="gu", output_dir="workspace"):
+def translate_segments(segments, target_language="en", output_dir="workspace"):
     os.makedirs(output_dir, exist_ok=True)
     _reset_runtime_state()
 
     source_hint = "auto"
     if segments:
         first_text = segments[0].get("text", "")
-        tamil_chars = sum(1 for c in first_text if 0x0B80 <= ord(c) <= 0x0BFF)
-        if len(first_text) > 0 and tamil_chars / len(first_text) > 0.10:
-            source_hint = "ta"
-        else:
-            source_hint = "en"
+        source_hint = _detect_source_hint(first_text)
 
     log("TRANSLATE", f"Source script hint: {source_hint} | Target: {target_language}")
     log("TRANSLATE", f"Batch translating {len(segments)} segments...")
@@ -847,11 +835,7 @@ def translate_segments(segments, target_language="gu", output_dir="workspace"):
     texts = [seg["text"] for seg in segments]
 
     try:
-        # Use batch translation
-        if target_language == "gu":
-            translations = _translate_to_gujarati_batch(texts, source_hint)
-        else:
-            translations = _translate_generic_batch(texts, target_language)
+        translations = _translate_batch_with_policy(texts, target_language, source_hint)
 
         log("TRANSLATE", f"Batch translation completed, processing results...")
 
@@ -864,12 +848,15 @@ def translate_segments(segments, target_language="gu", output_dir="workspace"):
     for i, (seg, translated) in enumerate(zip(segments, translations)):
         log("TRANSLATE", f"[{i + 1}/{len(segments)}] {texts[i][:70]}")
 
-        if _has_foreign_script(translated):
+        if _has_unexpected_script(translated, target_language):
             log("TRANSLATE", f"  !! FOREIGN SCRIPT in output — check segment {i + 1}")
 
         log("TRANSLATE", f"  -> {translated[:70]}")
-        if target_language == "gu":
-            log("TRANSLATE", f"     Gujarati script: {_is_gujarati_script(translated)}")
+        if _language_spec(target_language).get("strict_script_validation"):
+            log(
+                "TRANSLATE",
+                f"     Expected script: {_is_expected_script(translated, target_language)}",
+            )
         results.append({**seg, "translated": translated})
 
     with open(

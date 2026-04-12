@@ -1,4 +1,4 @@
-import os, json, subprocess
+import os, json, re, subprocess
 import httpx
 from .config import get_groq_api_key
 from .utils import log, track_api_call, track_api_success
@@ -6,6 +6,11 @@ from .utils import log, track_api_call, track_api_success
 GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3"
 MAX_FILE_MB = 25  # Groq limit
+MIN_GAP_PROBE_SEC = 0.75
+MIN_EDGE_GAP_PROBE_SEC = 0.2
+MIN_PROBE_AUDIO_BYTES = 1000
+PROBE_AUDIO_SAMPLE_RATE = "16000"
+PROBE_AUDIO_CHANNELS = "1"
 
 
 def _ffprobe_duration(path):
@@ -28,6 +33,59 @@ def _ffprobe_duration(path):
         return float(r.stdout.strip())
     except ValueError:
         raise RuntimeError(f"ffprobe failed for: {path}\n{r.stderr}")
+
+
+def _looks_like_spoken_text(text):
+    """Heuristic to distinguish likely speech from punctuation/noise-only output."""
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip(" \t\r\n-–—_")
+    if not cleaned:
+        return False
+    if re.fullmatch(r"[^\w]+", cleaned, flags=re.UNICODE):
+        return False
+    tokens = re.findall(r"[^\W_]+(?:['’-][^\W_]+)?|\d+", cleaned, flags=re.UNICODE)
+    if not tokens:
+        return False
+
+    meaningful = [tok for tok in tokens if sum(ch.isalnum() for ch in tok) >= 2]
+    if not meaningful:
+        return False
+
+    filler_tokens = {"uh", "um", "hmm", "hm", "mm", "mmm", "ah"}
+    if all(tok.lower() in filler_tokens for tok in meaningful):
+        return False
+
+    return True
+
+
+def _looks_like_probe_speech(text, duration_sec=0.0):
+    """Stricter speech gate for coverage probes to avoid dubbing music/noise gaps."""
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip(" \t\r\n-–—_")
+    if not _looks_like_spoken_text(cleaned):
+        return False
+
+    normalized = re.sub(r"[^\w\s']", "", cleaned.lower(), flags=re.UNICODE).strip()
+    tokens = re.findall(r"[^\W_]+(?:['’-][^\W_]+)?|\d+", cleaned, flags=re.UNICODE)
+    meaningful = [tok for tok in tokens if sum(ch.isalnum() for ch in tok) >= 2]
+    alnum_count = sum(ch.isalnum() for ch in cleaned)
+    generic_probe_phrases = {
+        "i dont know",
+        "i don't know",
+        "you know",
+        "okay",
+        "ok",
+        "yeah",
+        "yes",
+        "no",
+    }
+
+    if normalized in generic_probe_phrases and len(meaningful) <= 3 and duration_sec <= 2.5:
+        return False
+
+    if len(meaningful) >= 2:
+        return True
+    if alnum_count >= 6 and duration_sec >= 0.45:
+        return True
+    return False
 
 
 # Post-processing dictionary for common transcription errors
@@ -440,15 +498,15 @@ def _groq_transcribe(api_key, audio_path, language, output_dir):
                     "text": fixed_text,
                 }
             )
-        # Advance offset by last segment end
-        segs = result.get("segments", [])
-        if segs:
-            time_offset += segs[-1]["end"]
+        # Advance by actual chunk duration so silent chunk tails do not shift later timestamps.
+        time_offset += _ffprobe_duration(chunk_path)
 
     return all_segments, detected_lang
 
 
-def _local_transcribe(audio_path, language, model_size, output_dir):
+def _local_transcribe(
+    audio_path, language, model_size, output_dir, vad_filter=True, beam_size=5
+):
     lang_code = language if language and language != "auto" else None
 
     try:
@@ -457,7 +515,10 @@ def _local_transcribe(audio_path, language, model_size, output_dir):
         log("TRANSCRIBE", f"Local Whisper (faster-whisper): {model_size}")
         model = WhisperModel(model_size, device="cpu", compute_type="int8")
         fw_segments, info = model.transcribe(
-            audio_path, language=lang_code, beam_size=5, vad_filter=True
+            audio_path,
+            language=lang_code,
+            beam_size=beam_size,
+            vad_filter=vad_filter,
         )
         detected = getattr(info, "language", language)
         segments = []
@@ -485,6 +546,209 @@ def _local_transcribe(audio_path, language, model_size, output_dir):
             "Local transcription failed. Set GROQ_API_KEY for cloud transcription "
             "or install faster-whisper (pip install faster-whisper)."
         ) from e
+
+
+def _normalize_segments(segments, total_duration=None):
+    normalized = []
+    for seg in sorted(segments, key=lambda s: (float(s.get("start", 0.0)), float(s.get("end", 0.0)))):
+        text = (seg.get("text") or "").strip()
+        if not _looks_like_spoken_text(text):
+            continue
+        start = max(float(seg.get("start", 0.0)), 0.0)
+        end = max(float(seg.get("end", start)), start)
+        if total_duration is not None:
+            start = min(start, total_duration)
+            end = min(end, total_duration)
+        if end - start < 0.05:
+            end = min(start + 0.05, total_duration if total_duration is not None else start + 0.05)
+        normalized.append(
+            {
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "text": text,
+                **{
+                    k: v
+                    for k, v in seg.items()
+                    if k not in {"id", "start", "end", "text"}
+                },
+            }
+        )
+
+    for i, seg in enumerate(normalized):
+        seg["id"] = i
+    return normalized
+
+
+def _build_uncovered_ranges(segments, total_duration):
+    ranges = []
+    cursor = 0.0
+    for seg in sorted(segments, key=lambda s: s["start"]):
+        start = max(0.0, min(float(seg["start"]), total_duration))
+        end = max(start, min(float(seg["end"]), total_duration))
+        if start > cursor:
+            ranges.append((round(cursor, 3), round(start, 3)))
+        cursor = max(cursor, end)
+    if cursor < total_duration:
+        ranges.append((round(cursor, 3), round(total_duration, 3)))
+    return ranges
+
+
+def _should_probe_range(start, end, total_duration):
+    gap = end - start
+    near_edge = start <= 1.0 or (total_duration - end) <= 1.0
+    min_gap = MIN_EDGE_GAP_PROBE_SEC if near_edge else max(MIN_GAP_PROBE_SEC, 1.5)
+    return gap >= min_gap
+
+
+def _extract_audio_range(src_wav, start, end, output_path):
+    duration = max(end - start, 0.0)
+    if duration <= 0.0:
+        return False
+    r = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(round(start, 3)),
+            "-i",
+            src_wav,
+            "-t",
+            str(round(duration, 3)),
+            "-ar",
+            PROBE_AUDIO_SAMPLE_RATE,
+            "-ac",
+            PROBE_AUDIO_CHANNELS,
+            output_path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    return (
+        r.returncode == 0
+        and os.path.exists(output_path)
+        and os.path.getsize(output_path) > MIN_PROBE_AUDIO_BYTES
+    )
+
+
+def _probe_range_for_segments(
+    start,
+    end,
+    wav_path,
+    output_dir,
+    groq_key,
+    language,
+    model_size,
+):
+    probe_name = f"probe_{int(start * 1000):010d}_{int(end * 1000):010d}"
+    probe_dir = os.path.join(output_dir, "coverage_probes")
+    os.makedirs(probe_dir, exist_ok=True)
+    probe_audio_path = os.path.join(probe_dir, f"{probe_name}.wav")
+    if not _extract_audio_range(wav_path, start, end, probe_audio_path):
+        return []
+
+    try:
+        if groq_key:
+            raw_segments, _ = _groq_transcribe(
+                groq_key,
+                probe_audio_path,
+                None if language in ("auto", None) else language,
+                probe_dir,
+            )
+        else:
+            raw_segments, _ = _local_transcribe(
+                probe_audio_path,
+                language,
+                model_size,
+                probe_dir,
+                vad_filter=True,
+                beam_size=5,
+            )
+            if not raw_segments:
+                raw_segments, _ = _local_transcribe(
+                probe_audio_path,
+                language,
+                model_size,
+                probe_dir,
+                vad_filter=False,
+                beam_size=8,
+                )
+    except Exception as e:
+        log(
+            "TRANSCRIBE",
+            f"Coverage probe failed for {start:.2f}s-{end:.2f}s: {e}",
+        )
+        return []
+
+    discovered = []
+    for seg in raw_segments:
+        text = (seg.get("text") or "").strip()
+        seg_rel_start = float(seg.get("start", 0.0))
+        seg_rel_end = float(seg.get("end", seg_rel_start))
+        seg_duration = max(seg_rel_end - seg_rel_start, 0.0)
+        if not _looks_like_probe_speech(text, seg_duration):
+            continue
+        seg_start = start + seg_rel_start
+        seg_end = start + seg_rel_end
+        seg_end = min(seg_end, end)
+        if seg_end <= seg_start:
+            seg_end = min(end, seg_start + 0.05)
+        discovered.append(
+            {
+                "start": round(seg_start, 3),
+                "end": round(seg_end, 3),
+                "text": text,
+                "is_gap_probe": True,
+                "probe_range_start": round(start, 3),
+                "probe_range_end": round(end, 3),
+            }
+        )
+
+    if discovered:
+        log(
+            "TRANSCRIBE",
+            f"Coverage probe found {len(discovered)} segment(s) in {start:.2f}s-{end:.2f}s",
+        )
+    else:
+        log(
+            "TRANSCRIBE",
+            f"Coverage probe found no speech in {start:.2f}s-{end:.2f}s",
+        )
+    return discovered
+
+
+def _audit_speech_coverage(
+    segments,
+    total_duration,
+    wav_path,
+    output_dir,
+    groq_key,
+    language,
+    model_size,
+):
+    normalized = _normalize_segments(segments, total_duration)
+    gap_segments = []
+    for start, end in _build_uncovered_ranges(normalized, total_duration):
+        if not _should_probe_range(start, end, total_duration):
+            continue
+        gap_segments.extend(
+            _probe_range_for_segments(
+                start,
+                end,
+                wav_path,
+                output_dir,
+                groq_key,
+                language,
+                model_size,
+            )
+        )
+
+    if gap_segments:
+        log(
+            "TRANSCRIBE",
+            f"Coverage audit recovered {len(gap_segments)} additional speech segment(s)",
+        )
+    return _normalize_segments(normalized + gap_segments, total_duration)
 
 
 def transcribe_audio(
@@ -515,89 +779,21 @@ def transcribe_audio(
             wav_path, language, model_size, output_dir
         )
 
+    total_duration = _ffprobe_duration(video_path)
+    segments = _audit_speech_coverage(
+        segments,
+        total_duration,
+        wav_path,
+        output_dir,
+        groq_key,
+        language,
+        model_size,
+    )
+
     # Auto-learn potential transcription errors
     log("TRANSCRIBE", "Running auto-learn for transcription fixes...")
     full_text = " ".join(seg.get("text", "") for seg in segments)
     _auto_learn_from_transcription(full_text)
-
-    # Check for tail segment (remaining video after last segment)
-    try:
-        total_duration = _ffprobe_duration(video_path)
-        if segments:
-            last_segment_end = max(seg.get("end", 0) for seg in segments)
-            tail_duration = total_duration - last_segment_end
-
-            # Add tail segment if there's significant remaining video (>0.5s)
-            if tail_duration > 0.5:
-                log(
-                    "TRANSCRIBE",
-                    f"Extracting tail segment audio ({last_segment_end:.2f}s to {total_duration:.2f}s)...",
-                )
-
-                # Extract tail audio
-                tail_audio_path = os.path.join(output_dir, "tail_audio.wav")
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-ss",
-                        str(last_segment_end),
-                        "-i",
-                        wav_path,
-                        "-t",
-                        str(tail_duration),
-                        "-ar",
-                        "16000",
-                        "-ac",
-                        "1",
-                        tail_audio_path,
-                    ],
-                    capture_output=True,
-                    timeout=30,
-                )
-
-                # Transcribe tail audio
-                tail_text = ""
-                if (
-                    os.path.exists(tail_audio_path)
-                    and os.path.getsize(tail_audio_path) > 1000
-                ):
-                    log("TRANSCRIBE", "Transcribing tail segment...")
-                    try:
-                        if groq_key:
-                            tail_result, _ = _groq_transcribe(
-                                groq_key, tail_audio_path, None, output_dir
-                            )
-                            if tail_result:
-                                tail_text = tail_result[0].get("text", "")
-                        else:
-                            tail_result, _ = _local_transcribe(
-                                tail_audio_path, language, model_size, output_dir
-                            )
-                            if tail_result:
-                                tail_text = tail_result[0].get("text", "")
-
-                        log("TRANSCRIBE", f"Tail segment text: {tail_text[:50]}...")
-                    except Exception as e:
-                        log("TRANSCRIBE", f"Tail transcription failed: {e}")
-                        tail_text = "..."
-
-                # Add tail segment
-                next_id = max(seg.get("id", 0) for seg in segments) + 1
-                tail_segment = {
-                    "id": next_id,
-                    "start": last_segment_end,
-                    "end": total_duration,
-                    "text": tail_text,
-                    "is_tail": True,  # Flag to identify tail segment
-                }
-                segments.append(tail_segment)
-                log(
-                    "TRANSCRIBE",
-                    f"Added tail segment: {last_segment_end:.2f}s to {total_duration:.2f}s ({tail_duration:.2f}s)",
-                )
-    except Exception as e:
-        log("TRANSCRIBE", f"Could not check for tail segment: {e}")
 
     out_path = os.path.join(output_dir, "transcript.json")
     with open(out_path, "w", encoding="utf-8") as f:
