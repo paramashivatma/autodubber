@@ -90,6 +90,9 @@ _last_runtime_meta = {
     "used_fallback": False,
     "reason": "",
 }
+PROTECTED_PHRASES = {
+    "Sovereign Order of KAILASA's Nithyananda": "Sovereign Order of KAILASA's Nithyananda",
+}
 
 
 def _reset_runtime_state():
@@ -291,6 +294,21 @@ def _is_translation_acceptable(text, target_language):
     )
 
 
+def _restore_protected_phrases(text):
+    restored = str(text or "")
+    for phrase in PROTECTED_PHRASES.values():
+        escaped = re.escape(phrase)
+        restored = re.sub(escaped, phrase, restored, flags=re.IGNORECASE)
+    return restored
+
+
+def _protect_text_for_translation(text):
+    protected = str(text or "")
+    for phrase in PROTECTED_PHRASES.values():
+        protected = protected.replace(phrase, f"[[{phrase}]]")
+    return protected
+
+
 def _gemini_translate(text, source_hint="auto", target_language="en"):
     from google import genai
     from google.genai import types
@@ -317,6 +335,7 @@ Context: This is a spiritual/Vedantic teaching by a Hindu monk about Hindu deiti
 
 RULES:
 1. PROPER NOUNS: If a name seems clearly misheard (e.g., "Allama" in a Tamil spiritual context likely means "ella malla"), correct it. Otherwise, transliterate names as-is.
+1a. PROTECTED PHRASE: Keep `Sovereign Order of KAILASA's Nithyananda` exactly as written. Do not translate it, paraphrase it, or change its capitalization.
 2. SANSKRIT SHLOKAS: If you detect a Sanskrit verse, mantra, or shloka (e.g., "Om Namah Shivaya", "Yada Yada Hi Dharmasya"), keep it in its original form. Do NOT translate shlokas. Only translate the teacher's explanation around them.
 3. REVERENCE: Maintain a respectful, devotional tone. Keep sacred terms (e.g., Bhakti, Dharma, Prasad) in their original form if natural in {target_lang}.
 4. TTS OPTIMIZED: Use clear punctuation for natural pauses (commas for breaths, periods for full stops). Avoid symbols like *, _, (), or brackets.
@@ -325,7 +344,7 @@ RULES:
 Return ONLY the translation. No explanations.
 
 Text to translate:
-{text}"""
+{_protect_text_for_translation(text)}"""
 
     max_attempts = 1 if is_economy_mode() else 3
     for attempt in range(1, max_attempts + 1):
@@ -343,7 +362,7 @@ Text to translate:
             result = response.text.strip()
             if result:
                 track_api_success("gemini")
-                return result
+                return _restore_protected_phrases(result.replace("[[", "").replace("]]", ""))
         except Exception as e:
             log("TRANSLATE", f"  Gemini attempt {attempt} failed: {e}")
             if _is_quota_exhausted_error(e):
@@ -632,6 +651,7 @@ def _translate_with_policy(text, target_language, source_hint="auto"):
     spec = _language_spec(target_language)
     language_name = spec.get("name", target_language)
 
+    text = _restore_protected_phrases(text)
     cached = _get_cached(text, target_language)
     if cached:
         log("TRANSLATE", "[CACHE_HIT] Using cached translation")
@@ -644,8 +664,9 @@ def _translate_with_policy(text, target_language, source_hint="auto"):
             source_hint=source_hint,
             use_pivot=spec.get("pivot_via_english", False),
         )
-        _set_cached(text, result or text, target_language)
-        return result or text
+        final = _restore_protected_phrases(result or text)
+        _set_cached(text, final, target_language)
+        return final
 
     result = None
     if _gemini_quota_exhausted:
@@ -654,8 +675,9 @@ def _translate_with_policy(text, target_language, source_hint="auto"):
         try:
             result = _gemini_translate(text, source_hint, target_language)
             if _is_translation_acceptable(result, target_language):
-                _set_cached(text, result, target_language)
-                return result
+                final = _restore_protected_phrases(result)
+                _set_cached(text, final, target_language)
+                return final
             log(
                 "TRANSLATE",
                 f"  Gemini output not clean {language_name} — falling back to Google Translate ...",
@@ -674,11 +696,13 @@ def _translate_with_policy(text, target_language, source_hint="auto"):
         )
     except Exception as e:
         log("TRANSLATE", f"  Google Translate failed: {e} — returning original text")
-        _set_cached(text, text, target_language)
-        return text
+        final = _restore_protected_phrases(text)
+        _set_cached(text, final, target_language)
+        return final
     if _is_translation_acceptable(result, target_language):
-        _set_cached(text, result, target_language)
-        return result
+        final = _restore_protected_phrases(result)
+        _set_cached(text, final, target_language)
+        return final
 
     if spec.get("pivot_via_english") and source_hint != "en":
         log("TRANSLATE", "  Trying English pivot ...")
@@ -687,8 +711,9 @@ def _translate_with_policy(text, target_language, source_hint="auto"):
                 text, target_language, source_hint=source_hint, use_pivot=True
             )
             if _is_translation_acceptable(result2, target_language):
-                _set_cached(text, result2, target_language)
-                return result2
+                final = _restore_protected_phrases(result2)
+                _set_cached(text, final, target_language)
+                return final
         except Exception as e:
             log("TRANSLATE", f"  Pivot error: {e}")
 
@@ -696,8 +721,9 @@ def _translate_with_policy(text, target_language, source_hint="auto"):
         "TRANSLATE",
         f"  WARNING: Could not get clean {language_name} — using best available result",
     )
-    _set_cached(text, result or text, target_language)
-    return result or text
+    final = _restore_protected_phrases(result or text)
+    _set_cached(text, final, target_language)
+    return final
 
 
 def _translate_batch_with_policy(texts, target_language, source_hint="auto"):

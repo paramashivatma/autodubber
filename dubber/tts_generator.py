@@ -92,6 +92,13 @@ def _normalize_tts_pronunciation(text):
     if not text:
         return text
 
+    normalized = re.sub(
+        r"\bSovereign Order of KAILASA(?:'s|s)? Nithyananda\b",
+        "Sovereign Order of KAILASA's Nithyananda",
+        text,
+        flags=re.IGNORECASE,
+    )
+
     def replace_sacred_terms(match):
         token = match.group(0)
         lower = token.lower()
@@ -143,7 +150,7 @@ def _normalize_tts_pronunciation(text):
     normalized = re.sub(
         r"\b(?:agama|agamas|atman|brahman|darshan|devi|dharma|guru|kailasa|linga|mantra|mantras|moksha|murti|prasad|puja|sadhana|samadhi|sanskrit|shakti|shaiva|shastra|shiva|sutra|tantra|tantras|upanishad|upanishads|veda|vedanta|vedantic|vedas|yantra|yantras)\b",
         replace_sacred_terms,
-        text,
+        normalized,
         flags=re.IGNORECASE,
     )
 

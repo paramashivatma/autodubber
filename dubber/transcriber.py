@@ -11,6 +11,10 @@ MIN_EDGE_GAP_PROBE_SEC = 0.2
 MIN_PROBE_AUDIO_BYTES = 1000
 PROBE_AUDIO_SAMPLE_RATE = "16000"
 PROBE_AUDIO_CHANNELS = "1"
+PROTECTED_PHRASE_PATTERNS = {
+    r"\bsovereign order of kailashas nithyananda\b": "Sovereign Order of KAILASA's Nithyananda",
+    r"\bsovereign order of kailasa(?:'s|s)? nithyananda\b": "Sovereign Order of KAILASA's Nithyananda",
+}
 
 
 def _ffprobe_duration(path):
@@ -77,8 +81,11 @@ def _looks_like_probe_speech(text, duration_sec=0.0):
         "yes",
         "no",
     }
+    repetitive_interjections = {"oh", "ah", "ha", "hey"}
 
     if normalized in generic_probe_phrases and len(meaningful) <= 3 and duration_sec <= 2.5:
+        return False
+    if meaningful and all(tok.lower() in repetitive_interjections for tok in meaningful):
         return False
 
     if len(meaningful) >= 2:
@@ -86,6 +93,13 @@ def _looks_like_probe_speech(text, duration_sec=0.0):
     if alnum_count >= 6 and duration_sec >= 0.45:
         return True
     return False
+
+
+def _normalize_protected_phrases(text):
+    normalized = str(text or "")
+    for pattern, replacement in PROTECTED_PHRASE_PATTERNS.items():
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    return normalized
 
 
 # Post-processing dictionary for common transcription errors
@@ -302,7 +316,7 @@ def _apply_transcription_fixes(text):
         else:
             fixed_words.append(word)
 
-    return " ".join(fixed_words)
+    return _normalize_protected_phrases(" ".join(fixed_words))
 
 
 def _suggest_fix(original_word, suggested_word):
