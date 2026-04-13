@@ -1102,18 +1102,6 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-        progress_frame = tk.Frame(self, bg=self._colors["panel"])
-        progress_frame.pack(fill="x", padx=16, pady=(0, 4))
-        self.progress_label = tk.Label(
-            progress_frame,
-            textvariable=self.status_var,
-            fg=self._colors["muted"],
-            bg=self._colors["panel"],
-            font=("Segoe UI", 9),
-            anchor="w",
-        )
-        self.progress_label.pack(side="left", fill="x", expand=True)
-
         self.nb = ttk.Notebook(self, style="Modern.TNotebook")
         self.nb.pack(fill="both", expand=True, padx=16, pady=6)
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -1267,18 +1255,6 @@ class App(tk.Tk):
             ).grid(row=i // 4, column=i % 4, sticky="w", padx=6)
 
         ttk.Separator(self.t_dub, orient="horizontal").grid(
-            row=next_row + 12, column=0, columnspan=3, sticky="ew", pady=8
-        )
-        self.dub_publish_now_var = tk.BooleanVar(value=True)
-        tk.Radiobutton(
-            self.t_dub,
-            text="Publish immediately",
-            variable=self.dub_publish_now_var,
-            value=True,
-            font=("Segoe UI", 9),
-        ).grid(row=next_row + 13, column=0, columnspan=2, sticky="w", **pad)
-
-        ttk.Separator(self.t_dub, orient="horizontal").grid(
             row=next_row + 14, column=0, columnspan=3, sticky="ew", pady=8
         )
         self.t_media_tab = tk.Frame(self.nb, bg=self._colors["panel"], padx=0, pady=0)
@@ -1416,14 +1392,6 @@ class App(tk.Tk):
         ttk.Separator(self.t_media, orient="horizontal").grid(
             row=media_row + 14, column=0, columnspan=3, sticky="ew", pady=8
         )
-        self.flyer_publish_now_var = tk.BooleanVar(value=True)
-        tk.Radiobutton(
-            self.t_media,
-            text="Publish immediately",
-            variable=self.flyer_publish_now_var,
-            value=True,
-            font=("Segoe UI", 9),
-        ).grid(row=media_row + 15, column=0, columnspan=2, sticky="w", **pad)
         self._flyer_publish_ready = False
 
         # Bottom action bar
@@ -1983,7 +1951,7 @@ class App(tk.Tk):
                     or "economy"
                 }
             )
-            publish_now_flag = bool(self.flyer_publish_now_var.get())
+            publish_now_flag = True
             flyer_paths = list(self.flyer_paths)
             primary_flyer = flyer_paths[0] if flyer_paths else self.flyer_path
             additional_flyers = flyer_paths[1:] if len(flyer_paths) > 1 else []
@@ -2430,7 +2398,7 @@ class App(tk.Tk):
                 mistral,
                 zernio,
                 selected,
-                self.dub_publish_now_var.get(),
+                True,
                 sched,
                 False,
                 manual_teaser,

@@ -39,6 +39,10 @@ LETTER_SPELLED_ACRONYMS = {
     "UX",
 }
 
+KNOWN_PRONUNCIATION_HINTS = {
+    "paramadvaita": "Parama-dvaita",
+}
+
 
 def _run_async(coro):
     global _loop
@@ -92,6 +96,13 @@ def _normalize_tts_pronunciation(text):
     if not text:
         return text
 
+    def preserve_case(token, replacement):
+        if token.isupper():
+            return replacement.upper()
+        if token[0].isupper():
+            return replacement
+        return replacement.lower()
+
     normalized = re.sub(
         r"\bSovereign Order of KAILASA(?:'s|s)? Nithyananda\b",
         "Sovereign Order of KAILASA's Nithyananda",
@@ -141,15 +152,25 @@ def _normalize_tts_pronunciation(text):
         replacement = replacements.get(lower)
         if not replacement:
             return token
-        if token.isupper():
-            return replacement.upper()
-        if token[0].isupper():
-            return replacement
-        return replacement.lower()
+        return preserve_case(token, replacement)
 
     normalized = re.sub(
         r"\b(?:agama|agamas|atman|brahman|darshan|devi|dharma|guru|kailasa|linga|mantra|mantras|moksha|murti|prasad|puja|sadhana|samadhi|sanskrit|shakti|shaiva|shastra|shiva|sutra|tantra|tantras|upanishad|upanishads|veda|vedanta|vedantic|vedas|yantra|yantras)\b",
         replace_sacred_terms,
+        normalized,
+        flags=re.IGNORECASE,
+    )
+
+    def replace_pronunciation_hint(match):
+        token = match.group(0)
+        replacement = KNOWN_PRONUNCIATION_HINTS.get(token.lower())
+        if not replacement:
+            return token
+        return preserve_case(token, replacement)
+
+    normalized = re.sub(
+        r"\b(?:paramadvaita)\b",
+        replace_pronunciation_hint,
         normalized,
         flags=re.IGNORECASE,
     )
