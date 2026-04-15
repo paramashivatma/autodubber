@@ -25,6 +25,7 @@ TAGS4 = "#KAILASA #Nithyananda"
 TAGS3 = "#KAILASA #Nithyananda"
 TAGS2 = "#KAILASA"
 BULLET = "•"
+TARGET_TOTAL_HASHTAGS = 4
 
 MAX_TRANSCRIPT_CHARS = 3000
 SAFE_CAPTION_LIMITS = {
@@ -99,12 +100,12 @@ CAPTION_PLATFORM_ORDER = list(PLATFORMS)
 
 # Platform-specific caption overrides
 PLATFORM_OVERRIDES = {
-    "twitter": {"max_hashtags": 3, "hook_ratio": 0.35, "min_body": 30},
-    "threads": {"max_hashtags": 3, "hook_ratio": 0.35, "min_body": 30},
+    "twitter": {"max_hashtags": 2, "hook_ratio": 0.35, "min_body": 30},
+    "threads": {"max_hashtags": 4, "hook_ratio": 0.35, "min_body": 30},
     "instagram": {"hook_ratio": 0.45, "min_body": 50},
     "facebook": {"hook_ratio": 0.40, "min_body": 50, "paragraph_spacing": True},
     "tiktok": {"max_hashtags": 5, "hook_ratio": 0.40, "min_body": 30},
-    "bluesky": {"max_hashtags": 3, "hook_ratio": 0.35, "min_body": 30},
+    "bluesky": {"max_hashtags": 4, "hook_ratio": 0.35, "min_body": 30},
     "youtube": {"hook_ratio": 0.40, "min_body": 80},
 }
 
@@ -236,25 +237,25 @@ Theme: {theme or "teaching"}
 {transcript_block}=== PLATFORM BRIEFS ===
 
 GLOBAL HASHTAG RULE:
-- For any platform that allows generated hashtags, generate no more than 2 total hashtags before the fixed required tags.
-- Fewer than 2 is allowed when needed for fit, tone, or platform limits.
+- Aim for 4 total hashtags per platform including the fixed required tags whenever fit and platform rules allow.
+- For platforms that allow generated hashtags, add enough relevant devotional hashtags before the fixed required tags to approach that total without breaking trim, tone, or platform limits.
 
 INSTAGRAM (max 1800 chars):
 - Hook: one punchy devotional line directly quoting or paraphrasing from transcript, invoking inner awakening or Guru's blessing.
 - 4 bullet points (•), each highlighting a blessing, a teaching, or a disciple practice from transcript. Each should connect to inner experience or practice.
-- Generate up to 2 relevant devotional hashtags based on video content before the fixed tags.
+- Add relevant devotional hashtags based on video content before the fixed tags so the total hashtag count aims for 4.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 
 FACEBOOK (max 1800 chars):
 - Hook: speak directly to a disciple seeking peace, reflection, or devotion; different from Instagram. Should feel nurturing and contemplative.
 - 4 bullet points (•), each highlighting a different blessing, teaching, or practice from transcript than Instagram bullets.
-- Generate up to 2 relevant devotional hashtags based on video content before the fixed tags.
+- Add relevant devotional hashtags based on video content before the fixed tags so the total hashtag count aims for 4.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 
 THREADS (max 350 chars including hashtags):
 - Hook line from transcript; concise devotional tone.
 - 2 complete sentences summarizing key teaching, blessing, or transformative practice for disciples.
-- Generate up to 2 relevant devotional hashtags based on video content before fixed tags.
+- Add relevant devotional hashtags based on video content before fixed tags so the total hashtag count aims for 4 when space allows.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - Minimum 200 chars. Maximum 350 chars. Count carefully.
 
@@ -266,13 +267,13 @@ TWITTER (target 180-240 chars; hard ceiling 250 including hashtags):
 
 TIKTOK (max 180 chars including hashtags):
 - ONE complete punchy devotional sentence directly from transcript; spiritually uplifting, recitable aloud, and energetic.
-- Generate up to 2 relevant devotional hashtags based on video content before fixed tags.
+- Add relevant devotional hashtags based on video content before fixed tags so the total hashtag count aims for 4 when space allows.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 - Minimum 80 chars. Maximum 180 chars. Count carefully.
 
 BLUESKY (max 260 chars including hashtags):
 - Hook sentence + one follow-up; both complete and devotional.
-- Generate up to 2 relevant devotional hashtags based on video content before fixed tags.
+- Add relevant devotional hashtags based on video content before fixed tags so the total hashtag count aims for 4 when space allows.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - Minimum 180 chars. Maximum 260 chars. Count carefully.
 
@@ -280,7 +281,7 @@ YOUTUBE (max 4500 chars):
 - Hook line from transcript; devotional tone.
 - 5 bullet points (•), structured as: 1) Blessing, 2) Practical disciple practice, 3) Transformation, 4-5) Key spiritual insights. Full sentences.
 - Leave blank line between sections.
-- Generate up to 2 relevant devotional hashtags based on video content before fixed tags.
+- Add relevant devotional hashtags based on video content before fixed tags so the total hashtag count aims for 4.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda.
 - Provide "title" field: max 75 chars, punchy devotional {target_name} title from transcript.
 
@@ -291,7 +292,7 @@ YOUTUBE (max 4500 chars):
 4. Respect minimum and maximum character limits on all platforms.
 5. Zero English except fixed hashtags; maintain devotional {target_name} throughout.
 6. Hashtags must be relevant to video content and spiritually aligned.
-7. Never generate more than 2 hashtags total for any platform before fixed required tags.
+7. Aim for 4 total hashtags including fixed required tags, but use fewer whenever platform limits, trim safety, or tone require it.
 8. Twitter uses only fixed tags: #KAILASA #Nithyananda.
 9. Each bullet or sentence must convey blessing, awakening, or sacred practice as per Guru's teaching.
 10. Tone and energy should align with platform guidance as described above.
@@ -400,7 +401,7 @@ Theme: {vision_data.get("theme", "teaching")}
 1. Source-first: use the original description as the primary basis for hooks, body text, CTA, and hashtags.
 2. Translate and adapt; do not mechanically copy English phrases unless they are URLs or required fixed hashtags.
 3. Preserve CTA intent, links, and calls-to-action where present, but shorten or move them to fit each platform naturally.
-4. Preserve relevant source hashtags when useful, but never keep or generate more than 2 total hashtags before required platform hashtags.
+4. Preserve relevant source hashtags when useful, aiming for 4 total hashtags including required platform hashtags whenever fit and platform rules allow.
 5. If the source description is too sparse for a platform, fill only from transcript/context; do not fabricate.
 6. Respect current platform tone and character limits exactly.
 
@@ -425,7 +426,7 @@ YOUTUBE:
 2. Instagram and Facebook should not be identical.
 3. Respect minimum and maximum character limits.
 4. Zero English except URLs and fixed hashtags when target language requires non-Latin script.
-5. Never generate or preserve more than 2 total hashtags before required platform hashtags.
+5. Aim for 4 total hashtags including required platform hashtags whenever fit and platform rules allow, but use fewer when necessary.
 6. Required hashtags must still be present:
    - Instagram, Facebook, YouTube, TikTok, Twitter: #KAILASA #Nithyananda
    - Threads, Bluesky: #KAILASA
@@ -588,6 +589,30 @@ def _build_hashtag_block(required_tags, optional_tags):
     return " ".join(tags).strip()
 
 
+def _target_total_hashtags(platform):
+    required_count = len(_required_hashtag_list(platform))
+    max_hashtags = _get_platform_config(platform).get("max_hashtags")
+    target_total = TARGET_TOTAL_HASHTAGS
+    if max_hashtags is not None:
+        target_total = min(target_total, max_hashtags)
+    return max(required_count, target_total)
+
+
+def _target_optional_hashtags(platform):
+    return max(0, _target_total_hashtags(platform) - len(_required_hashtag_list(platform)))
+
+
+def _hashtag_target_needs_retry(platform, caption):
+    target_total = _target_total_hashtags(platform)
+    if target_total <= len(_required_hashtag_list(platform)):
+        return False
+    current_tags = _extract_hashtag_tokens(caption)
+    if len(current_tags) >= target_total:
+        return False
+    hard_limit = _effective_limit(platform)
+    return len(caption) < max(0, hard_limit - 24)
+
+
 def _contains_target_script(text, target_language):
     if not text:
         return False
@@ -727,15 +752,14 @@ def _priority_aware_trim(caption, max_chars, platform):
     config = _get_platform_config(platform)
     min_body = config.get("min_body", MIN_BODY_THRESHOLD)
     hook_ratio = config.get("hook_ratio", 0.4)
-    max_hashtags = config.get("max_hashtags")
 
     body_no_tags, hashtags = _extract_trailing_hashtags(caption)
     body_clean, cta_block = _extract_cta_links(body_no_tags)
     existing_tag_tokens = _extract_hashtag_tokens(hashtags)
     required_tags = _required_hashtag_list(platform)
     optional_tags = [tag for tag in existing_tag_tokens if tag not in required_tags]
-    if max_hashtags:
-        optional_room = max(0, max_hashtags - len(required_tags))
+    optional_room = _target_optional_hashtags(platform)
+    if optional_room >= 0:
         optional_tags = optional_tags[:optional_room]
 
     available_for_text = max_chars
@@ -1300,6 +1324,32 @@ def _run_caption_provider(
                 captions[p]["caption"] = _append_required_hashtags(p, caption)
                 caption = captions[p]["caption"]
                 log("CAPTION", f"Economy mode: appended required hashtags for {p}.")
+
+        if _hashtag_target_needs_retry(p, caption) and is_quality_mode():
+            try:
+                target_total = _target_total_hashtags(p)
+                log(
+                    "CAPTION",
+                    f"Hashtag count below target for {p} — regenerating toward {target_total} total hashtags...",
+                )
+                retry_prompt = (
+                    f"{prompt}\n\nCRITICAL: The previous caption for {p} used too few hashtags. "
+                    f"Aim for {target_total} total hashtags including the fixed required tags, "
+                    f"unless the platform limit or natural fit makes that impossible. "
+                    f"Keep the caption complete and within the platform character limit. "
+                    f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
+                )
+                raw_retry = _call_caption_provider(
+                    provider_name, api_key, retry_prompt, stats=stats
+                )
+                new_captions = _parse_raw(raw_retry)
+                if new_captions.get(p) and new_captions[p].get("caption"):
+                    captions[p] = new_captions[p]
+                    caption = captions[p]["caption"]
+                    log("CAPTION", f"Regenerated caption for {p} with stronger hashtag target")
+            except Exception as e:
+                stats["warnings"].append(f"hashtag_retry_failed:{p}")
+                log("CAPTION", f"Failed hashtag regeneration for {p}: {e}")
 
         if _language_meta(target_language).get("script_ranges") and p in [
             "instagram",

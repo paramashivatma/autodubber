@@ -175,6 +175,14 @@ def _normalize_tts_pronunciation(text):
         flags=re.IGNORECASE,
     )
 
+    def replace_sjp(match):
+        token = match.group(0)
+        if token.lower().endswith("s"):
+            return "S J Ps"
+        return "S J P"
+
+    normalized = re.sub(r"\bsjps?\b", replace_sjp, normalized, flags=re.IGNORECASE)
+
     def replace_known(match):
         token = match.group(0)
         upper = token.upper()
