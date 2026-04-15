@@ -223,3 +223,24 @@ def get_missing_platform_account_envs(platforms) -> Dict[str, str]:
         if not first_env(env_name):
             missing[platform] = env_name
     return missing
+
+
+def get_dub_source_lang(explicit=None) -> str:
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value
+    return first_env("DUB_SOURCE_LANG", default="")
+
+
+def get_dub_target_lang(explicit=None) -> str:
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value
+    return first_env("DUB_TARGET_LANG", default="")
+
+
+def get_dub_voice(explicit=None) -> str:
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value
+    return first_env("DUB_VOICE", default="")

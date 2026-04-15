@@ -13,6 +13,65 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
 
+LANGUAGE_META = {
+    "en": {
+        "name": "English",
+        "script_hint": "Write in clear natural English.",
+        "style_hint": "Use warm devotional English for a broad audience.",
+    },
+    "gu": {
+        "name": "Gujarati",
+        "script_hint": "Write in Gujarati script.",
+        "style_hint": "Use devotional Gujarati with natural Sanskrit terms where they fit.",
+    },
+    "hi": {
+        "name": "Hindi",
+        "script_hint": "Write in Devanagari script.",
+        "style_hint": "Use devotional Hindi with natural Sanskrit terms where they fit.",
+    },
+    "ta": {
+        "name": "Tamil",
+        "script_hint": "Write in Tamil script.",
+        "style_hint": "Use natural spoken Tamil with devotional warmth.",
+    },
+    "te": {
+        "name": "Telugu",
+        "script_hint": "Write in Telugu script.",
+        "style_hint": "Use natural spoken Telugu with devotional warmth.",
+    },
+    "kn": {
+        "name": "Kannada",
+        "script_hint": "Write in Kannada script.",
+        "style_hint": "Use natural spoken Kannada with devotional warmth.",
+    },
+    "ml": {
+        "name": "Malayalam",
+        "script_hint": "Write in Malayalam script.",
+        "style_hint": "Use natural spoken Malayalam with devotional warmth.",
+    },
+    "bn": {
+        "name": "Bengali",
+        "script_hint": "Write in Bengali script.",
+        "style_hint": "Use natural spoken Bengali with devotional warmth.",
+    },
+    "es": {
+        "name": "Spanish",
+        "script_hint": "Write in natural Spanish.",
+        "style_hint": "Use clear devotional Spanish that sounds native and warm.",
+    },
+    "ru": {
+        "name": "Russian",
+        "script_hint": "Write in natural Russian.",
+        "style_hint": "Use clear devotional Russian that sounds native and warm.",
+    },
+}
+
+
+def _target_meta(target_language):
+    code = str(target_language or "en").strip().lower()
+    return code, LANGUAGE_META.get(code, LANGUAGE_META["en"])
+
+
 def extract_text_from_image(image_path, api_key=None):
     """Extract text from image using OCR"""
     api_key = get_gemini_api_key(api_key)
@@ -113,76 +172,79 @@ def _extract_with_gemini_vision(image_path, api_key):
     return resp.text.strip()
 
 
-SYSTEM_PROMPT = """
-You are a devotional social media copywriter for KAILASA — the Hindu nation 
-re-established by SPH Bhagavan Sri Nithyananda Paramashivam. You write 
-platform-specific captions in Gujarati that speak directly to SPH devotees.
+def _build_caption_prompt(target_language):
+    _, meta = _target_meta(target_language)
+    language_name = meta["name"]
+    script_hint = meta["script_hint"]
+    style_hint = meta["style_hint"]
+    return f"""
+You are a devotional social media copywriter for KAILASA — the Hindu nation
+re-established by SPH Bhagavan Sri Nithyananda Paramashivam. You write
+platform-specific captions in {language_name} that speak directly to SPH devotees.
+
+TARGET LANGUAGE RULES:
+- Write all captions in {language_name}.
+- {script_hint}
+- {style_hint}
 
 CONTENT RULES:
 
-1. STUDY THE IMAGE CAREFULLY. Extract every visible feature 
+1. STUDY THE IMAGE CAREFULLY. Extract every visible feature
    (selfie guidance, privacy badges, support info, UI elements, taglines).
    Weave unique features into captions.
-   At least 2 captions must reference a unique feature extracted 
-   from this specific image — not generic app benefits that apply 
+   At least 2 captions must reference a unique feature extracted
+   from this specific image — not generic app benefits that apply
    to any flyer.
-   ALSO extract the URL or web link visible in the flyer — you will use 
+   ALSO extract the URL or web link visible in the flyer — you will use
    it in step 5. Store it as extracted_url in your output.
 
-2. USE DEVOTIONAL GUJARATI VOCABULARY:
-   દર્શન, કૃપા, કૃપાદૃષ્ટિ, ઉપસ્થિતિ, આશીર્વચન, આશીર્વાદ, સાક્ષાત્કાર, ભક્તિ
-   NOT generic terms like આધ્યાત્મિક સાથ.
-
-3. EACH PLATFORM NEEDS A DIFFERENT EMOTIONAL ENTRY POINT:
+2. EACH PLATFORM NEEDS A DIFFERENT EMOTIONAL ENTRY POINT:
    - Instagram: Feeling of SPH's presence — visual, devotional, personal
    - Facebook: Community/family sharing together — warm, inclusive
-   - Twitter/X: Breaking urgency — punchy. STRICT 280 character max 
+   - Twitter/X: Breaking urgency — punchy. STRICT 280 character max
       including hashtags and URL. Count characters before finalizing.
-      Hook must reference a specific feature visible in this image. 
+      Hook must reference a specific feature visible in this image.
       Never open with the app name or product announcement.
    - Threads: Conversational — "you asked, now it exists"
    - Bluesky: Thoughtful — AI + divine guidance for seekers.
      STRICT 300 character max including hashtags and URL.
 
-4. HOOK RULE — NEVER open with product info. Open with:
-   - Devotee desire: "ગમે ત્યાં હો — SPH ની ઉપસ્થિતિ..."
-   - Recognition moment: "આ ક્ષણ માટે તમે રાહ જોઈ રહ્યા હતા..."
-   - Emotional truth: "દૂર હોવા છતાં — કૃપા ક્યારેય દૂર નથી"
+3. HOOK RULE — NEVER open with product info. Open with a devotee desire,
+   recognition moment, or emotional truth in natural {language_name}.
 
-5. CTA RULE — Use the URL you extracted from the flyer in step 1.
+4. CTA RULE — Use the URL you extracted from the flyer in step 1.
    If no URL was visible in the flyer, use: kailasa.org
-   The URL goes on its own line at the very end of the caption, 
+   The URL goes on its own line at the very end of the caption,
    before hashtags. Never mid-caption. Never buried in text.
-   Format per platform — write exactly as shown, replacing 
-   the word EXTRACTED_URL with the actual URL you found:
-   - Instagram: write "👇 Link in bio |" then a space then EXTRACTED_URL
-   - Facebook: write "આજે જ ડાઉનલોડ કરો 👉" then a space then EXTRACTED_URL
-   - Twitter/X: write EXTRACTED_URL then a space then "⬇️"
-   - Threads: write "Download here →" then a space then EXTRACTED_URL
-   - Bluesky: write "Download here →" then a space then EXTRACTED_URL
+   Format per platform in natural {language_name}:
+   - Instagram: short "link in bio" CTA plus EXTRACTED_URL
+   - Facebook: direct download CTA plus EXTRACTED_URL
+   - Twitter/X: EXTRACTED_URL and a compact download cue
+   - Threads: "Download here" style CTA plus EXTRACTED_URL
+   - Bluesky: "Download here" style CTA plus EXTRACTED_URL
 
-6. HASHTAGS — Every caption must end with AT LEAST: #KAILASA #Nithyananda
+5. HASHTAGS — Every caption must end with AT LEAST: #KAILASA #Nithyananda
    Additional relevant hashtags are allowed per platform.
    Hashtags go AFTER the URL line. Never before.
 
 OUTPUT RULES:
 - Return JSON only. No explanation. No markdown fences. No extra text.
 - Structure must be exactly this:
-{
+{{
   "extracted_url": "the url you found in the image",
-  "captions": {
+  "captions": {{
     "instagram": "full caption here",
     "facebook": "full caption here",
     "twitter": "full caption here",
     "threads": "full caption here",
     "bluesky": "full caption here"
-  }
-}
+  }}
+}}
 """
 
 
-def generate_gujarati_captions(extracted_text, api_key=None):
-    """Generate Gujarati captions from extracted text"""
+def generate_platform_captions(extracted_text, target_language="gu", api_key=None):
+    """Generate platform captions from extracted text in the selected target language."""
     api_key = get_gemini_api_key(api_key)
     if not api_key:
         return "No API key available for caption generation"
@@ -193,7 +255,7 @@ def generate_gujarati_captions(extracted_text, api_key=None):
 
         client = genai.Client(api_key=api_key)
 
-        prompt = f"""{SYSTEM_PROMPT}
+        prompt = f"""{_build_caption_prompt(target_language)}
         
         EXTRACTED TEXT FROM IMAGE:
         {extracted_text}
@@ -212,7 +274,8 @@ def generate_gujarati_captions(extracted_text, api_key=None):
         data = json.loads(resp.text.strip())
         print(f"EXTRACTED URL — verify before publishing: {data['extracted_url']}")
         captions = data["captions"]
-        log("CAPTIONS", f"Generated {len(captions)} Gujarati captions")
+        _, meta = _target_meta(target_language)
+        log("CAPTIONS", f"Generated {len(captions)} {meta['name']} captions")
         return captions
 
     except Exception as e:
@@ -225,41 +288,39 @@ def generate_gujarati_captions(extracted_text, api_key=None):
             or "resource_exhausted" in error_str
             or "quota" in error_str
         ):
-            log("CAPTIONS", "API quota exceeded - providing fallback captions")
-
-            # Read the actual extracted text from file
-            actual_extracted_text = extracted_text
-            if "OCR not available" in extracted_text or "Image file:" in extracted_text:
-                try:
-                    with open("workspace/flyer_text.txt", "r", encoding="utf-8") as f:
-                        actual_extracted_text = f.read().strip()
-                except:
-                    actual_extracted_text = "Ask Nithyananda AI app - Your personal spiritual companion for divine guidance and blessings from SPH Bhagavan Sri Nithyananda Paramashivam"
-
-            # Create meaningful Gujarati content instead of using English OCR text
-            gujarati_content = """આસ્ક નિત્યાનંદ AI એપ્લિકેશન હવે ઉપલબ્ધ છે! 
-
-📱 તમારો અંગત આધ્યાત્મિક સાથી
-✨ SPH ભગવાન શ્રી નિત્યાનંદ પરમશિવમ પાસેથી ૨૪x૭ માર્ગદર્શન
-🙏 આશીર્વાદ અને ઉત્તરો
-📥 હવે iOS પર ડાઉનલોડ કરો
-
-ગમે ત્યાં હો, ગમે ત્યારે - કૃપાદૃષ્ટિ હંમેશા તમારી સાથે!"""
-
+            log("CAPTIONS", "API quota exceeded - providing source-based fallback captions")
+            fallback_text = re.sub(r"\s+", " ", str(extracted_text or "")).strip()
+            if not fallback_text:
+                fallback_text = "KAILASA content update"
+            base = fallback_text[:220].rstrip(" .,!?")
+            if len(fallback_text) > len(base):
+                base += "..."
             return {
-                "instagram": f"તમારા આધ્યાત્મિક માર્ગદર્શક હવે તમારી સાથે! ✨\n\n{gujarati_content}\n\n#KAILASA #Nithyananda",
-                "facebook": f"પરમ પૂજનીય ભગવાન શ્રી નિત્યાનંદ પરમશિવમની કૃપા હવે ઉપલબ્ધ છે!\n\n{gujarati_content}",
-                "twitter": f"આધ્યાત્મિક માર્ગદર્શન ઉપલબ્ધ!\n\n{gujarati_content}\n\n#KAILASA #Nithyananda",
-                "threads": f"તમારા આધ્યાત્મિક સફરની શરૂઆત!\n\n{gujarati_content}",
-                "bluesky": f"દિવ્ય માર્ગદર્શન મેળવો\n\n{gujarati_content}\n\n#KAILASA #Nithyananda",
+                "instagram": f"{base}\n\n#KAILASA #Nithyananda",
+                "facebook": f"{base}\n\n#KAILASA #Nithyananda",
+                "twitter": f"{base[:220].rstrip(' .,!?')}\n\n#KAILASA #Nithyananda",
+                "threads": f"{base}\n\n#KAILASA",
+                "bluesky": f"{base[:240].rstrip(' .,!?')}\n\n#KAILASA",
             }
 
         return {"error": f"Caption generation failed: {str(e)}"}
 
 
-def generate_teaser_content(extracted_text, captions, api_key=None):
-    """Generate teaser content from extracted text and captions"""
+def generate_gujarati_captions(extracted_text, api_key=None):
+    """Backward-compatible wrapper for the older Gujarati-specific entrypoint."""
+    return generate_platform_captions(
+        extracted_text, target_language="gu", api_key=api_key
+    )
+
+
+def generate_teaser_content(
+    extracted_text, captions, api_key=None, target_language="gu"
+):
+    """Generate teaser content from extracted text and captions."""
     api_key = get_gemini_api_key(api_key)
+    _, meta = _target_meta(target_language)
+    language_name = meta["name"]
+    script_hint = meta["script_hint"]
     if is_economy_mode():
         # Save one Gemini call in Economy mode: build deterministic teaser locally.
         sample_caption = ""
@@ -273,12 +334,13 @@ def generate_teaser_content(extracted_text, captions, api_key=None):
 
         # Keep teaser concise and operator-friendly.
         brief = (
-            sample_caption.split("\n")[0][:160].strip() or "દિવ્ય માર્ગદર્શન હવે તમારી સાથે."
+            sample_caption.split("\n")[0][:160].strip()
+            or "Download and share this KAILASA update."
         )
         teaser = {
             "hook": brief,
-            "main_content": "ભગવાન શ્રી નિત્યાનંદ પરમશિવમની કૃપાથી આધ્યાત્મિક માર્ગદર્શન હવે સહેલાઈથી મેળવો.",
-            "call_to_action": "હવે જ જુઓ, ડાઉનલોડ કરો અને અન્ય ભક્તો સાથે શેર કરો.",
+            "main_content": brief,
+            "call_to_action": "Review, download, and share this with other seekers.",
             "hashtags": "#KAILASA #Nithyananda",
             "duration_estimate": "15-30 seconds",
         }
@@ -312,15 +374,16 @@ def generate_teaser_content(extracted_text, captions, api_key=None):
         
         Generate teaser content in this JSON format:
         {{
-            "hook": "Engaging opening line (Gujarati)",
-            "main_content": "Main teaser message (Gujarati, 2-3 sentences)",
-            "call_to_action": "Call to action (Gujarati)",
-            "hashtags": "Relevant hashtags (Gujujarati + English)",
+            "hook": "Engaging opening line ({language_name})",
+            "main_content": "Main teaser message ({language_name}, 2-3 sentences)",
+            "call_to_action": "Call to action ({language_name})",
+            "hashtags": "Relevant hashtags ({language_name} + English)",
             "duration_estimate": "Estimated video duration (e.g., 15-30 seconds)"
         }}
         
         Guidelines:
-        - Write in Gujarati script
+        - Write in {language_name}
+        - {script_hint}
         - Make it engaging and shareable
         - Include spiritual elements if appropriate
         - Keep it concise for short-form video

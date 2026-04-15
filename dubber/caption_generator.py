@@ -30,6 +30,7 @@ MAX_TRANSCRIPT_CHARS = 3000
 SAFE_CAPTION_LIMITS = {
     "twitter": 250,
 }
+MAX_SOURCE_DESCRIPTION_CHARS = 3500
 
 LANGUAGE_META = {
     "gu": {
@@ -234,22 +235,26 @@ Theme: {theme or "teaching"}
 
 {transcript_block}=== PLATFORM BRIEFS ===
 
+GLOBAL HASHTAG RULE:
+- For any platform that allows generated hashtags, generate no more than 2 total hashtags before the fixed required tags.
+- Fewer than 2 is allowed when needed for fit, tone, or platform limits.
+
 INSTAGRAM (max 1800 chars):
 - Hook: one punchy devotional line directly quoting or paraphrasing from transcript, invoking inner awakening or Guru's blessing.
 - 4 bullet points (•), each highlighting a blessing, a teaching, or a disciple practice from transcript. Each should connect to inner experience or practice.
-- Generate 2-3 relevant devotional hashtags based on video content before the fixed tags.
+- Generate up to 2 relevant devotional hashtags based on video content before the fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 
 FACEBOOK (max 1800 chars):
 - Hook: speak directly to a disciple seeking peace, reflection, or devotion; different from Instagram. Should feel nurturing and contemplative.
 - 4 bullet points (•), each highlighting a different blessing, teaching, or practice from transcript than Instagram bullets.
-- Generate 2-3 relevant devotional hashtags based on video content before the fixed tags.
+- Generate up to 2 relevant devotional hashtags based on video content before the fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 
 THREADS (max 350 chars including hashtags):
 - Hook line from transcript; concise devotional tone.
 - 2 complete sentences summarizing key teaching, blessing, or transformative practice for disciples.
-- Generate 2-3 relevant devotional hashtags based on video content before fixed tags.
+- Generate up to 2 relevant devotional hashtags based on video content before fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - Minimum 200 chars. Maximum 350 chars. Count carefully.
 
@@ -261,13 +266,13 @@ TWITTER (target 180-240 chars; hard ceiling 250 including hashtags):
 
 TIKTOK (max 180 chars including hashtags):
 - ONE complete punchy devotional sentence directly from transcript; spiritually uplifting, recitable aloud, and energetic.
-- Generate 2-3 relevant devotional hashtags based on video content before fixed tags.
+- Generate up to 2 relevant devotional hashtags based on video content before fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
 - Minimum 80 chars. Maximum 180 chars. Count carefully.
 
 BLUESKY (max 260 chars including hashtags):
 - Hook sentence + one follow-up; both complete and devotional.
-- Generate 2-3 relevant devotional hashtags based on video content before fixed tags.
+- Generate up to 2 relevant devotional hashtags based on video content before fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - Minimum 180 chars. Maximum 260 chars. Count carefully.
 
@@ -275,7 +280,7 @@ YOUTUBE (max 4500 chars):
 - Hook line from transcript; devotional tone.
 - 5 bullet points (•), structured as: 1) Blessing, 2) Practical disciple practice, 3) Transformation, 4-5) Key spiritual insights. Full sentences.
 - Leave blank line between sections.
-- Generate 2-3 relevant devotional hashtags based on video content before fixed tags.
+- Generate up to 2 relevant devotional hashtags based on video content before fixed tags.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda.
 - Provide "title" field: max 75 chars, punchy devotional {target_name} title from transcript.
 
@@ -286,10 +291,11 @@ YOUTUBE (max 4500 chars):
 4. Respect minimum and maximum character limits on all platforms.
 5. Zero English except fixed hashtags; maintain devotional {target_name} throughout.
 6. Hashtags must be relevant to video content and spiritually aligned.
-7. Twitter uses only fixed tags: #KAILASA #Nithyananda.
-8. Each bullet or sentence must convey blessing, awakening, or sacred practice as per Guru's teaching.
-9. Tone and energy should align with platform guidance as described above.
-10. **CRITICAL: ALWAYS include required hashtags - NO EXCEPTIONS:**
+7. Never generate more than 2 hashtags total for any platform before fixed required tags.
+8. Twitter uses only fixed tags: #KAILASA #Nithyananda.
+9. Each bullet or sentence must convey blessing, awakening, or sacred practice as per Guru's teaching.
+10. Tone and energy should align with platform guidance as described above.
+11. **CRITICAL: ALWAYS include required hashtags - NO EXCEPTIONS:**
    - Instagram, Facebook, YouTube, TikTok: MUST end with #KAILASA #Nithyananda
    - Threads, Bluesky: MUST end with #KAILASA
    - Failure to include required hashtags will cause regeneration
@@ -297,6 +303,136 @@ YOUTUBE (max 4500 chars):
 === OUTPUT ===
 Valid JSON only. No markdown fences. Output EXACTLY these keys only: {selected_keys}
 Values: {{"caption": "...{target_name.lower()}..."}} — youtube also includes: {{"title": "...max 75 chars...", "caption": "..."}}
+"""
+
+
+def _extract_source_metadata_parts(source_metadata):
+    source_metadata = source_metadata or {}
+    description = _extract_str(source_metadata.get("description", "")).strip()
+    title = _extract_str(source_metadata.get("title", "")).strip()
+    tags = source_metadata.get("tags") or []
+    if not isinstance(tags, list):
+        tags = [str(tags)]
+    clean_tags = [str(tag).strip().lstrip("#") for tag in tags if str(tag).strip()]
+    description_body, description_hashtags = _extract_trailing_hashtags(description)
+    description_body, description_cta = _extract_cta_links(description_body)
+    if not description_body.strip() and description.strip():
+        description_body = description.strip()
+    if len(description_body) > MAX_SOURCE_DESCRIPTION_CHARS:
+        description_body = description_body[:MAX_SOURCE_DESCRIPTION_CHARS] + "..."
+    return {
+        "title": title,
+        "description": description,
+        "body": description_body.strip(),
+        "cta": description_cta.strip(),
+        "hashtags": description_hashtags.strip(),
+        "tags": clean_tags,
+        "webpage_url": _extract_str(source_metadata.get("webpage_url", "")).strip(),
+        "uploader": _extract_str(source_metadata.get("uploader", "")).strip(),
+        "extractor": _extract_str(source_metadata.get("extractor", "")).strip(),
+    }
+
+
+def _has_usable_source_metadata(source_metadata):
+    parts = _extract_source_metadata_parts(source_metadata)
+    body_len = len(parts["body"] or parts["description"])
+    has_tags = bool(parts["hashtags"] or parts["tags"])
+    has_cta = bool(parts["cta"] or parts["webpage_url"])
+    return body_len >= 80 or (body_len >= 40 and (has_tags or has_cta)) or (
+        body_len >= 20 and has_tags and has_cta
+    )
+
+
+def _build_source_first_prompt(
+    vision_data,
+    source_metadata,
+    transcript="",
+    target_language="gu",
+    target_platforms=None,
+):
+    meta = _language_meta(target_language)
+    target_name = meta["name"]
+    target_style = meta["style"]
+    script_hint = meta["script_hint"]
+    selected_platforms = _normalize_target_platforms(target_platforms)
+    selected_keys = ", ".join(selected_platforms)
+    source_parts = _extract_source_metadata_parts(source_metadata)
+    transcript = str(transcript or "").strip()
+    if len(transcript) > MAX_TRANSCRIPT_CHARS:
+        transcript = transcript[:MAX_TRANSCRIPT_CHARS] + "..."
+    transcript_block = (
+        f"=== TRANSCRIPT SAFETY CONTEXT ({target_name}) ===\n{transcript}\n\n"
+        if transcript
+        else ""
+    )
+    source_tags = ", ".join(f"#{tag}" for tag in source_parts["tags"]) or "(none)"
+    source_hashtags = source_parts["hashtags"] or "(none)"
+    source_cta = source_parts["cta"] or source_parts["webpage_url"] or "(none)"
+    return f"""SYSTEM: You are adapting an existing social media post into platform-specific captions for a dubbed spiritual video.
+Write every caption in {target_name}. {target_style}
+{script_hint}
+Preserve the original post's intent, CTA, and useful hashtags where natural, but adapt them to sound fluent and devotional in {target_name}.
+Do not invent claims not supported by the source description or transcript.
+Generate captions ONLY for these platforms: {selected_keys}.
+
+=== SOURCE POST METADATA ===
+Title: {source_parts["title"]}
+Uploader: {source_parts["uploader"]}
+Extractor: {source_parts["extractor"]}
+Original Description Body:
+{source_parts["body"]}
+
+Original CTA:
+{source_cta}
+
+Original Hashtag Block:
+{source_hashtags}
+
+Original Tags:
+{source_tags}
+
+=== VIDEO CONTEXT ===
+Topic: {vision_data.get("main_topic", "")}
+Key Message: {(vision_data.get("core_conflict", "") + " | " + vision_data.get("provocative_angle", "")).strip(" |")}
+Theme: {vision_data.get("theme", "teaching")}
+
+{transcript_block}=== ADAPTATION RULES ===
+1. Source-first: use the original description as the primary basis for hooks, body text, CTA, and hashtags.
+2. Translate and adapt; do not mechanically copy English phrases unless they are URLs or required fixed hashtags.
+3. Preserve CTA intent, links, and calls-to-action where present, but shorten or move them to fit each platform naturally.
+4. Preserve relevant source hashtags when useful, but never keep or generate more than 2 total hashtags before required platform hashtags.
+5. If the source description is too sparse for a platform, fill only from transcript/context; do not fabricate.
+6. Respect current platform tone and character limits exactly.
+
+=== PLATFORM BRIEFS ===
+INSTAGRAM / FACEBOOK:
+- Build from the original description and CTA.
+- Can reuse devotional themes and key phrases, but adapt hooks/body separately per platform.
+
+THREADS / BLUESKY / TWITTER:
+- Shorter adaptations of the same source message.
+- Preserve the CTA only if it fits naturally.
+
+TIKTOK:
+- One punchy source-first devotional sentence, optionally followed by concise CTA if room allows.
+
+YOUTUBE:
+- Use source title as inspiration but rewrite a clean target-language title.
+- Caption can be fuller and may preserve more of the original CTA/link context.
+
+=== CRITICAL RULES ===
+1. Every caption must be a COMPLETE thought.
+2. Instagram and Facebook should not be identical.
+3. Respect minimum and maximum character limits.
+4. Zero English except URLs and fixed hashtags when target language requires non-Latin script.
+5. Never generate or preserve more than 2 total hashtags before required platform hashtags.
+6. Required hashtags must still be present:
+   - Instagram, Facebook, YouTube, TikTok, Twitter: #KAILASA #Nithyananda
+   - Threads, Bluesky: #KAILASA
+
+=== OUTPUT ===
+Valid JSON only. Output EXACTLY these keys only: {selected_keys}
+Values: {{"caption": "..."}} — youtube also includes: {{"title": "...", "caption": "..."}}
 """
 
 
@@ -432,6 +568,26 @@ def _append_required_hashtags(platform, caption):
     return (text + sep + " ".join(needed)).strip()
 
 
+def _required_hashtag_list(platform):
+    if platform in {"instagram", "facebook", "youtube", "tiktok", "twitter"}:
+        return ["#KAILASA", "#Nithyananda"]
+    if platform in {"threads", "bluesky"}:
+        return ["#KAILASA"]
+    return []
+
+
+def _extract_hashtag_tokens(text):
+    return HASHTAG_PATTERN.findall(str(text or ""))
+
+
+def _build_hashtag_block(required_tags, optional_tags):
+    tags = []
+    for tag in required_tags + optional_tags:
+        if tag and tag not in tags:
+            tags.append(tag)
+    return " ".join(tags).strip()
+
+
 def _contains_target_script(text, target_language):
     if not text:
         return False
@@ -495,6 +651,16 @@ def _extract_cta_links(text):
     if not text:
         return text, ""
 
+    inline_match = re.search(
+        r"(?i)(watch the full|link in bio|subscribe|learn more|join us|sign up|full video|click here|follow us).*?(https?://\S+|www\.\S+)?\s*$",
+        text.strip(),
+    )
+    if inline_match:
+        cta_text = inline_match.group(0).strip()
+        cta_text = re.sub(r"(?:\s+#\w[\w\-]*)+$", "", cta_text).strip()
+        body_text = text[: inline_match.start()].rstrip()
+        return body_text, cta_text
+
     lines = text.strip().split("\n")
     cta_lines = []
     body_lines = []
@@ -552,107 +718,99 @@ def _split_hook_body(text, hook_limit=180):
 
 def _priority_aware_trim(caption, max_chars, platform):
     """
-    Trim caption preserving: hook, CTAs, hashtags.
-    Uses intelligent degradation: body → hook → hashtags.
-    All reserved space calculated BEFORE assembly.
+    Trim caption to a hard platform limit with priority:
+    required hashtags > CTA > hook > body > optional hashtags.
     """
     if len(caption) <= max_chars:
         return caption
 
-    # 1. Get platform config
     config = _get_platform_config(platform)
-    max_hashtags = config.get("max_hashtags")
     min_body = config.get("min_body", MIN_BODY_THRESHOLD)
     hook_ratio = config.get("hook_ratio", 0.4)
+    max_hashtags = config.get("max_hashtags")
 
-    # 2. Extract preserved elements FIRST
     body_no_tags, hashtags = _extract_trailing_hashtags(caption)
     body_clean, cta_block = _extract_cta_links(body_no_tags)
+    existing_tag_tokens = _extract_hashtag_tokens(hashtags)
+    required_tags = _required_hashtag_list(platform)
+    optional_tags = [tag for tag in existing_tag_tokens if tag not in required_tags]
+    if max_hashtags:
+        optional_room = max(0, max_hashtags - len(required_tags))
+        optional_tags = optional_tags[:optional_room]
 
-    # 3. Apply hashtag limit per platform
-    if max_hashtags and hashtags:
-        hashtag_list = hashtags.split()
-        if len(hashtag_list) > max_hashtags:
-            hashtags = " ".join(hashtag_list[:max_hashtags])
+    available_for_text = max_chars
+    required_block = _build_hashtag_block(required_tags, [])
+    if required_block:
+        available_for_text -= len(required_block)
+    if cta_block:
+        available_for_text -= len(cta_block)
 
-    # 4. Calculate reserved space EXPLICITLY
-    hashtag_len = len(hashtags)
-    cta_len = len(cta_block)
+    mandatory_sections = sum(1 for item in [required_block, cta_block] if item)
+    available_for_text -= mandatory_sections * len(SEPARATOR)
+    available_for_text = max(0, available_for_text)
 
-    # Separators: hook\n\nbody\n\ncta\n\nhashtags
-    # Max4 separators if all present
-    separator_count = sum(1 for x in [True, body_clean, cta_block, hashtags] if x) - 1
-    separator_count = max(0, separator_count)
-    reserved = hashtag_len + cta_len + (separator_count * len(SEPARATOR))
-
-    available = max_chars - reserved
-
-    # 5. Determine hook limit with proper clamping
-    if available < MIN_HOOK_CHARS:
-        # Degenerate case: very tight space
-        hook_limit = max(MIN_HOOK_CHARS // 2, int(available * 0.5))
+    if available_for_text < MIN_HOOK_CHARS:
+        hook_limit = max(12, int(max(available_for_text, 1) * 0.6))
     else:
-        # Normal: adaptive hook with bounds
         hook_limit = max(
-            MIN_HOOK_CHARS, min(int(available * hook_ratio), available - min_body)
+            MIN_HOOK_CHARS,
+            min(int(available_for_text * hook_ratio), max(available_for_text - min_body, MIN_HOOK_CHARS)),
         )
 
-    # 6. Split hook from body with adaptive limit
     hook, body = _split_hook_body(body_clean, hook_limit)
+    body_available = max(
+        0,
+        available_for_text - len(hook) - (len(SEPARATOR) if hook and body else 0),
+    )
+    trimmed_body = ""
+    if body and body_available > 0:
+        trimmed_body = _smart_trim(body, body_available) if len(body) > body_available else body
 
-    # 7. Calculate body space
-    hook_len = len(hook) + (len(SEPARATOR) if hook else 0)
-    body_available = max_chars - reserved - hook_len
+    def assemble(optional_tag_list, cta_text):
+        hashtag_block = _build_hashtag_block(required_tags, optional_tag_list)
+        parts = [part for part in [hook, trimmed_body, cta_text, hashtag_block] if part]
+        return SEPARATOR.join(parts)
 
-    # 8. Trim body if needed
-    if body and body_available > MIN_BODY_THRESHOLD:
-        if len(body) > body_available:
-            trimmed_body = _smart_trim(body, body_available)
+    result = assemble(optional_tags, cta_block)
+
+    if len(result) <= max_chars:
+        return result
+
+    while trimmed_body and len(result) > max_chars:
+        next_limit = max(len(trimmed_body) - max(len(result) - max_chars, 8), 0)
+        if next_limit <= 0:
+            trimmed_body = ""
         else:
-            trimmed_body = body
-    elif body_available > 0 and body:
-        trimmed_body = _smart_trim(body, body_available)
-    else:
-        trimmed_body = ""
+            trimmed_body = _smart_trim(trimmed_body, next_limit, min_words=2)
+            if len(trimmed_body) >= next_limit:
+                trimmed_body = trimmed_body[:next_limit].rstrip(" .,!?") + "..."
+        result = assemble(optional_tags, cta_block)
 
-    # 9. Reassemble in priority order: hook + body + CTA + hashtags
-    result_parts = []
-    if hook:
-        result_parts.append(hook)
-    if trimmed_body:
-        result_parts.append(trimmed_body)
-    if cta_block:
-        result_parts.append(cta_block)
-    if hashtags:
-        result_parts.append(hashtags)
+    while hook and len(result) > max_chars:
+        next_limit = max(len(hook) - max(len(result) - max_chars, 8), 12)
+        if next_limit >= len(hook):
+            break
+        hook = _smart_trim(hook, next_limit, min_words=2)
+        result = assemble(optional_tags, cta_block)
 
-    result = SEPARATOR.join(result_parts)
+    while optional_tags and len(result) > max_chars:
+        optional_tags.pop()
+        result = assemble(optional_tags, cta_block)
 
-    # 10. Final degradation if still over limit
-    if len(result) > max_chars and len(result_parts) > 1:
-        # Stage 1: Trim body more aggressively
-        if trimmed_body and len(trimmed_body) > 20:
-            excess = len(result) - max_chars
-            trimmed_body = _smart_trim(trimmed_body, len(trimmed_body) - excess)
-            result_parts = [h for h in [hook, trimmed_body, cta_block, hashtags] if h]
-            result = SEPARATOR.join(result_parts)
+    while cta_block and len(result) > max_chars:
+        next_limit = max(len(cta_block) - max(len(result) - max_chars, 8), 12)
+        if next_limit >= len(cta_block):
+            break
+        cta_block = _smart_trim(cta_block, next_limit, min_words=2)
+        result = assemble(optional_tags, cta_block)
 
-        # Stage 2: Reduce hook
-        if len(result) > max_chars and len(hook) > MIN_HOOK_CHARS:
-            hook = _smart_trim(hook, MIN_HOOK_CHARS)
-            result_parts = [h for h in [hook, trimmed_body, cta_block, hashtags] if h]
-            result = SEPARATOR.join(result_parts)
-
-        # Stage 3: Reduce hashtags (platform-dependent)
-        if len(result) > max_chars and hashtags:
-            hashtag_list = hashtags.split()
-            while len(result) > max_chars and len(hashtag_list) > 1:
-                hashtag_list.pop()
-                hashtags = " ".join(hashtag_list)
-                result_parts = [
-                    h for h in [hook, trimmed_body, cta_block, hashtags] if h
-                ]
-                result = SEPARATOR.join(result_parts)
+    if len(result) > max_chars:
+        fallback_parts = [part for part in [hook, required_block] if part]
+        fallback = SEPARATOR.join(fallback_parts)
+        if len(fallback) > max_chars and hook:
+            hook = _smart_trim(hook, max(12, max_chars - len(required_block) - len(SEPARATOR)), min_words=2)
+            fallback = SEPARATOR.join([part for part in [hook, required_block] if part])
+        result = fallback[:max_chars].rstrip()
 
     return result
 
@@ -684,6 +842,34 @@ def _extract_chat_message_content(content):
                 parts.append(item.strip())
         return "\n".join(parts).strip()
     return str(content or "").strip()
+
+
+def _parse_glm_response_text(raw_text):
+    raw_text = (raw_text or "").strip()
+    if not raw_text:
+        return "", {}
+
+    if raw_text.startswith("{") or raw_text.startswith("["):
+        try:
+            response_json = json.loads(raw_text)
+        except Exception:
+            return raw_text, {}
+
+        content = (
+            response_json.get("text")
+            or response_json.get("response")
+            or response_json.get("completion")
+            or response_json.get("output")
+            or ""
+        )
+        if not content and isinstance(response_json.get("choices"), list):
+            choices = response_json.get("choices") or []
+            if choices:
+                message = choices[0].get("message", {}) or {}
+                content = _extract_chat_message_content(message.get("content"))
+        return _extract_chat_message_content(content), response_json
+
+    return raw_text, {}
 
 
 def _call_chat_provider(
@@ -815,25 +1001,20 @@ def _call_glm(api_key, prompt, max_retries=None, stats=None):
                     stats.get("latency_seconds", 0.0) + elapsed, 3
                 )
             track_api_success("glm")
-            response_json = r.json()
-            content = (
-                response_json.get("text")
-                or response_json.get("response")
-                or response_json.get("completion")
-                or response_json.get("output")
-                or ""
-            )
-            if not content and isinstance(response_json.get("choices"), list):
-                choices = response_json.get("choices") or []
-                if choices:
-                    message = choices[0].get("message", {}) or {}
-                    content = _extract_chat_message_content(message.get("content"))
-            content = _extract_chat_message_content(content)
+            raw_body = r.text or ""
+            content, response_json = _parse_glm_response_text(raw_body)
             if not content:
+                body_preview = raw_body.strip()[:400]
                 raise RuntimeError(
-                    f"GLM returned empty content. Response keys: {sorted(response_json.keys())}"
+                    "GLM returned empty content. "
+                    f"Response keys: {sorted(response_json.keys()) if response_json else 'n/a'}. "
+                    f"Body preview: {body_preview or '<empty>'}"
                 )
-            log("CAPTION", f"[{provider_label}] [SUCCESS] Modal-native response received")
+            body_kind = "json" if response_json else "text"
+            log(
+                "CAPTION",
+                f"[{provider_label}] [SUCCESS] Modal-native {body_kind} response received",
+            )
             return content
         except Exception as e:
             if stats is not None:
@@ -1159,10 +1340,13 @@ def _run_caption_provider(
 
         if len(caption) > hard_lim:
             stats["warnings"].append(f"too_long:{p}")
+            trimmed = _priority_aware_trim(caption, hard_lim, p)
             log(
                 "CAPTION",
-                f"Caption exceeds hard limit for {p} ({len(caption)} > {hard_lim}) — keeping as-is",
+                f"Caption exceeds hard limit for {p} ({len(caption)} > {hard_lim}) — enforcing body-first trim",
             )
+            captions[p]["caption"] = trimmed
+            caption = trimmed
 
         if opt_range:
             opt_min, opt_max = opt_range
@@ -1182,11 +1366,8 @@ def _run_caption_provider(
                 if overage_pct >= 30:
                     _, hashtags = _extract_trailing_hashtags(caption)
                     _, cta = _extract_cta_links(caption)
-                    tag_count = (
-                        len([w for w in hashtags.split() if w.startswith("#")])
-                        if hashtags
-                        else 0
-                    )
+                    required_tags = _required_hashtag_list(p)
+                    tag_count = len(_extract_hashtag_tokens(hashtags))
 
                     trimmed = _priority_aware_trim(caption, opt_max, p)
                     min_len = SHORT_MINIMUMS.get(p, 80)
@@ -1201,7 +1382,7 @@ def _run_caption_provider(
                         caption = trimmed
                         log(
                             "CAPTION",
-                            f"→ Body trimmed (smart boundary) | Hashtags preserved ({tag_count} tags) | CTA preserved ({len(cta)} chars)",
+                            f"→ Body-first trim applied | Required tags preserved ({len(required_tags)}) | Optional tags considered ({tag_count}) | CTA preserved ({len(cta)} chars)",
                         )
                 else:
                     log("CAPTION", "→ Within tolerance, keeping as-is")
@@ -1274,6 +1455,7 @@ def generate_all_captions(
     target_language="gu",
     return_meta=False,
     selected_platforms=None,
+    source_metadata=None,
 ):
     os.makedirs(output_dir, exist_ok=True)
     meta = {
@@ -1282,6 +1464,7 @@ def generate_all_captions(
         "provider": "mistral_caption",
         "live_provider": "mistral",
         "provider_stats": {},
+        "source_caption_strategy": "generated",
         "evaluation": {
             "enabled": False,
             "provider": "glm",
@@ -1312,6 +1495,19 @@ def generate_all_captions(
         target_language=target_language,
         target_platforms=target_platforms,
     )
+    source_prompt = None
+    if _has_usable_source_metadata(source_metadata):
+        source_prompt = _build_source_first_prompt(
+            vision_data,
+            source_metadata,
+            transcript=transcript_text,
+            target_language=target_language,
+            target_platforms=target_platforms,
+        )
+        meta["source_caption_strategy"] = "source_first"
+        log("CAPTION", "Source description metadata found — trying source-first adaptation.")
+    else:
+        log("CAPTION", "No usable source description metadata — using generated captions.")
     captions = {}
     mistral_key = get_mistral_api_key(api_key)
     glm_key = get_glm_api_key()
@@ -1321,13 +1517,33 @@ def generate_all_captions(
 
     if mistral_key:
         try:
-            captions, mistral_stats = _run_caption_provider(
-                "mistral",
-                mistral_key,
-                prompt,
-                target_platforms,
-                target_language,
-            )
+            mistral_stats = None
+            live_prompt = prompt
+            if source_prompt:
+                try:
+                    captions, mistral_stats = _run_caption_provider(
+                        "mistral",
+                        mistral_key,
+                        source_prompt,
+                        target_platforms,
+                        target_language,
+                    )
+                    meta["source_caption_strategy"] = "source_first"
+                    live_prompt = source_prompt
+                except Exception as source_error:
+                    meta["source_caption_strategy"] = "source_first_fallback_generated"
+                    log(
+                        "CAPTION",
+                        f"Source-first adaptation failed: {source_error} — falling back to transcript-based generation.",
+                    )
+            if not captions:
+                captions, mistral_stats = _run_caption_provider(
+                    "mistral",
+                    mistral_key,
+                    prompt,
+                    target_platforms,
+                    target_language,
+                )
             meta["provider_stats"]["mistral"] = mistral_stats
         except Exception as e:
             log("CAPTION", f"Error: {e} — fallback.")
@@ -1404,7 +1620,7 @@ def generate_all_captions(
                 glm_captions, glm_stats = _run_caption_provider(
                     "glm",
                     glm_key,
-                    prompt,
+                    live_prompt if "live_prompt" in locals() else prompt,
                     target_platforms,
                     target_language,
                 )

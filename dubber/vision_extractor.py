@@ -2,25 +2,43 @@ import os, json, time, re
 from .utils import log, track_api_call, track_api_success
 from .runtime_config import is_economy_mode
 
-VISION_PROMPT = (
-    "You are a content intelligence engine. Analyze this transcript and extract the core message.\n\n"
-    "TRANSCRIPT (Gujarati):\n"
-    "TRANSCRIPT_HERE\n\n"
-    "Return ONLY valid JSON with exactly these keys:\n"
-    "{\n"
-    '  "main_topic": "short subject in Gujarati (max 80 chars)",\n'
-    '  "core_conflict": "central tension or teaching in Gujarati (1-2 sentences)",\n'
-    '  "provocative_angle": "most surprising statement in Gujarati (1 sentence)",\n'
-    '  "festival": "festival name if mentioned, else null",\n'
-    '  "location": "location if mentioned, else null",\n'
-    '  "date": "date if mentioned, else null",\n'
-    '  "theme": "one of: victory | celebration | devotional | teaching | announcement"\n'
-    "}\n\n"
-    "Rules:\n"
-    "- Write main_topic, core_conflict, provocative_angle in GUJARATI script.\n"
-    "- Base everything strictly on the transcript. No fabrication.\n"
-    "- theme must be exactly one of the 5 options."
-)
+LANGUAGE_META = {
+    "gu": ("Gujarati", "Gujarati script"),
+    "hi": ("Hindi", "Devanagari script"),
+    "ta": ("Tamil", "Tamil script"),
+    "te": ("Telugu", "Telugu script"),
+    "kn": ("Kannada", "Kannada script"),
+    "ml": ("Malayalam", "Malayalam script"),
+    "bn": ("Bengali", "Bengali script"),
+    "es": ("Spanish", "Spanish"),
+    "ru": ("Russian", "Cyrillic Russian"),
+    "en": ("English", "English"),
+}
+
+
+def _build_vision_prompt(target_language, transcript):
+    language_name, script_hint = LANGUAGE_META.get(
+        str(target_language or "").lower(), ("target language", "the target script")
+    )
+    return (
+        "You are a content intelligence engine. Analyze this transcript and extract the core message.\n\n"
+        f"TRANSCRIPT ({language_name}):\n"
+        f"{transcript}\n\n"
+        "Return ONLY valid JSON with exactly these keys:\n"
+        "{\n"
+        f'  "main_topic": "short subject in {language_name} (max 80 chars)",\n'
+        f'  "core_conflict": "central tension or teaching in {language_name} (1-2 sentences)",\n'
+        f'  "provocative_angle": "most surprising statement in {language_name} (1 sentence)",\n'
+        '  "festival": "festival name if mentioned, else null",\n'
+        '  "location": "location if mentioned, else null",\n'
+        '  "date": "date if mentioned, else null",\n'
+        '  "theme": "one of: victory | celebration | devotional | teaching | announcement"\n'
+        "}\n\n"
+        "Rules:\n"
+        f"- Write main_topic, core_conflict, provocative_angle in {script_hint}.\n"
+        "- Base everything strictly on the transcript. No fabrication.\n"
+        "- theme must be exactly one of the 5 options."
+    )
 
 
 def _call_gemini(api_key, prompt, max_retries=6):
@@ -84,7 +102,9 @@ def _call_gemini(api_key, prompt, max_retries=6):
     raise RuntimeError(f"Gemini rate-limited after {retries} retries.")
 
 
-def extract_vision(segments, api_key, output_dir="workspace", return_meta=False):
+def extract_vision(
+    segments, api_key, output_dir="workspace", return_meta=False, target_language="gu"
+):
     os.makedirs(output_dir, exist_ok=True)
     meta = {
         "used_fallback": False,
@@ -107,7 +127,7 @@ def extract_vision(segments, api_key, output_dir="workspace", return_meta=False)
         meta["reason"] = "No Gemini Vision API key"
         data = _fallback_extract(segments)
         return (data, meta) if return_meta else data
-    prompt = VISION_PROMPT.replace("TRANSCRIPT_HERE", transcript)
+    prompt = _build_vision_prompt(target_language, transcript)
     try:
         raw = _call_gemini(api_key, prompt)
         if raw.startswith("```"):

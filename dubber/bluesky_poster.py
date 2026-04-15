@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 
+from .config import load_env_into_process
 from .utils import log
 
 
@@ -119,13 +120,7 @@ def _compress_video_for_bluesky(src_path, max_mb=50):
     return None
 
 
-try:
-    from dotenv import load_dotenv
-except Exception:
-    load_dotenv = None
-
-if load_dotenv:
-    load_dotenv()
+load_env_into_process()
 
 
 class BlueskyPoster:

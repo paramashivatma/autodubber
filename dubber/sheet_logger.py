@@ -35,6 +35,18 @@ def _get_full_language_name(lang_code: str) -> str:
     """Convert language code to full language name."""
     return LANGUAGE_CODES_TO_NAMES.get(lang_code, lang_code)
 
+
+def _extract_lang_code_from_voice_log(log_text: str) -> str:
+    """Infer language code from logged TTS voice identifiers."""
+    tts_match = re.search(r"Voice:\s*([a-z]{2})-[A-Z]{2}-", log_text)
+    if tts_match:
+        return tts_match.group(1).lower()
+
+    for code in LANGUAGE_CODES_TO_NAMES.keys():
+        if re.search(rf"\b{re.escape(code)}-[A-Z]{{2}}-", log_text):
+            return code
+    return ""
+
 # Google Sheet config
 SHEET_NAME = "AutoDubQueue"
 CREDENTIALS_FILE = "credentials.json"
@@ -80,14 +92,10 @@ def _parse_logs_for_data(log_buffer: List[str]) -> Dict:
     if lang_match:
         data["source_lang"] = lang_match.group(1)
     
-    # Extract target language from TTS Voice
-    tts_match = re.search(r'Voice:\s*(\w{2})-IN-', log_text)
-    if tts_match:
-        data["target_lang"] = tts_match.group(1)
-    elif re.search(r'gu-IN-', log_text):
-        data["target_lang"] = "gu"
-    elif re.search(r'ta-IN-', log_text):
-        data["target_lang"] = "ta"
+    # Extract target language from TTS voice metadata
+    inferred_target = _extract_lang_code_from_voice_log(log_text)
+    if inferred_target:
+        data["target_lang"] = inferred_target
     
     # Extract duration from STITCH logs
     duration_match = re.search(r'(\d{2}:\d{2}:\d{2}|\d{2}:\d{2})', log_text)
