@@ -13,6 +13,45 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
 
+# --- One-shot Tesseract path initialization ---------------------------------
+# Performed once at module import to avoid per-OCR-call os.environ['PATH']
+# read-modify-writes from worker threads. Result is cached in module state;
+# extract_text_from_image() only reads the flag.
+_TESSERACT_EXE = None          # Full path to tesseract.exe if found, else None
+_TESSERACT_INIT_ERR = None     # Descriptive error string when not found
+
+
+def _initialize_tesseract_path():
+    """Resolve Tesseract install location once. Safe to call multiple times."""
+    global _TESSERACT_EXE, _TESSERACT_INIT_ERR
+    if _TESSERACT_EXE or _TESSERACT_INIT_ERR:
+        return  # Already initialized
+    if os.name != "nt":
+        # Non-Windows: rely on PATH lookup by pytesseract; no PATH mutation.
+        _TESSERACT_EXE = ""  # Empty string = use system default
+        return
+    tesseract_dir = (
+        os.environ.get("TESSERACT_DIR", "").strip()
+        or r"C:\Program Files\Tesseract-OCR"
+    )
+    tesseract_exe = os.path.join(tesseract_dir, "tesseract.exe")
+    if os.path.isfile(tesseract_exe):
+        # Prepend directory to PATH exactly once (idempotent guard).
+        current_path = os.environ.get("PATH", "")
+        if tesseract_dir not in current_path:
+            os.environ["PATH"] = tesseract_dir + ";" + current_path
+        _TESSERACT_EXE = tesseract_exe
+    else:
+        _TESSERACT_INIT_ERR = (
+            f"Tesseract not found at '{tesseract_exe}'. "
+            "Set TESSERACT_DIR env var if installed elsewhere."
+        )
+
+
+# Run once at import so worker threads never mutate os.environ.
+_initialize_tesseract_path()
+
+
 LANGUAGE_META = {
     "en": {
         "name": "English",
@@ -84,19 +123,16 @@ def extract_text_from_image(image_path, api_key=None):
             import pytesseract
             from PIL import Image
 
-            # Add Tesseract path for Windows
-            import os
-
+            # Use cached tesseract path resolved at module import time.
             if os.name == "nt":  # Windows
-                tesseract_path = r"C:\Program Files\Tesseract-OCR"
-                if tesseract_path not in os.environ.get("PATH", ""):
-                    os.environ["PATH"] = (
-                        tesseract_path + ";" + os.environ.get("PATH", "")
+                if not _TESSERACT_EXE:
+                    log(
+                        "OCR",
+                        f"{_TESSERACT_INIT_ERR or 'Tesseract unavailable'} — "
+                        "skipping local OCR, will use Gemini fallback.",
                     )
-                # Also set pytesseract path explicitly
-                pytesseract.pytesseract.tesseract_cmd = (
-                    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-                )
+                    raise ImportError("tesseract_not_installed")
+                pytesseract.pytesseract.tesseract_cmd = _TESSERACT_EXE
 
             image = Image.open(image_path)
             extracted_text = pytesseract.image_to_string(image)
@@ -271,9 +307,33 @@ def generate_platform_captions(extracted_text, target_language="gu", api_key=Non
             ),
         )
 
-        data = json.loads(resp.text.strip())
-        print(f"EXTRACTED URL — verify before publishing: {data['extracted_url']}")
-        captions = data["captions"]
+        # Validate raw response before parsing. Gemini can return an empty
+        # `.text` when the response is blocked by safety filters, or return
+        # JSON that is missing required keys on a partial/malformed completion.
+        raw_text = getattr(resp, "text", None)
+        if not raw_text or not str(raw_text).strip():
+            raise ValueError(
+                "Empty response from Gemini (likely safety filter or truncation)"
+            )
+
+        try:
+            data = json.loads(str(raw_text).strip())
+        except json.JSONDecodeError as je:
+            raise ValueError(f"Gemini returned non-JSON text: {je}; head={str(raw_text)[:200]!r}")
+
+        if not isinstance(data, dict):
+            raise ValueError(f"Gemini JSON is not an object: type={type(data).__name__}")
+
+        extracted_url = data.get("extracted_url")
+        if extracted_url:
+            log("CAPTIONS", f"Extracted URL (verify before publishing): {extracted_url}")
+
+        captions = data.get("captions")
+        if not isinstance(captions, dict) or not captions:
+            raise ValueError(
+                f"Gemini response missing/invalid 'captions' object: keys={list(data.keys())}"
+            )
+
         _, meta = _target_meta(target_language)
         log("CAPTIONS", f"Generated {len(captions)} {meta['name']} captions")
         return captions

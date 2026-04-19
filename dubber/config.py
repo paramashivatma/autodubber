@@ -191,6 +191,13 @@ def get_groq_api_key(explicit=None) -> str:
     return first_env("GROQ_API_KEY")
 
 
+def get_deepgram_api_key(explicit=None) -> str:
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value
+    return first_env("DEEPGRAM_API_KEY")
+
+
 def get_sheet_id(explicit=None) -> str:
     explicit_value = _clean(explicit)
     if explicit_value:
@@ -229,7 +236,7 @@ def get_dub_source_lang(explicit=None) -> str:
     explicit_value = _clean(explicit)
     if explicit_value:
         return explicit_value
-    return first_env("DUB_SOURCE_LANG", default="")
+    return first_env("DUB_SOURCE_LANG", default="en")
 
 
 def get_dub_target_lang(explicit=None) -> str:

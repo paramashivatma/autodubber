@@ -27,7 +27,7 @@ Note: Flyer/Image tab intentionally excludes YouTube and TikTok image publishing
 ### Video workflow
 1. Source input (YouTube URL or local video file)
 2. Optional BGM separation (Demucs)
-3. Transcription (Groq if key present; local Whisper fallback)
+3. Transcription (Deepgram nova-3 if key present; local Whisper fallback)
 4. Translation (Gemini-first in quality mode, Google-first in economy mode)
 5. TTS generation (Edge TTS)
 6. Dubbed video build (FFmpeg stitching + audio mix)
@@ -100,7 +100,7 @@ Edit `.env`:
 | `ZERNIO_API_KEY` | Yes (for publishing) | Publish to social platforms |
 | `GEMINI_API_KEY` | Recommended | Translation, vision extraction, flyer AI steps |
 | `MISTRAL_API_KEY` | Recommended | Caption generation |
-| `GROQ_API_KEY` | Optional | Fast cloud transcription (local Whisper-large-v3 is default) |
+| `DEEPGRAM_API_KEY` | Optional | Fast cloud transcription via Deepgram nova-3 (local Whisper-large-v3 is default) |
 | `ZERNIO_*_ACCOUNT_ID` | Required for each platform you publish to | Your own Zernio-connected social account IDs |
 | `YOUTUBE_*_CLIENT_ID` / `YOUTUBE_*_CLIENT_SECRET` | Required for direct YouTube publishing | OAuth desktop app credentials for each YouTube account |
 | `GOOGLE_SHEET_ID` | Optional | Sheet logging |
@@ -188,7 +188,7 @@ Treat as unconfirmed response from platform/backend. Check dashboards first befo
 - Ensure sheet is shared with service account email
 
 ### Local transcription fallback fails
-Set `GROQ_API_KEY` (recommended), or ensure local Whisper dependencies are properly installed.
+Set `DEEPGRAM_API_KEY` (recommended), or ensure local Whisper dependencies are properly installed.
 
 ## Project structure
 ```text

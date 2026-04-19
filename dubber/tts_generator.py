@@ -1,7 +1,31 @@
 import os, asyncio, time, re, json
 import edge_tts
 from pydub import AudioSegment
-from .utils import log
+from .utils import ffprobe_info, log
+
+
+def _probe_audio_duration_ms(path):
+    """Return audio duration in ms without decoding every sample.
+
+    ffprobe reads only the container/codec header, which is an order of
+    magnitude faster than pydub's ``AudioSegment.from_file`` for the
+    20s+ clips this pipeline generates (pydub decodes the full waveform
+    into memory just to measure length). For a 50-segment dub this
+    saves several seconds of wall time and ~tens of MB of transient
+    allocations. Falls back to the historical pydub path if ffprobe
+    cannot read the file, preserving behavior on any edge case.
+    """
+    try:
+        info = ffprobe_info(path)
+        dur = info.get("duration")
+        if dur is not None and dur >= 0:
+            return int(round(dur * 1000))
+    except Exception:
+        pass
+    try:
+        return len(AudioSegment.from_file(path))
+    except Exception:
+        return 0
 
 # Fallback voices for different languages
 FALLBACK_VOICES = {
@@ -19,7 +43,6 @@ FALLBACK_VOICES = {
 }
 
 
-_loop = None
 LETTER_SPELLED_ACRONYMS = {
     "AI",
     "AGI",
@@ -45,12 +68,16 @@ KNOWN_PRONUNCIATION_HINTS = {
 
 
 def _run_async(coro):
-    global _loop
-    if _loop is None or _loop.is_closed():
-        _loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_loop)
+    """Run a coroutine to completion on a fresh event loop.
+
+    asyncio.run() creates and closes a new loop per call. This is thread-safe
+    (each thread gets its own loop), avoids stale-loop bugs from a module-level
+    loop that never closes, and works correctly even if TTS is invoked from
+    multiple worker threads. The per-call overhead is on the order of
+    milliseconds, negligible compared to network TTS synthesis.
+    """
     try:
-        return _loop.run_until_complete(coro)
+        return asyncio.run(coro)
     except Exception as e:
         log("TTS", f"  Coroutine error: {type(e).__name__}: {str(e)[:200]}")
         raise e
@@ -290,6 +317,23 @@ def generate_tts_audio(
 
     for idx, seg in enumerate(segments):
         seg_id = seg["id"]
+        if seg.get("preserve_original_audio"):
+            log(
+                "TTS",
+                f"[{idx + 1}/{len(segments)}] seg#{seg_id}: preserving original source audio",
+            )
+            results.append(
+                {
+                    **seg,
+                    "audio_path": None,
+                    "audio_dur_ms": int(
+                        max(float(seg.get("end", 0.0)) - float(seg.get("start", 0.0)), 0.0)
+                        * 1000
+                    ),
+                    "tts_skipped": True,
+                }
+            )
+            continue
         raw_text = (seg.get("translated") or seg.get("text", "")).strip()
         tts_text = _normalize_tts_pronunciation(raw_text)
         text = _sanitize_text(tts_text)
@@ -381,7 +425,7 @@ def generate_tts_audio(
             )
             continue
 
-        dur_ms = len(AudioSegment.from_file(clip))
+        dur_ms = _probe_audio_duration_ms(clip)
         results.append(
             {
                 **seg,

@@ -1,7 +1,12 @@
-import os, json, time
+import os, json, re, time, tempfile, threading
 from .utils import log, track_api_call, track_api_success
 from .runtime_config import is_economy_mode
 from .config import get_gemini_api_key
+
+# Serialize cache writes within the process. Translation currently runs on a
+# single worker thread, but the cache file is also loaded at module import on
+# the main thread, so a lock is cheap insurance.
+_CACHE_WRITE_LOCK = threading.Lock()
 
 LANGUAGE_SPECS = {
     "en": {
@@ -93,6 +98,72 @@ _last_runtime_meta = {
 PROTECTED_PHRASES = {
     "Sovereign Order of KAILASA's Nithyananda": "Sovereign Order of KAILASA's Nithyananda",
 }
+OMISSION_CHECK_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "he",
+    "her",
+    "his",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "me",
+    "my",
+    "of",
+    "on",
+    "or",
+    "our",
+    "she",
+    "that",
+    "the",
+    "their",
+    "them",
+    "there",
+    "they",
+    "this",
+    "to",
+    "was",
+    "we",
+    "were",
+    "will",
+    "with",
+    "you",
+    "your",
+    "whole",
+    "all",
+    "every",
+    "then",
+    "than",
+    "just",
+    "only",
+    "about",
+    "what",
+    "when",
+    "where",
+    "who",
+    "why",
+    "how",
+    "past",
+    "today",
+    "start",
+}
+SHORT_LIST_TAIL_MARKERS = {"all that", "etc", "and all that"}
 
 
 def _reset_runtime_state():
@@ -148,6 +219,73 @@ def _log_skip_once():
         )
 
 
+def _normalize_whitespace(text):
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _cleanup_adjacent_duplicate_words(text):
+    parts = re.findall(r"\w+|[^\w\s]+|\s+", str(text or ""), flags=re.UNICODE)
+    cleaned = []
+    last_word = None
+    for part in parts:
+        if part.isspace():
+            cleaned.append(part)
+            continue
+        if re.fullmatch(r"\w+", part, flags=re.UNICODE):
+            word = part.lower()
+            if last_word == word:
+                continue
+            last_word = word
+            cleaned.append(part)
+            continue
+        cleaned.append(part)
+    return "".join(cleaned)
+
+
+def _cleanup_repeated_short_lists(text):
+    source = _normalize_whitespace(text)
+    if "," not in source:
+        return source
+
+    items = [item.strip() for item in source.split(",")]
+    if len(items) < 3:
+        return source
+
+    cleaned_items = []
+    seen = set()
+    changed = False
+    for item in items:
+        normalized = re.sub(r"[^\w\s]", "", item, flags=re.UNICODE).strip().lower()
+        if not normalized:
+            continue
+
+        duplicate = normalized in seen
+        if duplicate:
+            word_count = len(normalized.split())
+            if word_count <= 2 and normalized not in SHORT_LIST_TAIL_MARKERS:
+                changed = True
+                continue
+
+        seen.add(normalized)
+        cleaned_items.append(item)
+
+    if not changed or len(cleaned_items) < 2:
+        return source
+
+    repaired = ", ".join(cleaned_items)
+    repaired = re.sub(r"\s+,", ",", repaired)
+    repaired = re.sub(r"\s+\.", ".", repaired)
+    return repaired
+
+
+def _cleanup_source_text(text):
+    original = _normalize_whitespace(text)
+    cleaned = _cleanup_adjacent_duplicate_words(original)
+    cleaned = _cleanup_repeated_short_lists(cleaned)
+    cleaned = _normalize_whitespace(cleaned)
+    return cleaned or original
+
+
 def _google_translate_text(text, target_language, source_hint="auto", use_pivot=False):
     """Google Translate helper with optional English pivot for language-specific quality."""
     from deep_translator import GoogleTranslator
@@ -173,6 +311,68 @@ def _google_translate_text(text, target_language, source_hint="auto", use_pivot=
     return direct
 
 
+def _tokenize_for_omission_check(text):
+    return re.findall(r"[A-Za-z']+", str(text or "").lower())
+
+
+def _extract_coverage_terms(text):
+    candidates = []
+    seen = set()
+    for token in _tokenize_for_omission_check(text):
+        normalized = token.strip("'")
+        if len(normalized) < 5:
+            continue
+        if normalized in OMISSION_CHECK_STOPWORDS:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        candidates.append(normalized)
+    return candidates[:8]
+
+
+def _find_missing_coverage_terms(source_text, translated_text, target_language, source_hint):
+    source_hint = str(source_hint or "auto").lower()
+    coverage_source_text = source_text
+    if source_hint not in {"en", "auto"}:
+        try:
+            coverage_source_text = _google_translate_text(
+                source_text,
+                "en",
+                source_hint=source_hint,
+                use_pivot=False,
+            )
+        except Exception as e:
+            log("TRANSLATE", f"  Coverage source pivot failed: {e}")
+            return []
+
+    source_terms = _extract_coverage_terms(coverage_source_text)
+    if not source_terms:
+        return []
+
+    try:
+        round_trip = _google_translate_text(
+            translated_text,
+            "en",
+            source_hint=target_language,
+            use_pivot=False,
+        )
+    except Exception as e:
+        log("TRANSLATE", f"  Coverage back-translation failed: {e}")
+        return []
+
+    round_trip_tokens = set(_tokenize_for_omission_check(round_trip))
+    missing = [term for term in source_terms if term not in round_trip_tokens]
+    significant_missing = [term for term in missing if len(term) >= 6]
+
+    if significant_missing:
+        log(
+            "TRANSLATE",
+            f"  Coverage check missing source terms: {', '.join(significant_missing)}",
+        )
+    return significant_missing
+
+
 def _load_cache():
     """Load translation cache from file."""
     global _translation_cache
@@ -189,13 +389,45 @@ def _load_cache():
 
 
 def _save_cache():
-    """Save translation cache to file."""
-    try:
-        with open(_cache_file, "w", encoding="utf-8") as f:
-            json.dump(_translation_cache, f, ensure_ascii=False, indent=2)
-        log("TRANSLATE", f"[CACHE] Saved {len(_translation_cache)} entries")
-    except Exception as e:
-        log("TRANSLATE", f"[CACHE] Save failed: {e}")
+    """Atomically save translation cache to file.
+
+    Writes to a temp file in the same directory, fsyncs, then os.replaces over
+    the real cache. This prevents a crash mid-write from truncating or
+    corrupting translation_cache.json (which is slow to rebuild).
+    """
+    with _CACHE_WRITE_LOCK:
+        cache_dir = os.path.dirname(os.path.abspath(_cache_file)) or "."
+        tmp_fd = None
+        tmp_path = None
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix=".translation_cache.",
+                suffix=".tmp",
+                dir=cache_dir,
+            )
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                tmp_fd = None  # ownership transferred to the file object
+                json.dump(_translation_cache, f, ensure_ascii=False, indent=2)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp_path, _cache_file)
+            tmp_path = None
+            log("TRANSLATE", f"[CACHE] Saved {len(_translation_cache)} entries")
+        except Exception as e:
+            log("TRANSLATE", f"[CACHE] Save failed: {e}")
+            if tmp_fd is not None:
+                try:
+                    os.close(tmp_fd)
+                except Exception:
+                    pass
+            if tmp_path is not None:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
 
 def _language_spec(target_language):
@@ -375,6 +607,83 @@ Text to translate:
             time.sleep((1 if is_economy_mode() else 3) * attempt)
 
     raise RuntimeError(f"Gemini translation failed after {max_attempts} attempts.")
+
+
+def _gemini_translate_with_coverage_retry(
+    text, source_hint="auto", target_language="en", missing_terms=None
+):
+    from google import genai
+    from google.genai import types
+
+    if _gemini_quota_exhausted:
+        raise RuntimeError(
+            f"Gemini disabled for this run: {_gemini_quota_reason or 'quota exhausted'}"
+        )
+
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise RuntimeError("No Gemini API key found.")
+
+    client = genai.Client(api_key=api_key)
+
+    lang_names = {**LANGUAGE_NAMES, "auto": "the detected language"}
+    source_lang = lang_names.get(source_hint, source_hint)
+    target_lang = lang_names.get(target_language, target_language)
+    missing_terms = [term for term in (missing_terms or []) if term]
+    coverage_note = ", ".join(missing_terms) if missing_terms else "all concrete details"
+
+    prompt = f"""Translate the following text from {source_lang} to {target_lang}.
+
+Context: This is a spiritual/Vedantic teaching by a Hindu monk about Hindu deities, traditions, and sacred places.
+
+RULES:
+1. Do not omit any concrete source meaning. Preserve every image, action, and metaphor.
+2. If the source contains a vivid word or phrase, keep that meaning explicit in the translation instead of smoothing it away.
+3. Pay special attention to these source terms: {coverage_note}
+4. PROPER NOUNS: If a name seems clearly misheard, correct it. Otherwise, transliterate names as-is.
+5. SANSKRIT SHLOKAS: Keep verses, mantras, and shlokas in their original form.
+6. REVERENCE: Maintain a respectful, devotional tone.
+7. TTS OPTIMIZED: Use clear punctuation for natural pauses. Avoid symbols like *, _, (), or brackets.
+8. NATURAL SPEECH: Write for the ear, not the eye.
+
+Return ONLY the translation. No explanations.
+
+Text to translate:
+{_protect_text_for_translation(text)}"""
+
+    track_api_call("gemini")
+    response = client.models.generate_content(
+        model="gemini-2.5-flash-lite",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            top_p=0.8,
+            max_output_tokens=1024,
+        ),
+    )
+    result = (response.text or "").strip()
+    if not result:
+        raise RuntimeError("Gemini coverage retry returned empty output.")
+    track_api_success("gemini")
+    return _restore_protected_phrases(result.replace("[[", "").replace("]]", ""))
+
+
+def _retry_translation_for_coverage(text, target_language, source_hint, missing_terms):
+    try:
+        retried = _gemini_translate_with_coverage_retry(
+            text,
+            source_hint=source_hint,
+            target_language=target_language,
+            missing_terms=missing_terms,
+        )
+        if _is_translation_acceptable(retried, target_language):
+            return retried
+    except Exception as e:
+        if _is_quota_exhausted_error(e):
+            _mark_quota_exhausted(e)
+        log("TRANSLATE", f"  Coverage retry failed: {e}")
+
+    return None
 
 
 def _gemini_translate_batch(texts, source_hint, target_language):
@@ -690,6 +999,23 @@ def _translate_with_policy(text, target_language, source_hint="auto"):
                 f"  Gemini failed for {target_language}: {e} — falling back to Google Translate ...",
             )
 
+    if not is_economy_mode():
+        try:
+            result = _mistral_translate(text, source_hint, target_language)
+            if _is_translation_acceptable(result, target_language):
+                final = _restore_protected_phrases(result)
+                _set_cached(text, final, target_language)
+                return final
+            log(
+                "TRANSLATE",
+                f"  Mistral output not clean {language_name} — falling back to Google Translate ...",
+            )
+        except Exception as e:
+            log(
+                "TRANSLATE",
+                f"  Mistral failed for {target_language}: {e} — falling back to Google Translate ...",
+            )
+
     try:
         result = _google_translate_text(
             text, target_language, source_hint=source_hint, use_pivot=False
@@ -849,6 +1175,17 @@ def translate_segments(segments, target_language="en", output_dir="workspace"):
     os.makedirs(output_dir, exist_ok=True)
     _reset_runtime_state()
 
+    prepared_segments = []
+    for seg in segments:
+        cleaned_text = _cleanup_source_text(seg.get("text", ""))
+        if cleaned_text != (seg.get("text", "") or ""):
+            log(
+                "TRANSLATE",
+                f"  Cleaned ASR artifact: '{seg.get('text', '')[:70]}' -> '{cleaned_text[:70]}'",
+            )
+        prepared_segments.append({**seg, "text": cleaned_text})
+    segments = prepared_segments
+
     source_hint = "auto"
     if segments:
         first_text = segments[0].get("text", "")
@@ -874,6 +1211,20 @@ def translate_segments(segments, target_language="en", output_dir="workspace"):
     for i, (seg, translated) in enumerate(zip(segments, translations)):
         log("TRANSLATE", f"[{i + 1}/{len(segments)}] {texts[i][:70]}")
 
+        missing_terms = _find_missing_coverage_terms(
+            texts[i], translated, target_language, source_hint
+        )
+        if missing_terms:
+            log(
+                "TRANSLATE",
+                f"  Retrying segment {i + 1} to preserve omitted meaning...",
+            )
+            retried = _retry_translation_for_coverage(
+                texts[i], target_language, source_hint, missing_terms
+            )
+            if retried:
+                translated = retried
+
         if _has_unexpected_script(translated, target_language):
             log("TRANSLATE", f"  !! FOREIGN SCRIPT in output — check segment {i + 1}")
 
@@ -883,6 +1234,7 @@ def translate_segments(segments, target_language="en", output_dir="workspace"):
                 "TRANSLATE",
                 f"     Expected script: {_is_expected_script(translated, target_language)}",
             )
+        _set_cached(texts[i], translated, target_language)
         results.append({**seg, "translated": translated})
 
     with open(

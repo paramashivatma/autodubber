@@ -388,8 +388,11 @@ def update_video_tracker(
             # else: will append new row at end
         
         # Prepare row data (columns A-I)
-        platforms_str = _format_publish_platforms(successful_results, unconfirmed_results)
-        
+        # NOTE: update_video_tracker is the log-parsing path; it does not have
+        # per-platform success/unconfirmed dicts available here. Use the platform
+        # list extracted from the log buffer instead.
+        platforms_str = _format_platforms_list(data.get("platforms") or [])
+
         row_data = [
             data["title"],
             data["status"],

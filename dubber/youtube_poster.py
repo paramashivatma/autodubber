@@ -135,6 +135,7 @@ def publish_direct_youtube(alias, video_path, title, description, publish_now=Tr
 
     try:
         from googleapiclient.http import MediaFileUpload
+        from googleapiclient.errors import HttpError, ResumableUploadError
     except Exception as exc:
         msg = "Missing googleapiclient dependency for direct YouTube publishing."
         log("YOUTUBE", f"{msg} {exc}")
@@ -165,9 +166,65 @@ def publish_direct_youtube(alias, video_path, title, description, publish_now=Tr
             media_body=media,
         )
 
+        # Resumable upload loop with bounded retries.
+        # - `num_retries=5` asks googleapiclient to handle transient 5xx/429
+        #   with internal exponential backoff per chunk.
+        # - We still wrap in our own outer retry in case something slips through
+        #   (e.g., connection reset between chunks).
+        # - A hard iteration cap prevents an infinite loop if next_chunk ever
+        #   returns (status, None) indefinitely without raising.
+        import time as _time
+        import socket as _socket
+
+        RETRYABLE_HTTP_STATUS = {500, 502, 503, 504, 408, 429}
+        MAX_OUTER_RETRIES = 5
+        # chunksize=-1 means single chunk, so we should never loop more than
+        # a small number of iterations even for large files. 2048 is paranoid.
+        MAX_TOTAL_ITERATIONS = 2048
+
         response = None
+        outer_attempt = 0
+        iterations = 0
         while response is None:
-            _, response = request.next_chunk()
+            iterations += 1
+            if iterations > MAX_TOTAL_ITERATIONS:
+                raise RuntimeError(
+                    f"YouTube upload exceeded {MAX_TOTAL_ITERATIONS} chunk iterations without completion."
+                )
+            try:
+                status, response = request.next_chunk(num_retries=5)
+                if status is not None:
+                    try:
+                        pct = int(status.progress() * 100)
+                        log("YOUTUBE", f"{label} upload progress: {pct}%")
+                    except Exception:
+                        pass
+            except ResumableUploadError as exc:
+                # Non-retryable resumable-protocol error (e.g., 4xx from Google).
+                raise RuntimeError(f"YouTube resumable upload failed: {exc}") from exc
+            except HttpError as exc:
+                status_code = getattr(getattr(exc, "resp", None), "status", None)
+                if status_code in RETRYABLE_HTTP_STATUS and outer_attempt < MAX_OUTER_RETRIES:
+                    outer_attempt += 1
+                    backoff = min(60, 2 ** outer_attempt)
+                    log(
+                        "YOUTUBE",
+                        f"{label} transient HTTP {status_code}; retry {outer_attempt}/{MAX_OUTER_RETRIES} in {backoff}s",
+                    )
+                    _time.sleep(backoff)
+                    continue
+                raise
+            except (_socket.timeout, ConnectionError, OSError) as exc:
+                if outer_attempt < MAX_OUTER_RETRIES:
+                    outer_attempt += 1
+                    backoff = min(60, 2 ** outer_attempt)
+                    log(
+                        "YOUTUBE",
+                        f"{label} transient network error ({type(exc).__name__}); retry {outer_attempt}/{MAX_OUTER_RETRIES} in {backoff}s",
+                    )
+                    _time.sleep(backoff)
+                    continue
+                raise
 
         video_id = str((response or {}).get("id") or "").strip()
         if not video_id:

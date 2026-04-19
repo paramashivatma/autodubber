@@ -474,6 +474,90 @@ def _validate_schema(captions, target_platforms=None):
     return missing, empty
 
 
+# -----------------------------------------------------------------------------
+# Length validators — split into two concerns with distinct remediation:
+#   * truncated  → LLM cut off mid-generation; retry with an explicit shorter
+#                  target so the model can finish cleanly.
+#   * expanded   → output exceeds PLATFORM_LIMITS; trim locally with
+#                  _priority_aware_trim (preserves hashtags + CTA).
+# -----------------------------------------------------------------------------
+
+_TRUNCATION_SENTENCE_ENDINGS = (".", "!", "?", "\"", "'", ")", "]", "”", "’")
+
+
+def _looks_truncated(caption):
+    """Heuristic: caption appears to have been cut off by the LLM mid-output.
+
+    Signs:
+      * Ends mid-word (last token is a plain alphanumeric with no terminal
+        punctuation and isn't a complete hashtag/emoji).
+      * Dangling "..." not preceded by a completed sentence.
+      * Ends with an incomplete hashtag token like bare '#' or '#x'.
+
+    False when the caption ends with sentence punctuation, a quote, a bracket,
+    a complete hashtag, or a non-ASCII character (emoji, CJK, Indic scripts).
+    """
+    s = str(caption or "").rstrip()
+    if not s:
+        return False
+
+    # Dangling trailing ellipsis with no sentence completing before it.
+    if s.endswith("..."):
+        body = s[:-3].rstrip()
+        if not body.endswith(_TRUNCATION_SENTENCE_ENDINGS):
+            return True
+        # Otherwise the ellipsis is stylistic after a finished sentence.
+
+    last_char = s[-1]
+    if last_char in _TRUNCATION_SENTENCE_ENDINGS:
+        return False
+    # Non-ASCII ending is usually an emoji or script-native char → complete.
+    if ord(last_char) > 127:
+        return False
+
+    tokens = s.split()
+    if not tokens:
+        return False
+    last_token = tokens[-1]
+
+    # Complete hashtag: '#' + at least one alphanumeric character.
+    if last_token.startswith("#"):
+        body = last_token[1:].replace("_", "").replace("-", "")
+        if body and body.isalnum():
+            return False
+        # Bare '#' or '#-' etc. is a truncation signal.
+        return True
+
+    # Plain word without terminal punctuation → mid-word cut.
+    if last_token[-1].isalnum():
+        return True
+
+    return False
+
+
+def _validate_caption_length(captions, target_platforms=None):
+    """Split captions into (truncated, expanded) remediation buckets.
+
+    Returns two lists of platform names. A single caption can appear in both
+    (e.g., an IG caption that's over-limit AND looks cut off); handled by the
+    calling code in order: truncated-retry first, then expansion-trim.
+    """
+    truncated = []
+    expanded = []
+    platforms = _normalize_target_platforms(target_platforms) if target_platforms else list(captions.keys())
+    for p in platforms:
+        data = captions.get(p) or {}
+        caption = str(data.get("caption", ""))
+        if not caption.strip():
+            continue  # empty captions handled by _validate_schema
+        hard_lim = PLATFORM_LIMITS.get(p, 2000)
+        if len(caption) > hard_lim:
+            expanded.append(p)
+        if _looks_truncated(caption):
+            truncated.append(p)
+    return truncated, expanded
+
+
 def _smart_trim(text, limit, min_words=5):
     """Trim text to limit, preferring sentence/word boundaries.
     Avoids ending on stop words and ensures minimum word count.
@@ -1221,6 +1305,47 @@ def _run_caption_provider(
             f"  WARNING: Non-{_language_meta(target_language)['name']} output in {bad_script}",
         )
 
+    # Truncation check: LLM cut caption mid-output. Distinct from 'expanded'
+    # (exceeds limit, trimmed locally) — truncation means we lost content and
+    # need the model to produce a complete shorter version.
+    truncated_platforms, _ = _validate_caption_length(captions, target_platforms)
+    if truncated_platforms and is_quality_mode():
+        log(
+            "CAPTION",
+            f"  Truncated captions on {truncated_platforms} from {provider_name} — retrying with tighter target ...",
+        )
+        trunc_targets_hint = "; ".join(
+            f"{p}<={int(PLATFORM_LIMITS.get(p, 2000) * 0.85)}chars"
+            for p in truncated_platforms
+        )
+        retry_prompt = (
+            f"{prompt}\n\nCRITICAL: Your previous output for {truncated_platforms} "
+            "was truncated (cut off mid-sentence or mid-hashtag). "
+            f"Keep each platform strictly under 85% of its hard limit so it completes cleanly: "
+            f"{trunc_targets_hint}. End with a finished sentence followed by complete hashtags. "
+            f"Return JSON ONLY for selected platforms: {', '.join(target_platforms)}."
+        )
+        try:
+            raw_t = _call_caption_provider(provider_name, api_key, retry_prompt, stats=stats)
+            captions_t = _parse_raw(raw_t)
+            captions_t = _normalize_provider_output(captions_t, target_platforms)
+            for p in truncated_platforms:
+                new_cap = captions_t.get(p, {}).get("caption", "")
+                if new_cap and not _looks_truncated(new_cap):
+                    captions[p] = captions_t.get(p, captions[p])
+                    log("CAPTION", f"  Truncation retry succeeded for {p}")
+                else:
+                    log("CAPTION", f"  Truncation retry did not resolve {p}; keeping original")
+        except Exception as e:
+            stats["warnings"].append(f"trunc_retry_failed:{','.join(sorted(truncated_platforms))}")
+            log("CAPTION", f"Truncation retry failed: {e}")
+    elif truncated_platforms:
+        stats["warnings"].append(f"truncated:{','.join(sorted(truncated_platforms))}")
+        log(
+            "CAPTION",
+            f"  Economy mode: accepting truncated captions for {truncated_platforms} without regeneration.",
+        )
+
     bad_short = [
         p
         for p, mins in SHORT_MINIMUMS.items()
@@ -1266,7 +1391,7 @@ def _run_caption_provider(
     for p, data in captions.items():
         caption = data.get("caption", "")
 
-        if p in ["instagram", "facebook", "youtube", "tiktok"]:
+        if p in ["instagram", "facebook", "youtube", "tiktok", "twitter"]:
             missing_both = (
                 "#kailasa" not in caption.lower()
                 or "#nithyananda" not in caption.lower()

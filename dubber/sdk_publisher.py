@@ -805,9 +805,18 @@ def upload_large_file(client, file_path):
         )
         presign_response.raise_for_status()
 
-        presign_data = presign_response.json()
-        upload_url = presign_data["uploadUrl"]
-        public_url = presign_data["publicUrl"]
+        presign_data = presign_response.json() or {}
+        upload_url = str(presign_data.get("uploadUrl") or "").strip()
+        public_url = str(presign_data.get("publicUrl") or "").strip()
+
+        if not upload_url or not public_url:
+            raise ValueError(
+                f"Presign response missing uploadUrl/publicUrl "
+                f"(uploadUrl={'set' if upload_url else 'EMPTY'}, "
+                f"publicUrl={'set' if public_url else 'EMPTY'}): {presign_data}"
+            )
+        if not (public_url.startswith("http://") or public_url.startswith("https://")):
+            raise ValueError(f"Presign publicUrl is not a valid http(s) URL: {public_url!r}")
 
         log("PUBLISH", f"  ✅ Presigned URL received: {upload_url[:50]}...")
         log("PUBLISH", f"  📍 Public URL will be: {public_url[:50]}...")
@@ -1049,6 +1058,14 @@ def publish_with_sdk(
                                 f"Upload response missing public URL: {result}"
                             )
 
+                    # Belt-and-braces: never pass an empty/non-http URL to Zernio.
+                    video_url = str(video_url or "").strip()
+                    if not video_url or not (
+                        video_url.startswith("http://") or video_url.startswith("https://")
+                    ):
+                        raise ValueError(
+                            f"Video upload returned invalid URL: {video_url!r}"
+                        )
                     media_items.append({"type": "video", "url": video_url})
                     log("PUBLISH", f"  ✅ Main video uploaded: {video_url[:50]}...")
                 except Exception as e:
@@ -1084,6 +1101,13 @@ def publish_with_sdk(
                                     f"Upload response missing public URL: {result}"
                                 )
 
+                        img_url = str(img_url or "").strip()
+                        if not img_url or not (
+                            img_url.startswith("http://") or img_url.startswith("https://")
+                        ):
+                            raise ValueError(
+                                f"Main image upload returned invalid URL: {img_url!r}"
+                            )
                         media_items.append({"type": "image", "url": img_url})
                         log("PUBLISH", f"  ✅ Main image uploaded: {img_url[:50]}...")
                     except Exception as e:
@@ -1116,6 +1140,13 @@ def publish_with_sdk(
                                         f"Upload response missing public URL: {result}"
                                     )
 
+                            img_url = str(img_url or "").strip()
+                            if not img_url or not (
+                                img_url.startswith("http://") or img_url.startswith("https://")
+                            ):
+                                raise ValueError(
+                                    f"Image {i + 1} upload returned invalid URL: {img_url!r}"
+                                )
                             media_items.append({"type": "image", "url": img_url})
                             log(
                                 "PUBLISH",

@@ -1,15 +1,21 @@
 import datetime
+import json
 import os
+import subprocess
 import sys
 import glob
 import logging
 from logging.handlers import RotatingFileHandler
 from dubber.config import get_platform_accounts
 
+# Sentinel when source fps cannot be probed; preserves historical default
+# behavior instead of leaving -r unset (which can produce VFR on ffmpeg).
+FPS_FALLBACK = "30"
+
 _LOG_SUBSCRIBERS = []
 _FILE_LOGGER = None
 _LOG_DIR = None
-_API_CALL_COUNTS = {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "total": 0}
+_API_CALL_COUNTS = {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "deepgram": 0, "total": 0}
 
 
 def get_log_dir():
@@ -45,7 +51,7 @@ def _init_file_logger():
         handler.setFormatter(formatter)
         _FILE_LOGGER.addHandler(handler)
 
-    _API_CALL_COUNTS = {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "total": 0}
+    _API_CALL_COUNTS = {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "deepgram": 0, "total": 0}
     _clean_old_logs(log_dir, keep_days=7)
 
     return log_file
@@ -93,7 +99,7 @@ def get_api_call_counts():
 def reset_api_call_counts():
     """Reset API call counts (typically called at start of new pipeline run)."""
     global _API_CALL_COUNTS
-    _API_CALL_COUNTS = {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "total": 0}
+    _API_CALL_COUNTS = {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "deepgram": 0, "total": 0}
 
 
 def add_log_subscriber(callback):
@@ -152,9 +158,9 @@ def count_api_calls_from_logs(log_file=None):
         log_file = os.path.join(log_dir, f"dubber_{today}.log")
 
     if not os.path.exists(log_file):
-        return {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "total": 0}
+        return {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "deepgram": 0, "total": 0}
 
-    counts = {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "total": 0}
+    counts = {"gemini": 0, "mistral": 0, "glm": 0, "groq": 0, "deepgram": 0, "total": 0}
 
     try:
         with open(log_file, "r", encoding="utf-8", errors="replace") as f:
@@ -175,6 +181,9 @@ def count_api_calls_from_logs(log_file=None):
                     counts["total"] += 1
                 elif "glm" in line_lower or "bigmodel" in line_lower:
                     counts["glm"] += 1
+                    counts["total"] += 1
+                elif "deepgram" in line_lower:
+                    counts["deepgram"] += 1
                     counts["total"] += 1
                 elif "groq" in line_lower or "transcribe" in line_lower:
                     if "call" in line_lower or "groq" in line_lower:
@@ -235,6 +244,105 @@ REQUIRED_PLATFORMS = {
 # Zernio platform account IDs come from environment variables.
 # Public repo defaults intentionally remain empty.
 PLATFORM_ACCOUNTS = get_platform_accounts()
+
+
+def _validate_fps(fps):
+    """Return a ffmpeg-acceptable fps string, or None if the shape is bad.
+
+    ffprobe emits r_frame_rate as a fraction like "30/1" or "30000/1001"
+    (23.976 fps). ffmpeg's -r consumes that format natively, so we keep the
+    raw fraction instead of evaluating it and losing precision. Bare ints
+    are also accepted.
+    """
+    fps = (fps or "").strip()
+    if not fps:
+        return None
+    if "/" in fps:
+        num, _, den = fps.partition("/")
+        if num.isdigit() and den.isdigit() and int(num) > 0 and int(den) > 0:
+            return fps
+        return None
+    if fps.isdigit() and int(fps) > 0:
+        return fps
+    return None
+
+
+def ffprobe_info(path, timeout=30):
+    """Return {'duration': float|None, 'fps': str|None} in one ffprobe call.
+
+    Batching duration + fps into a single subprocess saves one launch per
+    video build (~30-50 ms) vs calling them separately. JSON output is the
+    most reliable parse surface — the `default=` format co-mingles values
+    from multiple sections.
+
+    Both keys are always present; either may be None on probe failure, so
+    callers can decide how to react per-field.
+    """
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "format=duration:stream=r_frame_rate",
+                "-of",
+                "json",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception:
+        return {"duration": None, "fps": None}
+
+    stdout = (r.stdout or "").strip()
+    if not stdout:
+        return {"duration": None, "fps": None}
+    try:
+        payload = json.loads(stdout)
+    except Exception:
+        return {"duration": None, "fps": None}
+
+    duration = None
+    try:
+        fmt = payload.get("format") or {}
+        raw = fmt.get("duration")
+        if raw is not None:
+            duration = float(raw)
+    except Exception:
+        duration = None
+
+    fps = None
+    try:
+        streams = payload.get("streams") or []
+        if streams:
+            fps = _validate_fps(str(streams[0].get("r_frame_rate", "")))
+    except Exception:
+        fps = None
+
+    return {"duration": duration, "fps": fps}
+
+
+def ffprobe_duration(path):
+    """Return the media duration in seconds, or raise RuntimeError on failure.
+
+    Backs the historic private `_ffprobe_duration` signature the rest of the
+    codebase relies on (it treats unreadable probes as a hard error).
+    """
+    info = ffprobe_info(path)
+    if info["duration"] is None:
+        raise RuntimeError(f"ffprobe failed for: {path}")
+    return info["duration"]
+
+
+def ffprobe_fps(path):
+    """Return video frame rate string (e.g. '30000/1001'), or FPS_FALLBACK."""
+    info = ffprobe_info(path)
+    return info["fps"] or FPS_FALLBACK
 
 # Platform-specific teaser generation specs
 PLATFORM_SPECS = {

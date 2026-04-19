@@ -4,24 +4,27 @@ import concurrent.futures
 from .utils import log
 
 
-def _validate_groq(api_key):
-    """Ping Groq API to verify the key is valid and active."""
+def _validate_deepgram(api_key):
+    """Ping Deepgram API to verify the key is valid and active.
+
+    Deepgram's ``/v1/projects`` endpoint is a cheap authenticated GET that
+    returns 200 with a project list for valid keys, 401 for invalid ones,
+    without spending any transcription credits.
+    """
     if not api_key or not api_key.strip():
-        return {"status": "missing", "message": "No Groq API key configured"}
+        return {"status": "missing", "message": "No Deepgram API key configured"}
     key = api_key.strip()
-    if not key.startswith("gsk_"):
-        return {"status": "error", "message": "Invalid key format (expected 'gsk_...')"}
     try:
         import requests
 
         resp = requests.get(
-            "https://api.groq.com/openai/v1/models",
-            headers={"Authorization": f"Bearer {key}"},
+            "https://api.deepgram.com/v1/projects",
+            headers={"Authorization": f"Token {key}"},
             timeout=10,
         )
         if resp.status_code == 200:
             return {"status": "ok", "message": "Connected successfully"}
-        elif resp.status_code == 401:
+        elif resp.status_code in (401, 403):
             return {"status": "error", "message": "Invalid or expired API key"}
         elif resp.status_code == 429:
             return {"status": "error", "message": "Rate limited / quota exceeded"}
@@ -118,7 +121,7 @@ def _validate_zernio(api_key):
 
 
 _VALIDATORS = {
-    "groq": _validate_groq,
+    "deepgram": _validate_deepgram,
     "gemini": _validate_gemini,
     "mistral": _validate_mistral,
     "zernio": _validate_zernio,
@@ -129,16 +132,16 @@ def validate_all_keys(
     gemini_key=None,
     mistral_key=None,
     zernio_key=None,
-    groq_key=None,
+    deepgram_key=None,
     need_captions=False,
     need_publish=False,
 ):
     """
     Validate all configured APIs in parallel.
-    Returns dict: {"groq": {...}, "gemini": {...}, "mistral": {...}, "zernio": {...}}
+    Returns dict: {"deepgram": {...}, "gemini": {...}, "mistral": {...}, "zernio": {...}}
     """
     key_map = {
-        "groq": groq_key,
+        "deepgram": deepgram_key,
         "gemini": gemini_key,
         "mistral": mistral_key,
         "zernio": zernio_key,
@@ -146,15 +149,15 @@ def validate_all_keys(
 
     # Determine which APIs to validate based on pipeline mode
     required = {"gemini"}  # Always needed (translation)
-    # Groq is optional — local Whisper large is the default
+    # Deepgram is optional — local Whisper large is the default
     if need_captions:
         required.add("mistral")
     if need_publish:
         required.add("zernio")
 
-    # Only validate Groq if a key is explicitly provided (optional speed boost)
-    if groq_key and groq_key.strip():
-        required.add("groq")
+    # Only validate Deepgram if a key is explicitly provided (optional speed boost)
+    if deepgram_key and deepgram_key.strip():
+        required.add("deepgram")
 
     results = {}
 

@@ -17,6 +17,7 @@ from dubber import (
     get_translation_runtime_meta,
     generate_tts_audio,
     build_dubbed_video,
+    verify_dubbed_output,
     extract_vision,
     generate_all_captions,
     log,
@@ -77,6 +78,7 @@ VOICES = {
     "Russian - Svetlana (F)": "ru-RU-SvetlanaNeural",
 }
 LANGUAGES = {
+    "Auto": "auto",
     "English": "en",
     "Hindi": "hi",
     "Gujarati": "gu",
@@ -88,6 +90,7 @@ LANGUAGES = {
     "Spanish": "es",
     "Russian": "ru",
 }
+TARGET_LANGUAGES = {name: code for name, code in LANGUAGES.items() if code != "auto"}
 LANGUAGE_DEFAULT_VOICE = {
     "English": "English - Ryan (M)",
     "Gujarati": "Gujarati - Niranjan (M)",
@@ -153,7 +156,7 @@ def _save_env(data):
     save_env_updates(data)
 
 
-def _resolve_language_name(raw_value, fallback="English"):
+def _resolve_language_name(raw_value, fallback="Auto"):
     value = str(raw_value or "").strip()
     if not value:
         return fallback
@@ -338,7 +341,7 @@ def _log_api_summary():
     log("API_USAGE", f"Gemini API calls: {counts.get('gemini', 0)}")
     log("API_USAGE", f"Mistral API calls: {counts.get('mistral', 0)}")
     log("API_USAGE", f"GLM API calls: {counts.get('glm', 0)}")
-    log("API_USAGE", f"Groq API calls: {counts.get('groq', 0)}")
+    log("API_USAGE", f"Deepgram API calls: {counts.get('deepgram', 0)}")
     log("API_USAGE", f"Total API calls: {counts.get('total', 0)}")
     log("API_USAGE", f"------------------------")
 
@@ -375,8 +378,9 @@ def run_dub_pipeline(
             "merge": 0.04,
             "translate": 0.12,
             "tts": 0.12,
-            "build_and_vision": 0.24,
-            "captions": 0.10,
+            "build_and_vision": 0.18,
+            "verify": 0.08,
+            "captions": 0.08,
             "shared_media": 0.08,
         }
         ordered_stages = list(stage_weights.keys())
@@ -499,6 +503,16 @@ def run_dub_pipeline(
                 )
             )
 
+        status_cb(_stage_text(7, "Verify dubbed output"))
+        verify_dubbed_output(
+            video_path=output_path,
+            segments=segs,
+            target_language=tgt_lang,
+            output_dir=WORKSPACE,
+            model_size=model_size,
+        )
+        _emit_stage_progress("verify", 1.0)
+
         if dub_only:
             status_cb(f"Dub-only mode complete. Output: {output_path}")
             _log_api_summary()
@@ -506,7 +520,7 @@ def run_dub_pipeline(
             done_cb(success=True, msg="Dubbing complete.", pub_results={})
             return
 
-        status_cb(_stage_text(7, "Generate captions"))
+        status_cb(_stage_text(8, "Generate captions"))
         captions, caption_meta = generate_all_captions(
             vision,
             mistral_key,
@@ -533,10 +547,10 @@ def run_dub_pipeline(
                 "Teaser clip generation is disabled in the standard publish flow. "
                 "Using the shared dubbed video for every platform.",
             )
-        status_cb(_stage_text(8, "Use shared dubbed video"))
+        status_cb(_stage_text(9, "Use shared dubbed video"))
         _emit_stage_progress("shared_media", 1.0)
 
-        status_cb(_stage_text(9, "Review captions"))
+        status_cb(_stage_text(10, "Review captions"))
         _log_api_summary()
         caption_ready_cb(
             captions=captions,
@@ -1180,7 +1194,7 @@ class App(tk.Tk):
         self.tgt_lang_combo = ttk.Combobox(
             self.t_dub,
             textvariable=self.tgt_lang_var,
-            values=list(LANGUAGES.keys()),
+            values=list(TARGET_LANGUAGES.keys()),
             width=16,
             state="readonly",
         )
@@ -2193,9 +2207,9 @@ class App(tk.Tk):
             )
 
     def _review_transcription_fixes(self):
-        """Show minimal dialog to review and approve pending transcription fixes."""
+        """Review pending transcription fixes and approve or reject them."""
         try:
-            from dubber.transcriber import get_pending_fixes, approve_fixes
+            from dubber.transcriber import get_pending_fixes, approve_fixes, reject_fixes
 
             pending = get_pending_fixes()
             if not pending:
@@ -2211,9 +2225,11 @@ class App(tk.Tk):
             dialog.transient(self)
             dialog.grab_set()
 
+            current_pending = dict(pending)
+
             tk.Label(
                 dialog,
-                text=f"Pending fixes ({len(pending)}):",
+                text=f"Pending fixes ({len(current_pending)}):",
                 font=("Segoe UI", 10, "bold"),
             ).pack(pady=(10, 5))
 
@@ -2221,22 +2237,28 @@ class App(tk.Tk):
             listbox = tk.Listbox(dialog, width=50, height=10)
             listbox.pack(padx=10, pady=5, fill="both", expand=True)
 
-            for word, correction in pending.items():
-                listbox.insert(tk.END, f"'{word}' → '{correction}'")
+            header_label = dialog.winfo_children()[0]
+
+            def refresh_list():
+                nonlocal current_pending
+                current_pending = get_pending_fixes()
+                listbox.delete(0, tk.END)
+                for word, correction in current_pending.items():
+                    listbox.insert(tk.END, f"'{word}' → '{correction}'")
+                header_label.config(text=f"Pending fixes ({len(current_pending)}):")
+
+            refresh_list()
 
             # Button frame
             btn_frame = tk.Frame(dialog)
             btn_frame.pack(pady=10)
 
-            def approve_selected():
+            def selected_items():
                 selected = listbox.curselection()
                 if not selected:
-                    messagebox.showwarning(
-                        "No Selection", "Please select fixes to approve."
-                    )
-                    return
+                    return {}
 
-                words_to_approve = {}
+                chosen = {}
                 for idx in selected:
                     item = listbox.get(idx)
                     if "→" in item:
@@ -2244,17 +2266,56 @@ class App(tk.Tk):
                         if len(parts) == 2:
                             word = parts[0].strip().strip("'")
                             correction = parts[1].strip().strip("'")
-                            words_to_approve[word] = correction
+                            chosen[word] = correction
+                return chosen
 
-                if words_to_approve:
-                    count = approve_fixes(words_to_approve)
-                    messagebox.showinfo("Success", f"Approved {count} fix(es).")
+            def approve_selected():
+                words_to_approve = selected_items()
+                if not words_to_approve:
+                    messagebox.showwarning(
+                        "No Selection", "Please select fixes to approve."
+                    )
+                    return
+
+                count = approve_fixes(words_to_approve)
+                refresh_list()
+                messagebox.showinfo("Success", f"Approved {count} fix(es).")
+                if not current_pending:
                     dialog.destroy()
 
             def approve_all():
-                count = approve_fixes(pending)
+                if not current_pending:
+                    messagebox.showinfo("No Fixes", "No pending fixes to approve.")
+                    return
+                count = approve_fixes(dict(current_pending))
+                refresh_list()
                 messagebox.showinfo("Success", f"Approved all {count} fix(es).")
-                dialog.destroy()
+                if not current_pending:
+                    dialog.destroy()
+
+            def reject_selected():
+                words_to_reject = selected_items()
+                if not words_to_reject:
+                    messagebox.showwarning(
+                        "No Selection", "Please select fixes to reject."
+                    )
+                    return
+
+                count = reject_fixes(words_to_reject)
+                refresh_list()
+                messagebox.showinfo("Success", f"Rejected {count} fix(es).")
+                if not current_pending:
+                    dialog.destroy()
+
+            def reject_all():
+                if not current_pending:
+                    messagebox.showinfo("No Fixes", "No pending fixes to reject.")
+                    return
+                count = reject_fixes(dict(current_pending))
+                refresh_list()
+                messagebox.showinfo("Success", f"Rejected all {count} fix(es).")
+                if not current_pending:
+                    dialog.destroy()
 
             tk.Button(
                 btn_frame,
@@ -2269,6 +2330,22 @@ class App(tk.Tk):
                 text="Approve All",
                 command=approve_all,
                 bg=self._colors["accent"],
+                fg="white",
+            ).pack(side="left", padx=5)
+
+            tk.Button(
+                btn_frame,
+                text="Reject Selected",
+                command=reject_selected,
+                bg="#8d6e63",
+                fg="white",
+            ).pack(side="left", padx=5)
+
+            tk.Button(
+                btn_frame,
+                text="Reject All",
+                command=reject_all,
+                bg="#6d4c41",
                 fg="white",
             ).pack(side="left", padx=5)
 
@@ -2292,6 +2369,11 @@ class App(tk.Tk):
         to_save["PIPELINE_MODE"] = (
             self.pipeline_mode_var.get().strip().lower() or "economy"
         )
+        to_save["DUB_SOURCE_LANG"] = LANGUAGES.get(self.src_lang_var.get(), "auto")
+        to_save["DUB_TARGET_LANG"] = TARGET_LANGUAGES.get(
+            self.tgt_lang_var.get(), "en"
+        )
+        to_save["DUB_VOICE"] = VOICES.get(self.voice_var.get(), "")
         if to_save:
             _save_env(to_save)
         self.status_var.set("Keys saved.")
@@ -2315,12 +2397,12 @@ class App(tk.Tk):
         mistral = self.mistral_key_var.get().strip()
         zernio = self.zernio_key_var.get().strip()
 
-        # Pre-flight API validation (Groq is optional — local Whisper is default)
+        # Pre-flight API validation (Deepgram is optional — local Whisper is default)
         validation = validate_all_keys(
             gemini_key=gemini_vision,
             mistral_key=mistral,
             zernio_key=zernio,
-            groq_key=None,
+            deepgram_key=None,
             need_captions=not self.dub_only_var.get(),
             need_publish=not self.dub_only_var.get(),
         )
@@ -2334,7 +2416,7 @@ class App(tk.Tk):
                     info["status"], "❓"
                 )
                 label = {
-                    "groq": "Groq",
+                    "deepgram": "Deepgram",
                     "gemini": "Gemini",
                     "mistral": "Mistral",
                     "zernio": "Zernio",
@@ -2390,8 +2472,8 @@ class App(tk.Tk):
                 video,
                 VOICES[self.voice_var.get()],
                 "large",  # Always use whisper-large-v3 for best quality
-                LANGUAGES[self.src_lang_var.get()],
-                LANGUAGES[self.tgt_lang_var.get()],
+                LANGUAGES.get(self.src_lang_var.get(), "auto"),
+                TARGET_LANGUAGES.get(self.tgt_lang_var.get(), "en"),
                 self.bgm_var.get(),
                 self.bgm_vol_var.get(),
                 gemini_vision,
@@ -2431,219 +2513,265 @@ class App(tk.Tk):
     ):
         self.status_var.set("Review platform-specific captions, then approve.")
 
-        # Show review dialog (simplified without parallel uploads for now)
-        dlg = ReviewDialog(
-            self, captions, upload_manager=None, platforms=selected_platforms
-        )
-        if dlg.result is None:
+        # --- Async review-dialog lifecycle -----------------------------------
+        # The dialog now stays alive during publish so the user sees live
+        # per-platform progress instead of a dismissed dialog + status bar.
+        # Everything below runs on the Tk main thread; the publish itself
+        # still runs on a worker thread that pushes updates back via
+        # self._queue_ui(lambda: dlg.update_progress(...)).
+        # ----------------------------------------------------------------------
+
+        dlg_ref = {"dlg": None}
+
+        def _on_cancel_before_approve():
             self.run_btn.config(state="normal")
             self.status_var.set("Publishing cancelled.")
-            return
-        approved = dlg.result
-        if not self._try_begin_publish("dub"):
-            self.status_var.set("A publish is already in progress. Please wait.")
-            return
 
-        missing_account_envs = get_missing_platform_account_envs(selected_platforms)
-        missing_account_envs.pop("bluesky", None)
-        missing_account_envs.pop("youtube", None)
-        if missing_account_envs:
-            self._end_publish("dub")
-            missing_lines = "\n".join(
-                f"- {platform}: {env_name}"
-                for platform, env_name in missing_account_envs.items()
-            )
-            msg = (
-                "Publishing is blocked because Zernio platform account IDs are not configured.\n\n"
-                "Add these keys to your .env:\n"
-                f"{missing_lines}"
-            )
-            self.status_var.set("Publishing blocked: missing Zernio account IDs.")
-            self.run_btn.config(state="normal")
-            messagebox.showerror("Missing Zernio Account IDs", msg)
-            return
+        def _dlg_progress(message, platform=None, status=None):
+            d = dlg_ref["dlg"]
+            if d is None:
+                return
+            self._queue_ui(lambda: d.update_progress(message, platform=platform, status=status))
 
-        media_guard_path = (
-            video_path
-            or main_image_path
-            or ((image_paths or [None])[0] if image_paths else None)
-        )
-        repost_blocks = find_ambiguous_repost_blocks(
-            media_guard_path,
-            approved,
-            _expanded_publish_guard_platforms(selected_platforms),
-        )
-        if repost_blocks:
-            self._end_publish("dub")
-            lines = "\n".join(
-                f"- {_display_platform_name(item['platform'])}: previous {item['status']} at {item['timestamp']}"
-                for item in repost_blocks
-            )
-            msg = (
-                "Publishing is blocked because this exact content was already submitted on these platforms.\n\n"
-                "Please verify the live profiles/dashboards before reposting:\n"
-                f"{lines}"
-            )
-            self.status_var.set("Duplicate-protection blocked repost.")
-            self.run_btn.config(state="normal")
-            messagebox.showwarning("Duplicate Protection", msg)
-            return
+        def _dlg_complete(success, message):
+            d = dlg_ref["dlg"]
+            if d is None:
+                return
+            self._queue_ui(lambda: d.publishing_complete(success=success, message=message))
 
-        def _safe_done(success, msg, pub_results=None):
-            if done_cb:
-                if not self._queue_ui(
-                    lambda: done_cb(success=success, msg=msg, pub_results=pub_results)
-                ):
-                    try:
-                        done_cb(success=success, msg=msg, pub_results=pub_results)
-                    except Exception:
-                        pass
+        def _on_approve(approved):
+            if not self._try_begin_publish("dub"):
+                self.status_var.set("A publish is already in progress. Please wait.")
+                _dlg_complete(False, "Another publish is already in progress.")
+                return
 
-        self.status_var.set(_stage_text(10, "Publish"))
-
-        # Thread-safe progress callback for status bar updates
-        def _thread_safe_progress(done, total, platform, status):
-            """Thread-safe progress update for status bar"""
-            self._queue_ui(lambda: self._update_progress(done, total, platform, status))
-
-        def _publish():
-            try:
-                if video_path:
-                    fallback_files = {"main_video": video_path}
-                else:
-                    all_images = list(image_paths or [])
-                    primary_image = main_image_path or (all_images[0] if all_images else None)
-                    additional_images = list(all_images)
-                    if (
-                        primary_image
-                        and additional_images
-                        and additional_images[0] == primary_image
-                    ):
-                        additional_images = additional_images[1:]
-                if not video_path:
-                    fallback_files = {
-                        "main_image": primary_image,
-                        "additional_images": additional_images,
-                    }
-                results = publish_to_platforms_sdk(
-                    api_key=zernio_key,
-                    video_path=video_path,
-                    captions=approved,
-                    platforms=selected_platforms,
-                    scheduled_for=scheduled_for if not publish_now else None,
-                    publish_now=publish_now,
-                    image_paths=image_paths,
-                    output_dir=WORKSPACE,
-                    progress_cb=_thread_safe_progress,
-                    fallback_files=fallback_files,
-                )
-
-                error_msg = _extract_error_message(results)
-                ok = _count_successful_results(results)
-                unconfirmed = _count_unconfirmed_results(results)
-                likely_live = _count_likely_live_results(results)
-                skipped = _count_skipped_results(results)
-                total = _effective_publish_total(selected_platforms, results)
-                if error_msg:
-                    msg = f"Publishing blocked: {error_msg}"
-                elif skipped > 0 and likely_live > 0 and unconfirmed > 0:
-                    msg = (
-                        f"Published {ok}/{total} platform(s); {likely_live} likely already live, "
-                        f"{unconfirmed} unconfirmed, {skipped} skipped by platform limits."
-                    )
-                elif skipped > 0 and likely_live > 0:
-                    msg = (
-                        f"Published {ok}/{total} platform(s); {likely_live} likely already live and "
-                        f"{skipped} skipped by platform limits."
-                    )
-                elif skipped > 0 and unconfirmed > 0:
-                    msg = (
-                        f"Published {ok}/{total} platform(s); {unconfirmed} unconfirmed and "
-                        f"{skipped} skipped by platform limits."
-                    )
-                elif skipped > 0:
-                    msg = f"Published {ok}/{total} platform(s); {skipped} skipped by platform limits."
-                elif likely_live > 0 and unconfirmed > 0:
-                    msg = (
-                        f"Published {ok}/{total} platform(s); {likely_live} likely already live and "
-                        f"{unconfirmed} still unconfirmed. Check dashboard before retrying."
-                    )
-                elif likely_live > 0:
-                    msg = (
-                        f"Published {ok}/{total} platform(s); {likely_live} likely already live "
-                        "from a duplicate Bluesky response."
-                    )
-                elif ok > 0 and unconfirmed > 0:
-                    msg = (
-                        f"Published {ok}/{total} platform(s); {unconfirmed} unconfirmed. "
-                        "Check dashboard before retrying."
-                    )
-                elif ok > 0:
-                    msg = f"Published {ok}/{total} platform(s)."
-                elif unconfirmed > 0:
-                    msg = (
-                        f"Publish submitted but unconfirmed for {unconfirmed}/{total} platform(s). "
-                        "Check dashboard before retrying."
-                    )
-                else:
-                    msg = f"Published 0/{total} platform(s)."
-
-                # Log to Google Sheet after successful or unconfirmed publish
-                if not error_msg and (ok > 0 or unconfirmed > 0):
-                    try:
-                        self._queue_ui(
-                            lambda: self.status_var.set(
-                                _stage_text(11, "Log to Google Sheet")
-                            )
-                        )
-                        from dubber.sheet_logger import quick_update_from_publish_result
-
-                        formatted_title = self._build_video_sheet_title(
-                            approved, video_path
-                        )
-                        sheet_success, sheet_msg = quick_update_from_publish_result(
-                            video_title=formatted_title,
-                            publish_results=results,
-                            duration=self._get_media_duration_text(video_path),
-                            source_lang=self.src_lang_var.get() or "English",
-                            target_lang=self.tgt_lang_var.get() or "English",
-                            content_format="video",
-                        )
-                        if sheet_success:
-                            log("PUBLISH", f"✅ Google Sheet update: {sheet_msg}")
-                        else:
-                            log(
-                                "PUBLISH", f"⚠️ Google Sheet update skipped: {sheet_msg}"
-                            )
-
-                    except ImportError:
-                        log("PUBLISH", "⚠️ Google Sheet logger not available")
-
-                try:
-                    record_ambiguous_publish_results(video_path, approved, results)
-                except Exception as guard_error:
-                    log("PUBLISH", f"⚠️ Publish guard update failed: {guard_error}")
-
-                self._queue_ui(lambda: self.run_btn.config(state="normal"))
-                self._queue_ui(lambda: self.status_var.set(msg))
-                log("PUBLISH", f"✅ Publishing completed: {msg}")
-                _safe_done(
-                    success=(ok > 0 or unconfirmed > 0), msg=msg, pub_results=results
-                )
-
-            except Exception as e:
-                log("PUBLISH", f"❌ Publishing error: {e}")
-                self._queue_ui(lambda: self.run_btn.config(state="normal"))
-                self._queue_ui(lambda: self.status_var.set(f"Publishing failed: {e}"))
-                _safe_done(
-                    success=False,
-                    msg=f"Publishing failed: {e}",
-                    pub_results={"error": str(e)},
-                )
-            finally:
+            missing_account_envs = get_missing_platform_account_envs(selected_platforms)
+            missing_account_envs.pop("bluesky", None)
+            missing_account_envs.pop("youtube", None)
+            if missing_account_envs:
                 self._end_publish("dub")
+                missing_lines = "\n".join(
+                    f"- {platform}: {env_name}"
+                    for platform, env_name in missing_account_envs.items()
+                )
+                msg = (
+                    "Publishing is blocked because Zernio platform account IDs are not configured.\n\n"
+                    "Add these keys to your .env:\n"
+                    f"{missing_lines}"
+                )
+                self.status_var.set("Publishing blocked: missing Zernio account IDs.")
+                self.run_btn.config(state="normal")
+                _dlg_complete(False, "Missing Zernio account IDs — see dialog.")
+                messagebox.showerror("Missing Zernio Account IDs", msg)
+                return
 
-        threading.Thread(target=_publish, daemon=True).start()
+            media_guard_path = (
+                video_path
+                or main_image_path
+                or ((image_paths or [None])[0] if image_paths else None)
+            )
+            repost_blocks = find_ambiguous_repost_blocks(
+                media_guard_path,
+                approved,
+                _expanded_publish_guard_platforms(selected_platforms),
+            )
+            if repost_blocks:
+                self._end_publish("dub")
+                lines = "\n".join(
+                    f"- {_display_platform_name(item['platform'])}: previous {item['status']} at {item['timestamp']}"
+                    for item in repost_blocks
+                )
+                msg = (
+                    "Publishing is blocked because this exact content was already submitted on these platforms.\n\n"
+                    "Please verify the live profiles/dashboards before reposting:\n"
+                    f"{lines}"
+                )
+                self.status_var.set("Duplicate-protection blocked repost.")
+                self.run_btn.config(state="normal")
+                _dlg_complete(False, "Duplicate-protection blocked repost.")
+                messagebox.showwarning("Duplicate Protection", msg)
+                return
+
+            def _safe_done(success, msg, pub_results=None):
+                if done_cb:
+                    if not self._queue_ui(
+                        lambda: done_cb(success=success, msg=msg, pub_results=pub_results)
+                    ):
+                        try:
+                            done_cb(success=success, msg=msg, pub_results=pub_results)
+                        except Exception:
+                            pass
+
+            self.status_var.set(_stage_text(10, "Publish"))
+
+            # Thread-safe progress: update status bar AND mirror into the
+            # live review dialog so the user gets per-platform feedback.
+            def _thread_safe_progress(done, total, platform, status):
+                self._queue_ui(lambda: self._update_progress(done, total, platform, status))
+                status_l = str(status or "").lower()
+                pretty = _display_platform_name(platform)
+                if status_l in {"started", "start", "in_progress", "posting"}:
+                    _dlg_progress(f"Publishing to {pretty}...", platform=pretty, status="started")
+                elif status_l in {"success", "ok", "published", "complete", "completed"}:
+                    _dlg_progress(f"Published to {pretty}", platform=pretty, status="success")
+                elif status_l in {"error", "failed", "failure"}:
+                    _dlg_progress(f"Failed on {pretty}", platform=pretty, status="error")
+                else:
+                    _dlg_progress(f"{pretty}: {status}", platform=pretty, status=status_l or None)
+
+            def _publish():
+                try:
+                    if video_path:
+                        fallback_files = {"main_video": video_path}
+                    else:
+                        all_images = list(image_paths or [])
+                        primary_image = main_image_path or (all_images[0] if all_images else None)
+                        additional_images = list(all_images)
+                        if (
+                            primary_image
+                            and additional_images
+                            and additional_images[0] == primary_image
+                        ):
+                            additional_images = additional_images[1:]
+                    if not video_path:
+                        fallback_files = {
+                            "main_image": primary_image,
+                            "additional_images": additional_images,
+                        }
+                    results = publish_to_platforms_sdk(
+                        api_key=zernio_key,
+                        video_path=video_path,
+                        captions=approved,
+                        platforms=selected_platforms,
+                        scheduled_for=scheduled_for if not publish_now else None,
+                        publish_now=publish_now,
+                        image_paths=image_paths,
+                        output_dir=WORKSPACE,
+                        progress_cb=_thread_safe_progress,
+                        fallback_files=fallback_files,
+                    )
+
+                    error_msg = _extract_error_message(results)
+                    ok = _count_successful_results(results)
+                    unconfirmed = _count_unconfirmed_results(results)
+                    likely_live = _count_likely_live_results(results)
+                    skipped = _count_skipped_results(results)
+                    total = _effective_publish_total(selected_platforms, results)
+                    if error_msg:
+                        msg = f"Publishing blocked: {error_msg}"
+                    elif skipped > 0 and likely_live > 0 and unconfirmed > 0:
+                        msg = (
+                            f"Published {ok}/{total} platform(s); {likely_live} likely already live, "
+                            f"{unconfirmed} unconfirmed, {skipped} skipped by platform limits."
+                        )
+                    elif skipped > 0 and likely_live > 0:
+                        msg = (
+                            f"Published {ok}/{total} platform(s); {likely_live} likely already live and "
+                            f"{skipped} skipped by platform limits."
+                        )
+                    elif skipped > 0 and unconfirmed > 0:
+                        msg = (
+                            f"Published {ok}/{total} platform(s); {unconfirmed} unconfirmed and "
+                            f"{skipped} skipped by platform limits."
+                        )
+                    elif skipped > 0:
+                        msg = f"Published {ok}/{total} platform(s); {skipped} skipped by platform limits."
+                    elif likely_live > 0 and unconfirmed > 0:
+                        msg = (
+                            f"Published {ok}/{total} platform(s); {likely_live} likely already live and "
+                            f"{unconfirmed} still unconfirmed. Check dashboard before retrying."
+                        )
+                    elif likely_live > 0:
+                        msg = (
+                            f"Published {ok}/{total} platform(s); {likely_live} likely already live "
+                            "from a duplicate Bluesky response."
+                        )
+                    elif ok > 0 and unconfirmed > 0:
+                        msg = (
+                            f"Published {ok}/{total} platform(s); {unconfirmed} unconfirmed. "
+                            "Check dashboard before retrying."
+                        )
+                    elif ok > 0:
+                        msg = f"Published {ok}/{total} platform(s)."
+                    elif unconfirmed > 0:
+                        msg = (
+                            f"Publish submitted but unconfirmed for {unconfirmed}/{total} platform(s). "
+                            "Check dashboard before retrying."
+                        )
+                    else:
+                        msg = f"Published 0/{total} platform(s)."
+
+                    # Log to Google Sheet after successful or unconfirmed publish
+                    if not error_msg and (ok > 0 or unconfirmed > 0):
+                        try:
+                            self._queue_ui(
+                                lambda: self.status_var.set(
+                                    _stage_text(11, "Log to Google Sheet")
+                                )
+                            )
+                            from dubber.sheet_logger import quick_update_from_publish_result
+
+                            formatted_title = self._build_video_sheet_title(
+                                approved, video_path
+                            )
+                            sheet_success, sheet_msg = quick_update_from_publish_result(
+                                video_title=formatted_title,
+                                publish_results=results,
+                                duration=self._get_media_duration_text(video_path),
+                                source_lang=self.src_lang_var.get() or "English",
+                                target_lang=self.tgt_lang_var.get() or "English",
+                                content_format="video",
+                            )
+                            if sheet_success:
+                                log("PUBLISH", f"✅ Google Sheet update: {sheet_msg}")
+                            else:
+                                log(
+                                    "PUBLISH", f"⚠️ Google Sheet update skipped: {sheet_msg}"
+                                )
+
+                        except ImportError:
+                            log("PUBLISH", "⚠️ Google Sheet logger not available")
+
+                    try:
+                        record_ambiguous_publish_results(video_path, approved, results)
+                    except Exception as guard_error:
+                        log("PUBLISH", f"⚠️ Publish guard update failed: {guard_error}")
+
+                    self._queue_ui(lambda: self.run_btn.config(state="normal"))
+                    self._queue_ui(lambda: self.status_var.set(msg))
+                    log("PUBLISH", f"✅ Publishing completed: {msg}")
+                    _dlg_complete(success=(ok > 0 or unconfirmed > 0), message=msg)
+                    _safe_done(
+                        success=(ok > 0 or unconfirmed > 0), msg=msg, pub_results=results
+                    )
+
+                except Exception as e:
+                    log("PUBLISH", f"❌ Publishing error: {e}")
+                    self._queue_ui(lambda: self.run_btn.config(state="normal"))
+                    self._queue_ui(lambda: self.status_var.set(f"Publishing failed: {e}"))
+                    _dlg_complete(False, f"Publishing failed: {e}")
+                    _safe_done(
+                        success=False,
+                        msg=f"Publishing failed: {e}",
+                        pub_results={"error": str(e)},
+                    )
+                finally:
+                    self._end_publish("dub")
+
+            threading.Thread(target=_publish, daemon=True).start()
+
+        # Build the review dialog in async mode. The callbacks above fire on
+        # the Tk main thread when the user clicks Approve / pre-approve Cancel.
+        # The dialog stays visible during publish and surfaces per-platform
+        # progress via update_progress(); _dlg_complete() shows the final state.
+        dlg_ref["dlg"] = ReviewDialog(
+            self,
+            captions,
+            upload_manager=None,
+            platforms=selected_platforms,
+            on_approve=_on_approve,
+            on_cancel=_on_cancel_before_approve,
+        )
 
     def _done_cb(self, success, msg, pub_results=None):
         self.status_var.set(msg)
@@ -2752,8 +2880,8 @@ def run_cli():
     parser.add_argument("output", help="Output video file")
     parser.add_argument(
         "--voice",
-        default="English - Ryan (M)",
-        help="TTS voice (default: English - Ryan (M))",
+        default="",
+        help="TTS voice label (default: target-language default voice)",
     )
     parser.add_argument(
         "--target-lang", default="English", help="Target language (default: English)"
@@ -2765,7 +2893,9 @@ def run_cli():
     args = parser.parse_args()
 
     # Get voice ID from label
-    voice_label = args.voice
+    voice_label = (args.voice or "").strip()
+    if not voice_label:
+        voice_label = LANGUAGE_DEFAULT_VOICE.get(args.target_lang, "English - Ryan (M)")
     if voice_label in VOICES:
         voice = VOICES[voice_label]
     else:
@@ -2782,8 +2912,8 @@ def run_cli():
             voice = VOICES.get(fallback_label, VOICES["English - Ryan (M)"])
 
     model_size = "large"
-    src_lang = LANGUAGES.get(args.source_lang, "en")
-    tgt_lang = LANGUAGES.get(args.target_lang, "en")
+    src_lang = LANGUAGES.get(args.source_lang, "auto")
+    tgt_lang = TARGET_LANGUAGES.get(args.target_lang, "en")
 
     print(f"[CLI] Voice: {voice}, Source: {src_lang}, Target: {tgt_lang}")
 

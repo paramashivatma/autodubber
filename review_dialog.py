@@ -3,7 +3,28 @@ from tkinter import ttk
 from dubber.utils import PLATFORMS, PLATFORM_LIMITS
 
 class ReviewDialog(tk.Toplevel):
-    def __init__(self, parent, captions, upload_manager=None, platforms=None):
+    def __init__(
+        self,
+        parent,
+        captions,
+        upload_manager=None,
+        platforms=None,
+        on_approve=None,
+        on_cancel=None,
+    ):
+        """Review + publish-progress dialog.
+
+        Two modes:
+          * Synchronous (on_approve=None, legacy): __init__ blocks via
+            wait_window(); _approve() destroys the dialog; caller reads
+            self.result. Kept for the flyer publish path.
+          * Async (on_approve=callable): __init__ returns immediately; on
+            _approve(), the dialog stays alive, invokes
+            on_approve(captions_dict), and becomes the live publish-progress
+            surface. The caller must call update_progress() and
+            publishing_complete() during/after the publish thread. The
+            dialog destroys itself when the user clicks Close.
+        """
         super().__init__(parent)
         self.title("Review Captions Before Publishing")
         self.grab_set()
@@ -14,14 +35,20 @@ class ReviewDialog(tk.Toplevel):
         self._widgets  = {}
         self._publishing = False
         self._upload_manager = upload_manager
+        self._on_approve = on_approve
+        self._on_cancel = on_cancel
         self._build(captions)
         self.geometry("700x600")  # Reasonable size
-        
+
         # Start parallel uploads if upload manager provided
         if self._upload_manager:
             self._upload_manager.start_uploads(self._upload_progress_callback)
-        
-        self.wait_window()
+
+        # Legacy synchronous mode: block until the dialog is destroyed.
+        # Async mode returns immediately so the caller can spawn a publish
+        # thread while the dialog stays visible.
+        if self._on_approve is None:
+            self.wait_window()
 
     def _build(self, captions):
         nb = ttk.Notebook(self)
@@ -125,23 +152,44 @@ class ReviewDialog(tk.Toplevel):
                 data["title"] = self._widgets["youtube_title"].get("1.0",tk.END).strip()
             result[p] = data
         self.result = result
-        
+
         # Switch to publishing mode
         self._publishing = True
         self._status_lbl.config(text="Publishing in progress...", fg="#2e7d32")
         self._approve_btn.config(state="disabled")
         self._cancel_btn.config(text="Cancel Publish", command=self._cancel)
-        
+
         # Update progress label to show publishing progress
         for widget in self._progress_frame.winfo_children():
             if isinstance(widget, tk.Label) and "Upload Progress:" in widget.cget("text"):
                 widget.config(text="Publishing Progress:", fg="#2e7d32")
                 break
-        
-        # Notify parent that approval is ready
+
         self._progress_text.insert(tk.END, "\n✅ Captions approved. Starting publishing...\n")
         self._progress_text.see(tk.END)
-        # Close dialog so caller can continue with publish flow.
+
+        if self._on_approve is not None:
+            # Async mode: dialog stays alive as the live publish-progress
+            # surface. Hand approved captions to caller and keep the window.
+            try:
+                self._on_approve(result)
+            except Exception as e:
+                # If the caller's hook blows up, degrade gracefully: surface
+                # the error in the dialog instead of dying silently.
+                try:
+                    self._progress_text.insert(
+                        tk.END, f"\n❌ Publish trigger failed: {e}\n"
+                    )
+                    self._progress_text.see(tk.END)
+                    self._status_lbl.config(
+                        text=f"❌ Publish trigger failed: {e}", fg="#c62828"
+                    )
+                except Exception:
+                    pass
+            return
+
+        # Legacy synchronous mode: close dialog so caller can read dlg.result
+        # and continue with its publish flow.
         self.destroy()
 
     def update_progress(self, message, platform=None, status=None):
@@ -210,19 +258,25 @@ class ReviewDialog(tk.Toplevel):
         
     def _cancel(self):
         if self._publishing:
-            # Cancel publishing
+            # Cancel publishing (UI-only; the publish thread still finishes
+            # its current in-flight request).
             self._publishing = False
             self.result = None  # Signal cancellation
             self._status_lbl.config(text="Publishing cancelled.", fg="#c62828")
             self._progress_text.insert(tk.END, "\n❌ Publishing cancelled by user.\n")
             self._progress_text.see(tk.END)
-            
+
             self._approve_btn.pack_forget()
             self._cancel_btn.pack_forget()
             self._close_btn.pack(side="left", padx=6)
         else:
             # Normal cancel (before approval)
             self.result = None
+            if self._on_cancel is not None:
+                try:
+                    self._on_cancel()
+                except Exception:
+                    pass
             self.destroy()
 
     def is_publishing(self):

@@ -1,11 +1,105 @@
 """Local duplicate-protection guard for publish idempotency and ambiguous outcomes."""
 
+import contextlib
 import hashlib
 import json
 import os
+import tempfile
+import threading
+import time
 from datetime import datetime, timedelta
 
 GUARD_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".publish_guard.json")
+GUARD_LOCK_FILE = GUARD_FILE + ".lock"
+
+# Serialize in-process access. Cross-process safety is handled by the OS file
+# lock below; this in-process lock avoids both contention and reentrancy within
+# a single Python runtime (e.g., Tk UI thread + publish worker thread).
+_GUARD_INPROC_LOCK = threading.RLock()
+
+# Lazy import of platform-specific locking primitives. Wrapped in a helper so
+# failure on one platform (or a sandbox without fcntl) falls back gracefully
+# to in-process locking only — we still protect against the common case of
+# two publish threads inside the same app.
+try:  # POSIX
+    import fcntl as _fcntl  # type: ignore
+    _HAVE_FCNTL = True
+except Exception:
+    _fcntl = None
+    _HAVE_FCNTL = False
+
+try:  # Windows
+    import msvcrt as _msvcrt  # type: ignore
+    _HAVE_MSVCRT = True
+except Exception:
+    _msvcrt = None
+    _HAVE_MSVCRT = False
+
+
+@contextlib.contextmanager
+def _file_lock(lock_path, timeout=30.0):
+    """Cross-platform exclusive file lock with a soft timeout.
+
+    Acquires the in-process RLock first (handles concurrent threads inside
+    this Python process), then attempts an OS-level exclusive lock on a
+    sidecar lock file (handles concurrent Python processes).
+    """
+    _GUARD_INPROC_LOCK.acquire()
+    fh = None
+    try:
+        try:
+            fh = open(lock_path, "a+b")
+        except Exception:
+            # If we can't even open the lock file (e.g., read-only FS),
+            # proceed with in-process locking only. This is still safer
+            # than the unlocked original behavior.
+            yield
+            return
+
+        deadline = time.time() + max(0.1, float(timeout))
+        acquired = False
+        while True:
+            try:
+                if _HAVE_FCNTL:
+                    _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                    acquired = True
+                elif _HAVE_MSVCRT:
+                    _msvcrt.locking(fh.fileno(), _msvcrt.LK_NBLCK, 1)
+                    acquired = True
+                else:
+                    # No OS-level locking available; rely on the in-process RLock.
+                    acquired = True
+                break
+            except (OSError, IOError):
+                if time.time() >= deadline:
+                    # Give up waiting for cross-process lock but still proceed
+                    # under the in-process lock. Better than blocking publishing
+                    # indefinitely on a stale lock file.
+                    break
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            if acquired:
+                try:
+                    if _HAVE_FCNTL:
+                        _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+                    elif _HAVE_MSVCRT:
+                        # Release the 1-byte region we locked.
+                        try:
+                            fh.seek(0)
+                            _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK, 1)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+    finally:
+        try:
+            if fh is not None:
+                fh.close()
+        except Exception:
+            pass
+        _GUARD_INPROC_LOCK.release()
 AMBIGUOUS_STATUSES = {"unconfirmed", "submitted_unconfirmed", "likely_live", "duplicate_live"}
 CONFIRMED_STATUSES = {"ok", "published", "success"}
 IN_PROGRESS_STATUSES = {"pending", "posting", "in_progress"}
@@ -56,8 +150,34 @@ def _load_guard():
 
 
 def _save_guard(data):
-    with open(GUARD_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """Atomically replace GUARD_FILE with the serialized guard dict.
+
+    Writes to a temp file in the same directory, then os.replace(). This is
+    crash-safe: a partial write never leaves GUARD_FILE truncated.
+    """
+    guard_dir = os.path.dirname(GUARD_FILE) or "."
+    try:
+        os.makedirs(guard_dir, exist_ok=True)
+    except Exception:
+        pass
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".publish_guard.", suffix=".tmp", dir=guard_dir
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp_path, GUARD_FILE)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        raise
 
 
 def _sample_file_signature(path):
@@ -146,88 +266,91 @@ def _get_candidate_keys(video_path, captions, platform):
 
 def reserve_publish_attempt(video_path, captions, platform, note=""):
     """Create a local per-platform publish lock before the outbound API call."""
-    guard = _load_guard()
-    changed = _purge_expired_records(guard)
-    candidate_keys = _get_candidate_keys(video_path, captions, platform)
-    for key in candidate_keys:
-        record = guard.get(key)
-        if not isinstance(record, dict):
-            continue
-        status = str(record.get("status", "")).lower()
-        if status in BLOCKING_STATUSES:
-            if changed:
-                _save_guard(guard)
-            return {
-                "blocked": True,
-                "platform": platform,
-                "status": status,
-                "timestamp": record.get("timestamp", ""),
-                "note": record.get("note", ""),
-            }
-
-    payload = {
-        "platform": platform,
-        "status": "in_progress",
-        "timestamp": _utc_now(),
-        "expires_at": _expires_at_for_status("in_progress"),
-        "note": note or "Reserved before outbound publish call",
-    }
-    for key in candidate_keys:
-        guard[key] = dict(payload)
-    _save_guard(guard)
-    return {"blocked": False}
-
-
-def find_ambiguous_repost_blocks(video_path, captions, platforms):
-    guard = _load_guard()
-    changed = _purge_expired_records(guard)
-    if changed:
-        _save_guard(guard)
-    blocked = []
-    for platform in platforms or []:
-        for key in _get_candidate_keys(video_path, captions, platform):
+    with _file_lock(GUARD_LOCK_FILE):
+        guard = _load_guard()
+        changed = _purge_expired_records(guard)
+        candidate_keys = _get_candidate_keys(video_path, captions, platform)
+        for key in candidate_keys:
             record = guard.get(key)
             if not isinstance(record, dict):
                 continue
             status = str(record.get("status", "")).lower()
             if status in BLOCKING_STATUSES:
-                blocked.append(
-                    {
-                        "platform": platform,
-                        "status": status,
-                        "timestamp": record.get("timestamp", ""),
-                        "note": record.get("note", ""),
-                    }
-                )
-                break
-    return blocked
+                if changed:
+                    _save_guard(guard)
+                return {
+                    "blocked": True,
+                    "platform": platform,
+                    "status": status,
+                    "timestamp": record.get("timestamp", ""),
+                    "note": record.get("note", ""),
+                }
+
+        payload = {
+            "platform": platform,
+            "status": "in_progress",
+            "timestamp": _utc_now(),
+            "expires_at": _expires_at_for_status("in_progress"),
+            "note": note or "Reserved before outbound publish call",
+        }
+        for key in candidate_keys:
+            guard[key] = dict(payload)
+        _save_guard(guard)
+        return {"blocked": False}
+
+
+def find_ambiguous_repost_blocks(video_path, captions, platforms):
+    with _file_lock(GUARD_LOCK_FILE):
+        guard = _load_guard()
+        changed = _purge_expired_records(guard)
+        if changed:
+            _save_guard(guard)
+        blocked = []
+        for platform in platforms or []:
+            for key in _get_candidate_keys(video_path, captions, platform):
+                record = guard.get(key)
+                if not isinstance(record, dict):
+                    continue
+                status = str(record.get("status", "")).lower()
+                if status in BLOCKING_STATUSES:
+                    blocked.append(
+                        {
+                            "platform": platform,
+                            "status": status,
+                            "timestamp": record.get("timestamp", ""),
+                            "note": record.get("note", ""),
+                        }
+                    )
+                    break
+        return blocked
 
 
 def record_ambiguous_publish_results(video_path, captions, publish_results):
     if not isinstance(publish_results, dict):
         return
-    guard = _load_guard()
-    changed = _purge_expired_records(guard)
-    for platform, result in publish_results.items():
-        if not isinstance(result, dict):
-            continue
-        status = str(result.get("status", "")).lower()
-        candidate_keys = _get_candidate_keys(video_path, captions, platform)
-        if status in BLOCKING_STATUSES:
-            payload = {
-                "platform": platform,
-                "status": status,
-                "timestamp": _utc_now(),
-                "expires_at": _expires_at_for_status(status),
-                "note": result.get("error") or result.get("error_message") or "",
-            }
-            for key in candidate_keys:
-                guard[key] = dict(payload)
-            changed = True
-        elif status in {"error", "failed", "skipped", "skip"}:
-            for key in candidate_keys:
-                if key in guard:
-                    del guard[key]
-                    changed = True
-    if changed:
-        _save_guard(guard)
+    with _file_lock(GUARD_LOCK_FILE):
+        guard = _load_guard()
+        changed = _purge_expired_records(guard)
+        for platform, result in publish_results.items():
+            if not isinstance(result, dict):
+                continue
+            status = str(result.get("status", "")).lower()
+            candidate_keys = _get_candidate_keys(video_path, captions, platform)
+            if status in BLOCKING_STATUSES:
+                payload = {
+                    "platform": platform,
+                    "status": status,
+                    "timestamp": _utc_now(),
+                    "expires_at": _expires_at_for_status(status),
+                    "note": result.get("error") or result.get("error_message") or "",
+                }
+                for key in candidate_keys:
+                    guard[key] = dict(payload)
+                changed = True
+            elif status in {"error", "failed", "skipped", "skip"}:
+                for key in candidate_keys:
+                    if key in guard:
+                        del guard[key]
+                        changed = True
+        if changed:
+            _save_guard(guard)

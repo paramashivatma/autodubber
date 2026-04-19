@@ -1,31 +1,16 @@
 import os, subprocess, shutil
 from pydub import AudioSegment
-from .utils import log
+from .utils import FPS_FALLBACK, ffprobe_duration, ffprobe_fps, ffprobe_info, log
+
+# Re-export under their legacy private names so existing imports from
+# app.py (and any consumers outside the package) keep working.
+_FPS_FALLBACK = FPS_FALLBACK
+_ffprobe_duration = ffprobe_duration
+_ffprobe_fps = ffprobe_fps
 
 SMALL_GAP_KEEP = 0.08
 MEDIUM_GAP_KEEP = 0.18
 THOUGHT_PAUSE_KEEP = 0.32
-
-
-def _ffprobe_duration(path):
-    r = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            path,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    try:
-        return float(r.stdout.strip())
-    except ValueError:
-        raise RuntimeError(f"ffprobe failed for: {path}\n{r.stderr}")
 
 
 def _cut(src, start, end, dst):
@@ -57,7 +42,7 @@ def _cut(src, start, end, dst):
         shutil.copy(src, dst)
 
 
-def _slow(src, dst, pts_factor):
+def _slow(src, dst, pts_factor, fps=_FPS_FALLBACK):
     pts = min(round(pts_factor, 5), 4.0)
     r = subprocess.run(
         [
@@ -69,7 +54,7 @@ def _slow(src, dst, pts_factor):
             f"setpts={pts}*PTS",
             "-an",
             "-r",
-            "30",
+            str(fps or _FPS_FALLBACK),
             "-c:v",
             "libx264",
             "-preset",
@@ -138,6 +123,40 @@ def _pad_audio_with_silence(audio_path, target_dur_ms):
         return None
 
 
+def _extract_audio_clip(src, start, end, dst):
+    dur = max(round(end - start, 4), 0.1)
+    r = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(round(start, 4)),
+            "-i",
+            src,
+            "-t",
+            str(dur),
+            "-vn",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "24000",
+            "-ac",
+            "1",
+            dst,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    return r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 100
+
+
+def _segment_audio_strategy(seg, orig_dur, tts_dur):
+    if seg.get("preserve_original_audio"):
+        return {"mode": "original", "target_dur": orig_dur}
+    return {"mode": "tts", "target_dur": tts_dur}
+
+
 def _concat(parts, dst):
     list_file = dst + "_list.txt"
     with open(list_file, "w", encoding="utf-8") as f:
@@ -193,10 +212,22 @@ def build_dubbed_video(
         pass
     os.makedirs(tmp, exist_ok=True)
 
-    orig_total = _ffprobe_duration(video_path)
+    # One ffprobe pass for both duration and fps; saves one subprocess
+    # launch per build (~30-50 ms on typical hosts). Native fps is
+    # preserved across every retimed/rebuilt segment so the final concat
+    # stays CFR and matches the original (24p / 25p / 29.97 / 30 / 50 /
+    # 59.94 / 60 etc.). Hardcoding 30 drops frames on higher-fps sources
+    # and duplicates them on filmic 24p.
+    _info = ffprobe_info(video_path)
+    if _info["duration"] is None:
+        raise RuntimeError(f"ffprobe failed for: {video_path}")
+    orig_total = _info["duration"]
+    source_fps = _info["fps"] or FPS_FALLBACK
+    log("BUILD", f"  source fps: {source_fps}")
     segs = sorted(segments, key=lambda s: s["start"])
     parts = []
     positions = []
+    original_audio_ranges = []
     prev = 0.0
     cursor = 0.0
     prev_seg = None
@@ -208,6 +239,7 @@ def build_dubbed_video(
         audio_path = seg.get("audio_path")
         audio_dur_ms = seg.get("audio_dur_ms", orig_dur * 1000)
         tts_dur = audio_dur_ms / 1000.0
+        audio_strategy = _segment_audio_strategy(seg, orig_dur, tts_dur)
         raw_gap = seg_start - prev
         gap = _target_gap(prev_seg, seg, raw_gap)
 
@@ -229,51 +261,56 @@ def build_dubbed_video(
             f"  seg#{seg['id']}: orig={orig_dur:.2f}s tts={tts_dur:.2f}s gap={gap:.2f}s (raw {raw_gap:.2f}s)",
         )
 
-        # Preserve natural TTS pacing; only retime video to match spoken audio.
-        target_dur = tts_dur
-        stretch = target_dur / orig_dur
-
-        if stretch > 1.05:  # Stretch video (TTS > Original)
-            log("BUILD", f"    → stretch {stretch:.3f}x to match TTS")
-            stretched = _slow(seg_raw, seg_out, stretch)
-            if not stretched:
-                log("BUILD", f"    → WARNING: stretch failed, A/V may be out of sync")
-            actual_seg_dur = _actual_duration(seg_out) or target_dur
-        elif stretch < 0.95:  # Speed up video (TTS < Original)
-            log("BUILD", f"    → speed up {stretch:.3f}x")
-            # Use ffmpeg to speed up video
-            r = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    seg_raw,
-                    "-filter:v",
-                    f"setpts={stretch}*PTS",
-                    "-an",
-                    "-r",
-                    "30",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "ultrafast",
-                    "-crf",
-                    "22",
-                    seg_out,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            if r.returncode != 0:
-                log("BUILD", f"    → WARNING: speed up failed, using original")
-                shutil.copy(seg_raw, seg_out)
-                actual_seg_dur = orig_dur
-            else:
-                actual_seg_dur = _actual_duration(seg_out) or target_dur
-        else:  # No significant difference
+        target_dur = audio_strategy["target_dur"]
+        if audio_strategy["mode"] == "original":
             shutil.copy(seg_raw, seg_out)
             actual_seg_dur = _actual_duration(seg_out) or orig_dur
+            log("BUILD", "    → preserving original source audio")
+        else:
+            # Preserve natural TTS pacing; only retime video to match spoken audio.
+            stretch = target_dur / orig_dur
+
+            if stretch > 1.05:  # Stretch video (TTS > Original)
+                log("BUILD", f"    → stretch {stretch:.3f}x to match TTS")
+                stretched = _slow(seg_raw, seg_out, stretch, fps=source_fps)
+                if not stretched:
+                    log("BUILD", f"    → WARNING: stretch failed, A/V may be out of sync")
+                actual_seg_dur = _actual_duration(seg_out) or target_dur
+            elif stretch < 0.95:  # Speed up video (TTS < Original)
+                log("BUILD", f"    → speed up {stretch:.3f}x")
+                # Use ffmpeg to speed up video
+                r = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        seg_raw,
+                        "-filter:v",
+                        f"setpts={stretch}*PTS",
+                        "-an",
+                        "-r",
+                        str(source_fps or _FPS_FALLBACK),
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        "ultrafast",
+                        "-crf",
+                        "22",
+                        seg_out,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if r.returncode != 0:
+                    log("BUILD", f"    → WARNING: speed up failed, using original")
+                    shutil.copy(seg_raw, seg_out)
+                    actual_seg_dur = orig_dur
+                else:
+                    actual_seg_dur = _actual_duration(seg_out) or target_dur
+            else:  # No significant difference
+                shutil.copy(seg_raw, seg_out)
+                actual_seg_dur = _actual_duration(seg_out) or orig_dur
 
         audio_start = cursor
         parts.append(seg_out)
@@ -281,10 +318,21 @@ def build_dubbed_video(
         prev = seg_end
         prev_seg = seg
 
-        if audio_path and os.path.exists(audio_path):
+        if audio_strategy["mode"] == "original":
+            source_audio_path = os.path.join(tmp, f"seg_{i:04d}_source.wav")
+            if _extract_audio_clip(video_path, seg_start, seg_end, source_audio_path):
+                positions.append((audio_start, actual_seg_dur, source_audio_path, "original"))
+                original_audio_ranges.append((audio_start, actual_seg_dur))
+                log(
+                    "BUILD",
+                    f"    → original audio preserved at {audio_start:.2f}s for {actual_seg_dur:.2f}s",
+                )
+            else:
+                log("BUILD", f"    → WARNING: Could not extract original audio for seg#{seg['id']}")
+        elif audio_path and os.path.exists(audio_path):
             # Trim audio to match video duration to prevent overlap with next segment
             overlay_dur = min(tts_dur, actual_seg_dur)
-            positions.append((audio_start, overlay_dur, audio_path))
+            positions.append((audio_start, overlay_dur, audio_path, "tts"))
             log(
                 "BUILD",
                 f"    → audio overlay at {audio_start:.2f}s for {overlay_dur:.2f}s",
@@ -314,14 +362,14 @@ def build_dubbed_video(
 
     joined_duration = _actual_duration(joined) or cursor
     total_ms = int(joined_duration * 1000) + 500
-    tts_track = AudioSegment.silent(duration=total_ms)
-    for audio_start, overlay_dur, cp in positions:
+    speech_track = AudioSegment.silent(duration=total_ms)
+    for audio_start, overlay_dur, cp, audio_mode in positions:
         try:
             tts_audio = AudioSegment.from_file(cp)
             declared_ms = int(overlay_dur * 1000)
             if len(tts_audio) > declared_ms + 100:
                 tts_audio = tts_audio[:declared_ms]
-            tts_track = tts_track.overlay(tts_audio, position=int(audio_start * 1000))
+            speech_track = speech_track.overlay(tts_audio, position=int(audio_start * 1000))
         except Exception as e:
             log("BUILD", f"  Audio overlay error: {e}")
 
@@ -329,14 +377,23 @@ def build_dubbed_video(
         bgm = AudioSegment.from_file(bgm_path)
         if len(bgm) <= 0:
             log("BUILD", "  BGM track is empty/corrupt — skipping BGM mix")
-            mixed = tts_track
+            mixed = speech_track
         else:
             if len(bgm) < total_ms:
                 bgm = bgm * ((total_ms // len(bgm)) + 2)
             bgm = bgm[:total_ms] - int(20 * (1.0 - bgm_volume))
-            mixed = bgm.overlay(tts_track)
+            for audio_start, overlay_dur in original_audio_ranges:
+                start_ms = int(audio_start * 1000)
+                end_ms = min(total_ms, start_ms + int(overlay_dur * 1000))
+                if end_ms > start_ms:
+                    bgm = (
+                        bgm[:start_ms]
+                        + AudioSegment.silent(duration=end_ms - start_ms)
+                        + bgm[end_ms:]
+                    )
+            mixed = bgm.overlay(speech_track)
     else:
-        mixed = tts_track
+        mixed = speech_track
 
     wav_out = os.path.join(output_dir, "dubbed_audio.wav")
     mixed.export(wav_out, format="wav")
@@ -360,7 +417,7 @@ def build_dubbed_video(
             "-crf",
             "18",
             "-r",
-            "30",
+            str(source_fps or _FPS_FALLBACK),
             "-c:a",
             "aac",
             "-shortest",
