@@ -11,6 +11,7 @@ except Exception:
     Image = None
     ImageTk = None
 from dubber import (
+    __version__ as DUBBER_VERSION,
     transcribe_audio,
     merge_short_segments,
     translate_segments,
@@ -643,7 +644,7 @@ def run_publish_only(
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Video Dubber v1.26")
+        self.title(f"AutoDub Studio v{DUBBER_VERSION}")
         self.geometry("700x720")
         self.minsize(620, 620)
         self.resizable(True, True)
