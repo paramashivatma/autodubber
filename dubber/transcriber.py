@@ -1218,6 +1218,7 @@ def transcribe_audio(
     model_size="large",
     language="auto",
     deepgram_api_key=None,
+    prefer_local=False,
 ):
     os.makedirs(output_dir, exist_ok=True)
     wav_path = os.path.join(output_dir, "audio.wav")
@@ -1225,7 +1226,13 @@ def transcribe_audio(
 
     deepgram_key = get_deepgram_api_key(deepgram_api_key)
 
-    if deepgram_key:
+    # prefer_local is used by the dub verifier: Deepgram nova-3 is
+    # English-primary and cannot properly read Indic scripts
+    # (Gujarati/Hindi/etc.), so verifying a Hindi/Gujarati dub against the
+    # translated transcript needs local Whisper to read Devanagari / Gujarati
+    # correctly. Source-audio transcription (usually English) keeps using
+    # Deepgram where it shines.
+    if deepgram_key and not prefer_local:
         log("TRANSCRIBE", f"Using Deepgram {DEEPGRAM_MODEL} (lang={language}) ...")
         try:
             lang_code = None if language in ("auto", None) else language
@@ -1239,7 +1246,13 @@ def transcribe_audio(
                 wav_path, language, model_size, output_dir
             )
     else:
-        log("TRANSCRIBE", "No DEEPGRAM_API_KEY — using local Whisper ...")
+        if prefer_local:
+            log(
+                "TRANSCRIBE",
+                f"prefer_local=True (verifier) — using local Whisper (lang={language}) ...",
+            )
+        else:
+            log("TRANSCRIBE", "No DEEPGRAM_API_KEY — using local Whisper ...")
         segments, detected = _local_transcribe(
             wav_path, language, model_size, output_dir
         )

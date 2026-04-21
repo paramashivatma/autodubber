@@ -108,11 +108,17 @@ def _retranscribe_video_in_chunks(video_path, verify_dir, target_language, model
         os.makedirs(chunk_output_dir, exist_ok=True)
 
         _extract_video_chunk(video_path, start_sec, chunk_duration, chunk_video)
+        # prefer_local=True: Deepgram nova-3 is English-primary and cannot
+        # read Indic scripts (Gujarati/Hindi/etc.) reliably. Without this,
+        # the verifier hallucinates right-length-but-wrong-script
+        # transcripts and flags every Indic dub as failing coverage. Local
+        # Whisper-large handles these scripts correctly.
         chunk_segments = transcribe_audio(
             chunk_video,
             chunk_output_dir,
             model_size=model_size,
             language=target_language,
+            prefer_local=True,
         )
 
         for seg in chunk_segments:
