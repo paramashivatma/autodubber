@@ -648,8 +648,16 @@ def _extract_publish_results(
                 or "already published" in error_text_l
                 or "being published" in error_text_l
             )
+            # Meta's API (Instagram, Facebook, Threads) and Bluesky all
+            # return "duplicate content" responses in cases where the post
+            # actually went through but the ack timed out server-side, or
+            # where a retry races an earlier successful attempt. Treating
+            # these as likely_live (rather than hard-fail) prompts the user
+            # to verify the feed before retrying instead of republishing
+            # and creating a real duplicate.
             duplicate_live_like = (
-                platform_l in {"bluesky", "threads"} and duplicate_like
+                platform_l in {"bluesky", "threads", "instagram", "facebook"}
+                and duplicate_like
             )
             bluesky_unconfirmed = platform_l == "bluesky" and timeout_like
 

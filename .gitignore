@@ -16,9 +16,11 @@ workspace/
 
 # Output video
 output.mp4
+output_verify.mp4
 translation_cache.json
 logs/
 .publish_guard.json
+.publish_guard.json.lock
 .youtube_tokens/
 
 # Local test artifacts

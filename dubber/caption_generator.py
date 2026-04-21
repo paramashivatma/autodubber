@@ -255,7 +255,7 @@ FACEBOOK (max 1800 chars):
 THREADS (max 350 chars including hashtags):
 - Hook line from transcript; concise devotional tone.
 - 2 complete sentences summarizing key teaching, blessing, or transformative practice for disciples.
-- Add relevant devotional hashtags based on video content before fixed tags so the total hashtag count aims for 4 when space allows.
+- Include EXACTLY 4 total hashtags: 3 relevant devotional ones from video content, then the fixed tag #KAILASA at the end. Do NOT return fewer than 4.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - Minimum 200 chars. Maximum 350 chars. Count carefully.
 
@@ -267,13 +267,13 @@ TWITTER (target 180-240 chars; hard ceiling 250 including hashtags):
 
 TIKTOK (max 180 chars including hashtags):
 - ONE complete punchy devotional sentence directly from transcript; spiritually uplifting, recitable aloud, and energetic.
-- Add relevant devotional hashtags based on video content before fixed tags so the total hashtag count aims for 4 when space allows.
+- Include EXACTLY 4 total hashtags: 2 relevant devotional ones from video content, then the fixed tags #KAILASA #Nithyananda at the end. Do NOT return fewer than 4.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA #Nithyananda
-- Minimum 80 chars. Maximum 180 chars. Count carefully.
+- Minimum 120 chars. Maximum 180 chars. Count carefully.
 
 BLUESKY (max 260 chars including hashtags):
 - Hook sentence + one follow-up; both complete and devotional.
-- Add relevant devotional hashtags based on video content before fixed tags so the total hashtag count aims for 4 when space allows.
+- Include EXACTLY 4 total hashtags: 3 relevant devotional ones from video content, then the fixed tag #KAILASA at the end. Do NOT return fewer than 4.
 - End with: [YOUR_GENERATED_HASHTAGS] #KAILASA
 - Minimum 180 chars. Maximum 260 chars. Count carefully.
 
