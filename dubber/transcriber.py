@@ -5,10 +5,10 @@ from .utils import ffprobe_duration as _ffprobe_duration, log, track_api_call, t
 
 DEEPGRAM_API_URL = "https://api.deepgram.com/v1/listen"
 DEEPGRAM_MODEL = "nova-3"
-# Deepgram accepts uploads up to ~2GB, but we keep the same chunking safety
-# net we had for Groq so wav files for very long videos stream in bounded
-# pieces. 100MB per request is well under Deepgram's limit and keeps a
-# single HTTP call from dominating end-to-end latency.
+# Deepgram accepts uploads up to ~2GB, but we keep a chunking safety net
+# so wav files for very long videos stream in bounded pieces. 100MB per
+# request is well under Deepgram's limit and keeps a single HTTP call
+# from dominating end-to-end latency.
 MAX_FILE_MB = 100
 
 # Module-level cache for faster-whisper models. Loading Whisper-large from
@@ -758,8 +758,8 @@ def _deepgram_chunk_transcribe(api_key, audio_path, language=None):
     with the model + formatting options passed as query parameters. We use
     ``utterances=true`` because it emits speaker/phrase-level spans with
     their own start/end, which maps cleanly onto our segment shape.
-    ``smart_format=true`` normalizes punctuation and casing — closer to the
-    Whisper ``verbose_json`` output we used to consume from Groq.
+    ``smart_format=true`` normalizes punctuation and casing — closer to a
+    typical Whisper ``verbose_json`` output.
     """
     track_api_call("deepgram")
     headers = {
@@ -827,10 +827,10 @@ def _extract_deepgram_language(payload):
 def _deepgram_transcribe(api_key, audio_path, language, output_dir):
     """Transcribe via Deepgram and return ``(segments, detected_language)``.
 
-    Keeps the same return shape as the old ``_groq_transcribe`` so the rest
-    of the pipeline (coverage audit, opening-language recovery, fix
-    application) stays untouched. Each Deepgram ``utterance`` becomes one
-    segment with ``start``, ``end``, ``text``, ``detected_language``.
+    Each Deepgram ``utterance`` becomes one segment with ``start``, ``end``,
+    ``text``, ``detected_language``. The shape is what the rest of the
+    pipeline (coverage audit, opening-language recovery, fix application)
+    expects.
     """
     chunks = _split_audio(audio_path, output_dir)
     if not chunks:

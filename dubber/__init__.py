@@ -12,7 +12,7 @@ from .publish_guard     import find_ambiguous_repost_blocks, record_ambiguous_pu
 from .sheet_logger      import update_video_tracker, quick_update_from_publish_result
 from .utils             import log
 
-__version__ = "2.1.1"
+__version__ = "2.1.2"
 
 __all__ = [
     "transcribe_audio","merge_short_segments","translate_segments",
