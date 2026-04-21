@@ -10,6 +10,13 @@ DEEPGRAM_MODEL = "nova-3"
 # pieces. 100MB per request is well under Deepgram's limit and keeps a
 # single HTTP call from dominating end-to-end latency.
 MAX_FILE_MB = 100
+
+# Module-level cache for faster-whisper models. Loading Whisper-large from
+# disk costs ~5–10s per instantiation; the dub verifier calls
+# _local_transcribe once per chunk and was paying that cost 5× per run.
+# Keyed by (model_size, device, compute_type) so a dub + verify in
+# different sizes (rare) doesn't collide.
+_WHISPER_MODEL_CACHE = {}
 MIN_GAP_PROBE_SEC = 0.75
 MIN_EDGE_GAP_PROBE_SEC = 0.2
 MIN_PROBE_AUDIO_BYTES = 1000
@@ -897,8 +904,20 @@ def _local_transcribe(
     try:
         from faster_whisper import WhisperModel
 
-        log("TRANSCRIBE", f"Local Whisper (faster-whisper): {model_size}")
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        cache_key = (model_size, "cpu", "int8")
+        model = _WHISPER_MODEL_CACHE.get(cache_key)
+        if model is None:
+            log(
+                "TRANSCRIBE",
+                f"Local Whisper (faster-whisper): {model_size} (loading model)",
+            )
+            model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            _WHISPER_MODEL_CACHE[cache_key] = model
+        else:
+            log(
+                "TRANSCRIBE",
+                f"Local Whisper (faster-whisper): {model_size} (cached)",
+            )
         fw_segments, info = model.transcribe(
             audio_path,
             language=lang_code,
@@ -1258,25 +1277,36 @@ def transcribe_audio(
         )
 
     total_duration = _ffprobe_duration(video_path)
-    segments = _audit_speech_coverage(
-        segments,
-        total_duration,
-        wav_path,
-        output_dir,
-        deepgram_key,
-        language,
-        model_size,
-    )
-    segments = _recover_opening_mixed_language(
-        segments,
-        total_duration,
-        wav_path,
-        output_dir,
-        deepgram_key,
-        language,
-        model_size,
-        detected_language=detected,
-    )
+    if prefer_local:
+        # When prefer_local is set, the caller (dub verifier) trusts local
+        # Whisper's output as-is. The audit and opening-recovery helpers
+        # were built to catch gaps in Deepgram's segmentation and run
+        # per-gap probes through Deepgram — on Indic audio those probes
+        # return plausible-looking English garbage that corrupts the
+        # segment list and wastes API calls. Whisper's built-in VAD and
+        # timestamp logic is already good enough for coverage comparison,
+        # so skip both helpers here.
+        segments = _normalize_segments(segments, total_duration)
+    else:
+        segments = _audit_speech_coverage(
+            segments,
+            total_duration,
+            wav_path,
+            output_dir,
+            deepgram_key,
+            language,
+            model_size,
+        )
+        segments = _recover_opening_mixed_language(
+            segments,
+            total_duration,
+            wav_path,
+            output_dir,
+            deepgram_key,
+            language,
+            model_size,
+            detected_language=detected,
+        )
 
     # Auto-learn potential transcription errors
     log("TRANSCRIBE", "Running auto-learn for transcription fixes...")
