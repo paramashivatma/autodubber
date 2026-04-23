@@ -112,18 +112,42 @@ def _is_unconfirmed_publish_error(exc):
     )
 
 
+# Meta's API (Instagram, Facebook, Threads) routinely accepts a publish
+# request and then drops the connection before sending the ack. When we see
+# a WinError 10054 / connection reset mid-call on these platforms, the post
+# has almost always landed. Treat it as "likely_live" so the user is guided
+# to verify the dashboard instead of republishing and creating duplicates.
+_META_LIKELY_LIVE_ON_RESET = {"instagram", "facebook", "threads"}
+
+
 def _make_unconfirmed_results(platforms, reason, progress_cb=None, done=0, total=None):
-    """Return per-platform unconfirmed results and surface progress."""
+    """Return per-platform unconfirmed results and surface progress.
+
+    Meta platforms with a mid-call connection reset get reclassified as
+    "likely_live" (see _META_LIKELY_LIVE_ON_RESET). Other platforms stay
+    "unconfirmed" — their APIs don't have the same drop-after-accept pattern.
+    """
     total = total or len(platforms)
     results = {}
     for idx, platform in enumerate(platforms, start=1):
+        platform_l = str(platform or "").lower()
+        is_meta_live_like = platform_l in _META_LIKELY_LIVE_ON_RESET
+        if is_meta_live_like:
+            status = "likely_live"
+            message = (
+                f"{platform_l.title()} connection reset after submit — the post likely went live. "
+                "Verify the dashboard/feed before retrying to avoid duplicates."
+            )
+        else:
+            status = "unconfirmed"
+            message = reason
         if progress_cb:
-            progress_cb(min(done + idx, total), total, platform, "unconfirmed")
+            progress_cb(min(done + idx, total), total, platform, status)
         results[platform] = {
-            "status": "unconfirmed",
+            "status": status,
             "platform": platform,
-            "error": reason,
-            "error_message": reason,
+            "error": message,
+            "error_message": message,
         }
     return results
 
@@ -291,7 +315,11 @@ def _publish_direct_youtube_accounts(
     if not youtube_description:
         youtube_description = "Published via AutoDubber"
 
-    for idx, alias in enumerate(youtube_targets, start=1):
+    # YouTube accounts run in parallel — each has its own OAuth context and
+    # API quota bucket, so there's no contention. Historically they ran
+    # serially, costing ~3m 25s × N accounts. With two channels this turns
+    # ~6m 48s of wall time into ~3m 25s.
+    def _publish_one(idx, alias):
         reserve = reserve_publish_attempt(
             video_path,
             captions,
@@ -303,15 +331,14 @@ def _publish_direct_youtube_accounts(
                 f"Skipped duplicate publish attempt: previous {reserve.get('status')} "
                 f"at {reserve.get('timestamp')}"
             )
-            results[alias] = {
+            if progress_cb:
+                progress_cb(done_offset + idx, total_platforms, alias, "skipped")
+            return alias, {
                 "status": "skipped",
                 "platform": alias,
                 "error": msg,
                 "error_message": msg,
             }
-            if progress_cb:
-                progress_cb(done_offset + idx, total_platforms, alias, "skipped")
-            continue
         if progress_cb:
             progress_cb(done_offset + idx - 1, total_platforms, alias, "posting")
         result = publish_direct_youtube(
@@ -321,13 +348,30 @@ def _publish_direct_youtube_accounts(
             description=youtube_description,
             publish_now=publish_now,
         )
-        results[alias] = result
         if progress_cb:
             status = str(result.get("status", "")).lower()
             if status in {"ok", "published", "success"}:
                 progress_cb(done_offset + idx, total_platforms, alias, "ok")
             else:
                 progress_cb(done_offset + idx, total_platforms, alias, "error")
+        return alias, result
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, len(youtube_targets)),
+        thread_name_prefix="yt-upload",
+    ) as executor:
+        futures = [
+            executor.submit(_publish_one, idx, alias)
+            for idx, alias in enumerate(youtube_targets, start=1)
+        ]
+        for future in as_completed(futures):
+            try:
+                alias, result = future.result()
+                results[alias] = result
+            except Exception as e:
+                log("PUBLISH", f"  ❌ YouTube parallel upload failed: {e}")
 
     return results
 
@@ -964,73 +1008,53 @@ def publish_with_sdk(
             )
             bluesky_count = len(direct_bluesky_results)
 
-        direct_youtube_results = {}
-        if youtube_targets:
-            main_video_path = (
-                fallback_files.get("main_video") if fallback_files else None
+        # Initialize Zernio client up front (before YouTube) so its media
+        # upload can run in parallel with YouTube account uploads. Saves
+        # ~30-60s of wall time on runs that hit both paths; the client init
+        # itself is just a tiny HTTP session with no network traffic.
+        client = None
+        if zernio_platforms:
+            # Threads (Zernio) and any in-SDK Bluesky need long HTTP timeouts for video.
+            slow = {"bluesky", "threads"}
+            sdk_timeout = (
+                420.0
+                if any(str(p).lower() in slow for p in (zernio_platforms or []))
+                else 120.0
             )
-            direct_youtube_results = _publish_direct_youtube_accounts(
-                video_path=main_video_path,
-                captions=captions,
-                selected_platforms=selected_platforms,
-                publish_now=publish_now,
-                progress_cb=progress_cb,
-                total_platforms=total_publish_targets,
-                done_offset=bluesky_count,
+            log(
+                "PUBLISH",
+                f"  🔧 Initializing Zernio client with timeout={sdk_timeout}s...",
             )
+            client = Zernio(api_key=api_key, timeout=sdk_timeout)
+            log("PUBLISH", "✅ Zernio SDK initialized")
 
-        # Calculate offset for Zernio SDK phase
-        sdk_offset = bluesky_count + len(direct_youtube_results)
+        def _prepare_media_items():
+            """Build the Zernio ``media_items`` list.
 
-        if not zernio_platforms:
-            if progress_cb:
-                progress_cb(sdk_offset, total_publish_targets, "sdk", "completed")
-            direct_results = {}
-            direct_results.update(direct_bluesky_results)
-            direct_results.update(direct_youtube_results)
-            return direct_results
+            Returns ``(media_items, error_str_or_None)``. Runs in a worker
+            thread alongside YouTube uploads when both paths are active.
+            Uses the pre-initialized ``client`` captured from the enclosing
+            scope.
+            """
+            media_items_local = []
+            if upload_results:
+                main_video_url = upload_results.get("main_video")
+                if main_video_url:
+                    media_items_local.append({"type": "video", "url": main_video_url})
+                    log("PUBLISH", f"  ✅ Main video: {main_video_url[:50]}...")
+                for platform, teaser_url in upload_results.items():
+                    if platform.startswith("teaser_") and teaser_url:
+                        media_items_local.append({"type": "video", "url": teaser_url})
+                        log("PUBLISH", f"  ✅ Teaser {platform}: {teaser_url[:50]}...")
 
-        # Initialize Zernio client with timeout.
-        # Threads (Zernio) and any in-SDK Bluesky need long HTTP timeouts for video.
-        slow = {"bluesky", "threads"}
-        sdk_timeout = (
-            420.0
-            if any(str(p).lower() in slow for p in (zernio_platforms or []))
-            else 120.0
-        )
-        log(
-            "PUBLISH", f"  🔧 Initializing Zernio client with timeout={sdk_timeout}s..."
-        )
-        client = Zernio(api_key=api_key, timeout=sdk_timeout)
-        log("PUBLISH", "✅ Zernio SDK initialized")
+            if media_items_local or not fallback_files or client is None:
+                return media_items_local, None
 
-        if progress_cb:
-            progress_cb(sdk_offset, total_publish_targets, "sdk", "initializing")
-
-        # Prepare media items - upload video/images if needed
-        media_items = []
-        if upload_results:
-            # Add main video
-            main_video_url = upload_results.get("main_video")
-            if main_video_url:
-                media_items.append({"type": "video", "url": main_video_url})
-                log("PUBLISH", f"  ✅ Main video: {main_video_url[:50]}...")
-
-            # Add teaser videos
-            for platform, teaser_url in upload_results.items():
-                if platform.startswith("teaser_") and teaser_url:
-                    media_items.append({"type": "video", "url": teaser_url})
-                    log("PUBLISH", f"  ✅ Teaser {platform}: {teaser_url[:50]}...")
-
-        # If no media items, we need to upload the video or images
-        if not media_items and fallback_files:
             log("PUBLISH", "🔄 No media URLs found, need to upload files...")
             log(
                 "PUBLISH",
                 f"  📄 Fallback files available: {list(fallback_files.keys())}",
             )
-
-            # Check if files exist
             for key, path in fallback_files.items():
                 exists = os.path.exists(path) if path else False
                 size = os.path.getsize(path) if exists and path else 0
@@ -1041,32 +1065,27 @@ def publish_with_sdk(
 
             log("PUBLISH", "🔄 Starting media file upload process...")
 
-            # Try video first
-            main_video_path = fallback_files.get("main_video")
-            if main_video_path and os.path.exists(main_video_path):
+            main_video_path_local = fallback_files.get("main_video")
+            if main_video_path_local and os.path.exists(main_video_path_local):
                 try:
-                    # Check file size
-                    file_size = os.path.getsize(main_video_path)
+                    file_size = os.path.getsize(main_video_path_local)
                     log(
                         "PUBLISH",
                         f"  📏 Video file size: {file_size:,} bytes ({file_size / 1024 / 1024:.1f} MB)",
                     )
-
                     if file_size > 4 * 1024 * 1024:  # 4MB limit - use presigned upload
                         log(
                             "PUBLISH",
                             f"  📤 File too large for direct upload, using presigned URL...",
                         )
-                        video_url = upload_large_file(client, main_video_path)
+                        video_url = upload_large_file(client, main_video_path_local)
                     else:
-                        result = client.media.upload(main_video_path)
+                        result = client.media.upload(main_video_path_local)
                         video_url = _extract_public_url(result)
                         if not video_url:
                             raise ValueError(
                                 f"Upload response missing public URL: {result}"
                             )
-
-                    # Belt-and-braces: never pass an empty/non-http URL to Zernio.
                     video_url = str(video_url or "").strip()
                     if not video_url or not (
                         video_url.startswith("http://") or video_url.startswith("https://")
@@ -1074,28 +1093,20 @@ def publish_with_sdk(
                         raise ValueError(
                             f"Video upload returned invalid URL: {video_url!r}"
                         )
-                    media_items.append({"type": "video", "url": video_url})
+                    media_items_local.append({"type": "video", "url": video_url})
                     log("PUBLISH", f"  ✅ Main video uploaded: {video_url[:50]}...")
                 except Exception as e:
                     log("PUBLISH", f"  ❌ Upload failed: {e}")
-                    results = dict(direct_bluesky_results)
-                    results.update(direct_youtube_results)
-                    results["error"] = f"Media upload failed: {e}"
-                    return results
-
-            # Try images if no video
-            elif not main_video_path:
-                # Support multiple images
+                    return media_items_local, f"Media upload failed: {e}"
+            elif not main_video_path_local:
                 main_image_path = fallback_files.get("main_image")
                 if main_image_path and os.path.exists(main_image_path):
                     try:
-                        # Check file size
                         file_size = os.path.getsize(main_image_path)
                         log(
                             "PUBLISH", f"  📏 Main image file size: {file_size:,} bytes"
                         )
-
-                        if file_size > 4 * 1024 * 1024:  # 4MB limit
+                        if file_size > 4 * 1024 * 1024:
                             log(
                                 "PUBLISH",
                                 f"  📤 Main image too large, using upload_large...",
@@ -1108,7 +1119,6 @@ def publish_with_sdk(
                                 raise ValueError(
                                     f"Upload response missing public URL: {result}"
                                 )
-
                         img_url = str(img_url or "").strip()
                         if not img_url or not (
                             img_url.startswith("http://") or img_url.startswith("https://")
@@ -1116,25 +1126,22 @@ def publish_with_sdk(
                             raise ValueError(
                                 f"Main image upload returned invalid URL: {img_url!r}"
                             )
-                        media_items.append({"type": "image", "url": img_url})
+                        media_items_local.append({"type": "image", "url": img_url})
                         log("PUBLISH", f"  ✅ Main image uploaded: {img_url[:50]}...")
                     except Exception as e:
                         log("PUBLISH", f"  ❌ Upload failed: {e}")
-                        return {"error": f"Media upload failed: {e}"}
+                        return media_items_local, f"Media upload failed: {e}"
 
-                # Additional images
                 additional_images = fallback_files.get("additional_images", [])
                 for i, img_path in enumerate(additional_images):
                     if img_path and os.path.exists(img_path):
                         try:
-                            # Check file size
                             file_size = os.path.getsize(img_path)
                             log(
                                 "PUBLISH",
                                 f"  📏 Image {i + 1} file size: {file_size:,} bytes",
                             )
-
-                            if file_size > 4 * 1024 * 1024:  # 4MB limit
+                            if file_size > 4 * 1024 * 1024:
                                 log(
                                     "PUBLISH",
                                     f"  📤 Image {i + 1} too large, using upload_large...",
@@ -1147,7 +1154,6 @@ def publish_with_sdk(
                                     raise ValueError(
                                         f"Upload response missing public URL: {result}"
                                     )
-
                             img_url = str(img_url or "").strip()
                             if not img_url or not (
                                 img_url.startswith("http://") or img_url.startswith("https://")
@@ -1155,7 +1161,7 @@ def publish_with_sdk(
                                 raise ValueError(
                                     f"Image {i + 1} upload returned invalid URL: {img_url!r}"
                                 )
-                            media_items.append({"type": "image", "url": img_url})
+                            media_items_local.append({"type": "image", "url": img_url})
                             log(
                                 "PUBLISH",
                                 f"  ✅ Uploaded additional image {i + 1}: {img_url[:50]}...",
@@ -1166,6 +1172,82 @@ def publish_with_sdk(
                                 f"  ❌ Additional image {i + 1} upload failed: {e}",
                             )
                             # Continue with other images instead of failing completely
+
+            return media_items_local, None
+
+        # Run YouTube account uploads and Zernio media upload concurrently.
+        # YouTube accounts each take ~3m 25s; Zernio media upload ~30-60s.
+        # They share no data, so running both in parallel shaves the shorter
+        # of the two off total wall time. Bluesky ran sequentially above —
+        # it's only ~13s and we want its outcome in before the parallel phase
+        # so its status shows promptly in the progress UI.
+        direct_youtube_results = {}
+        media_items = []
+        media_upload_error = None
+
+        def _run_youtube():
+            if not youtube_targets:
+                return {}
+            yt_main_video = (
+                fallback_files.get("main_video") if fallback_files else None
+            )
+            return _publish_direct_youtube_accounts(
+                video_path=yt_main_video,
+                captions=captions,
+                selected_platforms=selected_platforms,
+                publish_now=publish_now,
+                progress_cb=progress_cb,
+                total_platforms=total_publish_targets,
+                done_offset=bluesky_count,
+            )
+
+        if youtube_targets and zernio_platforms:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="publish-parallel"
+            ) as executor:
+                yt_future = executor.submit(_run_youtube)
+                media_future = executor.submit(_prepare_media_items)
+                try:
+                    direct_youtube_results = yt_future.result() or {}
+                except Exception as e:
+                    log("PUBLISH", f"  ❌ YouTube parallel batch failed: {e}")
+                    direct_youtube_results = {}
+                try:
+                    media_items, media_upload_error = media_future.result()
+                except Exception as e:
+                    log("PUBLISH", f"  ❌ Media upload thread crashed: {e}")
+                    media_items, media_upload_error = (
+                        [],
+                        f"Media upload failed: {e}",
+                    )
+        elif youtube_targets:
+            # No Zernio phase — just run YouTube. Media prep is unnecessary.
+            direct_youtube_results = _run_youtube()
+        elif zernio_platforms:
+            # No YouTube — just prep media for the Zernio phase below.
+            media_items, media_upload_error = _prepare_media_items()
+
+        # Calculate offset for Zernio SDK phase
+        sdk_offset = bluesky_count + len(direct_youtube_results)
+
+        if not zernio_platforms:
+            if progress_cb:
+                progress_cb(sdk_offset, total_publish_targets, "sdk", "completed")
+            direct_results = {}
+            direct_results.update(direct_bluesky_results)
+            direct_results.update(direct_youtube_results)
+            return direct_results
+
+        if progress_cb:
+            progress_cb(sdk_offset, total_publish_targets, "sdk", "initializing")
+
+        if media_upload_error:
+            results = dict(direct_bluesky_results)
+            results.update(direct_youtube_results)
+            results["error"] = media_upload_error
+            return results
 
         # Get default content (use first available caption as fallback)
         default_content = ""

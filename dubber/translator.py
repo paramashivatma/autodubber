@@ -1,7 +1,13 @@
 import os, json, re, time, tempfile, threading
 from .utils import log, track_api_call, track_api_success
 from .runtime_config import is_economy_mode
-from .config import get_gemini_api_key
+from .config import (
+    get_active_gemini_api_key,
+    get_gemini_api_key,
+    gemini_key_rotation_stats,
+    mark_gemini_key_exhausted,
+    reset_gemini_key_rotation,
+)
 
 # Serialize cache writes within the process. Translation currently runs on a
 # single worker thread, but the cache file is also loaded at module import on
@@ -176,6 +182,11 @@ def _reset_runtime_state():
     _gemini_quota_reason = ""
     _gemini_skip_logged = False
     _last_runtime_meta = {"used_fallback": False, "reason": ""}
+    # Fresh run → every configured key gets another shot. The free-tier cap
+    # is per-project-per-day, so a key that was exhausted during a previous
+    # run may still be over its daily quota, but advertising it as available
+    # is fine: the first attempt will 429 and we'll re-flag it immediately.
+    reset_gemini_key_rotation()
 
 
 def get_translation_runtime_meta():
@@ -198,14 +209,40 @@ def _is_quota_exhausted_error(err_text):
 
 
 def _mark_quota_exhausted(reason):
+    """Record that the active Gemini key hit its daily quota.
+
+    If additional keys are configured (``GEMINI_API_KEY_1..N``), the current
+    key is marked exhausted and subsequent calls transparently rotate to the
+    next one — the run stays on Gemini instead of flipping to the Google
+    Translate fallback. Only when every configured key is exhausted do we
+    set the run-scoped ``_gemini_quota_exhausted`` flag.
+    """
     global _gemini_quota_exhausted, _gemini_quota_reason
+    burned_key = get_active_gemini_api_key()
+    mark_gemini_key_exhausted(burned_key)
+    stats = gemini_key_rotation_stats()
+    if stats["remaining_keys"] > 0:
+        log(
+            "TRANSLATE",
+            f"  Gemini key quota exhausted — rotating "
+            f"({stats['exhausted_keys']}/{stats['total_keys']} used, "
+            f"{stats['remaining_keys']} remaining).",
+        )
+        return
     if not _gemini_quota_exhausted:
         _gemini_quota_exhausted = True
         _gemini_quota_reason = str(reason or "")
-        log(
-            "TRANSLATE",
-            "  Gemini quota exhausted. Switching to Google Translate fallback for remaining segments in this run.",
-        )
+        if stats["total_keys"] > 1:
+            log(
+                "TRANSLATE",
+                f"  All {stats['total_keys']} Gemini keys quota-exhausted. "
+                "Switching to Google Translate fallback for remaining segments in this run.",
+            )
+        else:
+            log(
+                "TRANSLATE",
+                "  Gemini quota exhausted. Switching to Google Translate fallback for remaining segments in this run.",
+            )
 
 
 def _log_skip_once():
@@ -550,7 +587,9 @@ def _gemini_translate(text, source_hint="auto", target_language="en"):
             f"Gemini disabled for this run: {_gemini_quota_reason or 'quota exhausted'}"
         )
 
-    api_key = get_gemini_api_key()
+    # Use the currently-active key from the rotation pool so we transparently
+    # move to GEMINI_API_KEY_2/3/... after the primary key hits its daily cap.
+    api_key = get_active_gemini_api_key()
     if not api_key:
         raise RuntimeError("No Gemini API key found.")
 
@@ -620,7 +659,9 @@ def _gemini_translate_with_coverage_retry(
             f"Gemini disabled for this run: {_gemini_quota_reason or 'quota exhausted'}"
         )
 
-    api_key = get_gemini_api_key()
+    # Use the currently-active key from the rotation pool so we transparently
+    # move to GEMINI_API_KEY_2/3/... after the primary key hits its daily cap.
+    api_key = get_active_gemini_api_key()
     if not api_key:
         raise RuntimeError("No Gemini API key found.")
 
@@ -668,20 +709,106 @@ Text to translate:
     return _restore_protected_phrases(result.replace("[[", "").replace("]]", ""))
 
 
+def _mistral_translate_with_coverage_retry(
+    text, source_hint="auto", target_language="en", missing_terms=None
+):
+    """Mistral-based coverage retry — used when Gemini's daily quota is exhausted.
+
+    Without this fallback, every segment's coverage retry is silently dropped
+    for the rest of the day after the 20-req Gemini free tier cap is hit,
+    which can silently drop concrete details (proper nouns, vivid verbs) from
+    the translation. Mistral handles the same prompt shape well enough to
+    recover most omitted terms.
+    """
+    from .config import get_mistral_api_key
+    import httpx
+
+    api_key = get_mistral_api_key()
+    if not api_key:
+        raise RuntimeError("No Mistral API key available for coverage retry.")
+
+    lang_names = {**LANGUAGE_NAMES, "auto": "the detected language"}
+    source_lang = lang_names.get(source_hint, source_hint)
+    target_lang = lang_names.get(target_language, target_language)
+    missing_terms = [term for term in (missing_terms or []) if term]
+    coverage_note = ", ".join(missing_terms) if missing_terms else "all concrete details"
+
+    prompt = f"""Translate the following text from {source_lang} to {target_lang}.
+
+Context: This is a spiritual/Vedantic teaching by a Hindu monk about Hindu deities, traditions, and sacred places.
+
+RULES:
+1. Do not omit any concrete source meaning. Preserve every image, action, and metaphor.
+2. If the source contains a vivid word or phrase, keep that meaning explicit in the translation instead of smoothing it away.
+3. Pay special attention to these source terms: {coverage_note}
+4. PROPER NOUNS: If a name seems clearly misheard, correct it. Otherwise, transliterate names as-is.
+5. SANSKRIT SHLOKAS: Keep verses, mantras, and shlokas in their original form.
+6. REVERENCE: Maintain a respectful, devotional tone.
+7. TTS OPTIMIZED: Use clear punctuation for natural pauses. Avoid symbols like *, _, (), or brackets.
+8. NATURAL SPEECH: Write for the ear, not the eye.
+
+Return ONLY the translation. No explanations.
+
+Text to translate:
+{_protect_text_for_translation(text)}"""
+
+    url = "https://api.mistral.ai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+    payload = {
+        "model": "mistral-large-latest",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 1024,
+    }
+
+    track_api_call("mistral")
+    r = httpx.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    result = (r.json()["choices"][0]["message"]["content"] or "").strip()
+    if not result:
+        raise RuntimeError("Mistral coverage retry returned empty output.")
+    track_api_success("mistral")
+    return _restore_protected_phrases(result.replace("[[", "").replace("]]", ""))
+
+
 def _retry_translation_for_coverage(text, target_language, source_hint, missing_terms):
-    try:
-        retried = _gemini_translate_with_coverage_retry(
-            text,
-            source_hint=source_hint,
-            target_language=target_language,
-            missing_terms=missing_terms,
-        )
-        if _is_translation_acceptable(retried, target_language):
-            return retried
-    except Exception as e:
-        if _is_quota_exhausted_error(e):
-            _mark_quota_exhausted(e)
-        log("TRANSLATE", f"  Coverage retry failed: {e}")
+    gemini_err = None
+    if not _gemini_quota_exhausted:
+        try:
+            retried = _gemini_translate_with_coverage_retry(
+                text,
+                source_hint=source_hint,
+                target_language=target_language,
+                missing_terms=missing_terms,
+            )
+            if _is_translation_acceptable(retried, target_language):
+                return retried
+        except Exception as e:
+            gemini_err = e
+            if _is_quota_exhausted_error(e):
+                _mark_quota_exhausted(e)
+            if not _gemini_quota_exhausted:
+                log("TRANSLATE", f"  Coverage retry failed: {e}")
+
+    # Gemini disabled (either from the start of this call or after a 429
+    # mid-call). Fall through to Mistral so we don't silently drop missing
+    # source terms for the rest of the run.
+    if _gemini_quota_exhausted:
+        try:
+            retried = _mistral_translate_with_coverage_retry(
+                text,
+                source_hint=source_hint,
+                target_language=target_language,
+                missing_terms=missing_terms,
+            )
+            if _is_translation_acceptable(retried, target_language):
+                log("TRANSLATE", "  Coverage retry via Mistral succeeded")
+                return retried
+        except Exception as e:
+            log("TRANSLATE", f"  Coverage retry via Mistral failed: {e}")
 
     return None
 
@@ -696,7 +823,9 @@ def _gemini_translate_batch(texts, source_hint, target_language):
             f"Gemini disabled for this run: {_gemini_quota_reason or 'quota exhausted'}"
         )
 
-    api_key = get_gemini_api_key()
+    # Use the currently-active key from the rotation pool so we transparently
+    # move to GEMINI_API_KEY_2/3/... after the primary key hits its daily cap.
+    api_key = get_active_gemini_api_key()
     if not api_key:
         raise RuntimeError("No Gemini API key found.")
 
@@ -1157,10 +1286,18 @@ def _translate_batch_with_policy(texts, target_language, source_hint="auto"):
     except Exception as e:
         if _is_quota_exhausted_error(e):
             _mark_quota_exhausted(e)
-        log(
-            "TRANSLATE",
-            f"  Translation batch failed: {e} — using per-segment translation",
-        )
+        if _gemini_quota_exhausted:
+            # _mark_quota_exhausted already logged the one-time switch banner;
+            # don't re-dump the full 429 JSON blob here too.
+            log(
+                "TRANSLATE",
+                "  Translation batch failed (Gemini disabled) — using per-segment translation",
+            )
+        else:
+            log(
+                "TRANSLATE",
+                f"  Translation batch failed: {e} — using per-segment translation",
+            )
         return _translate_segments_per_segment(texts, source_hint, target_language)
 
     except Exception as e:

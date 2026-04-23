@@ -92,10 +92,26 @@ def _extract_video_chunk(src_path, start_sec, duration_sec, dst_path):
         raise RuntimeError(f"ffmpeg chunk extraction failed for {dst_path}: {r.stderr}")
 
 
+def _verifier_model_size(model_size):
+    """Downgrade large → medium for the verifier path.
+
+    Verify's job is narrow: confirm the dubbed audio is in the target script
+    and roughly matches the expected length. Medium handles that well; large
+    costs ~2x inference time plus ~1m 46s extra on first-chunk model load
+    (observed in prod). Users who explicitly pass medium / small get it
+    respected; only large is automatically downgraded.
+    """
+    if str(model_size or "").lower() == "large":
+        return "medium"
+    return model_size
+
+
 def _retranscribe_video_in_chunks(video_path, verify_dir, target_language, model_size):
     duration = _ffprobe_duration(video_path)
     chunk_dir = os.path.join(verify_dir, "chunks")
     os.makedirs(chunk_dir, exist_ok=True)
+
+    verifier_size = _verifier_model_size(model_size)
 
     observed_segments = []
     chunk_index = 0
@@ -116,7 +132,7 @@ def _retranscribe_video_in_chunks(video_path, verify_dir, target_language, model
         chunk_segments = transcribe_audio(
             chunk_video,
             chunk_output_dir,
-            model_size=model_size,
+            model_size=verifier_size,
             language=target_language,
             prefer_local=True,
         )
@@ -216,6 +232,9 @@ def verify_dubbed_output(
     output_dir,
     model_size="large",
 ):
+    # Callers pass whatever size the main pipeline is using (typically
+    # "large"). _retranscribe_video_in_chunks auto-downgrades large →
+    # medium for the verifier path; see _verifier_model_size() for why.
     verify_dir = os.path.join(output_dir, "dub_verification")
     os.makedirs(verify_dir, exist_ok=True)
 

@@ -121,6 +121,71 @@ def get_gemini_api_key(explicit=None) -> str:
     return first_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GEMINI_VISION_KEY")
 
 
+def get_gemini_api_keys() -> list:
+    """Return all configured Gemini API keys in priority order.
+
+    Starts with the primary key (``get_gemini_api_key()``), then appends
+    ``GEMINI_API_KEY_1`` through ``GEMINI_API_KEY_10``. Duplicates are
+    removed while preserving order. Used by the translator to rotate on
+    per-key quota exhaustion — free-tier Gemini is capped at 20
+    requests/day/project, so each extra key effectively extends the daily
+    translation budget by another 20.
+    """
+    keys = []
+    seen = set()
+
+    def _add(candidate):
+        cleaned = _clean(candidate)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            keys.append(cleaned)
+
+    _add(get_gemini_api_key())
+    for idx in range(1, 11):
+        _add(os.getenv(f"GEMINI_API_KEY_{idx}"))
+    return keys
+
+
+# Runtime rotation state. Callers import and mutate these via the helpers
+# below; keep the set here so both translator and vision paths see a shared
+# view of which keys have been burned today.
+_gemini_exhausted_keys: set = set()
+
+
+def mark_gemini_key_exhausted(key: str) -> None:
+    """Record that the given key has hit its daily quota.
+
+    No-op on empty keys. Idempotent — safe to call multiple times.
+    """
+    cleaned = _clean(key)
+    if cleaned:
+        _gemini_exhausted_keys.add(cleaned)
+
+
+def get_active_gemini_api_key() -> str:
+    """Return the first non-exhausted Gemini key, or ``""`` if all exhausted."""
+    for candidate in get_gemini_api_keys():
+        if candidate not in _gemini_exhausted_keys:
+            return candidate
+    return ""
+
+
+def reset_gemini_key_rotation() -> None:
+    """Clear the exhausted-key tracking. Called at the start of each run."""
+    _gemini_exhausted_keys.clear()
+
+
+def gemini_key_rotation_stats() -> dict:
+    """Return a snapshot of rotation state for diagnostic logging."""
+    total = len(get_gemini_api_keys())
+    exhausted = len(_gemini_exhausted_keys)
+    return {
+        "total_keys": total,
+        "exhausted_keys": exhausted,
+        "remaining_keys": max(0, total - exhausted),
+    }
+
+
 def get_mistral_api_key(explicit=None) -> str:
     explicit_value = _clean(explicit)
     if explicit_value:

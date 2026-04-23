@@ -332,6 +332,60 @@ TRANSCRIPTION_REJECTED_FIXES_FILE = TRANSCRIPTION_FIXES_FILE.replace(
     ".json", "_rejected.json"
 )
 
+# Common English words that happen to overlap with ``KNOWN_WORDS_MISHEARINGS``.
+# Without this guard, auto-learn would flag legitimate English usage of these
+# words as needing correction (e.g. "object" → "avyakta") and surface them as
+# pending fixes the user has to review every run.
+#
+# Keep this list tight — only English words that appear verbatim as a listed
+# mishearing. Sanskrit-in-English terms like "atman" or "brahmin" are harder
+# judgement calls and are intentionally *not* allow-listed: the speaker may
+# genuinely mean the Sanskrit term, and letting the user approve/reject per
+# occurrence is the right move.
+KNOWN_WORDS_ALLOWLIST = {
+    "object",
+    "objects",
+    "obstruct",
+    "obstructs",
+    "abject",
+    "somebody",
+    "lithuania",
+    "lithuanian",
+}
+
+# Optional user-maintained extension file (one lowercased word per line, lines
+# starting with "#" ignored). Missing file is fine — built-in list stands.
+TRANSCRIPTION_ALLOWLIST_FILE = os.path.join(
+    os.path.expanduser("~"), ".video_dubber_transcription_allowlist.txt"
+)
+
+
+def _load_user_allowlist():
+    """Load user-maintained allow-list entries, if any. Cached via ``_cached_user_allowlist``."""
+    path = TRANSCRIPTION_ALLOWLIST_FILE
+    try:
+        if not os.path.exists(path):
+            return set()
+        with open(path, "r", encoding="utf-8") as f:
+            entries = set()
+            for line in f:
+                word = line.strip().lower()
+                if not word or word.startswith("#"):
+                    continue
+                entries.add(word)
+            return entries
+    except Exception:
+        # A malformed allow-list shouldn't break transcription.
+        return set()
+
+
+def _get_effective_allowlist():
+    """Return the union of the built-in allow-list and any user entries."""
+    user_entries = _load_user_allowlist()
+    if not user_entries:
+        return KNOWN_WORDS_ALLOWLIST
+    return KNOWN_WORDS_ALLOWLIST | user_entries
+
 
 def _levenshtein_distance(s1, s2):
     """Calculate the Levenshtein distance between two strings."""
@@ -392,6 +446,7 @@ def _detect_potential_errors(transcribed_text):
     suggestions = []
     words = transcribed_text.split()
     all_fixes = _get_all_fixes()
+    allowlist = _get_effective_allowlist()
 
     for word in words:
         word_lower = word.lower().strip(".,!?;:")
@@ -402,6 +457,12 @@ def _detect_potential_errors(transcribed_text):
 
         # Skip very short words
         if len(word_lower) < 4:
+            continue
+
+        # Skip words that are on the known-English allow-list. Without this
+        # guard, every legitimate use of "object", "somebody", etc. would be
+        # flagged as a pending fix requiring user review.
+        if word_lower in allowlist:
             continue
 
         # Check each known word's common mishearings
