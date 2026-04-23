@@ -92,16 +92,29 @@ def _extract_video_chunk(src_path, start_sec, duration_sec, dst_path):
         raise RuntimeError(f"ffmpeg chunk extraction failed for {dst_path}: {r.stderr}")
 
 
-def _verifier_model_size(model_size):
-    """Downgrade large → medium for the verifier path.
+# Whisper-medium transcribes English / Spanish well enough for
+# verification, but on Indic scripts (Gujarati, Hindi, Tamil, Telugu,
+# Kannada, Malayalam, Bengali) and other low-resource targets its output
+# diverges badly from large — observed in prod as Coverage 0% with a 97%
+# observed-char ratio on Gujarati (right-length output, wrong content).
+# Only downgrade for the Latin-script languages where the optimization
+# holds; keep large for anything else the caller requested.
+_VERIFIER_DOWNGRADE_LANGUAGES = {"en", "english", "es", "spanish"}
 
-    Verify's job is narrow: confirm the dubbed audio is in the target script
-    and roughly matches the expected length. Medium handles that well; large
-    costs ~2x inference time plus ~1m 46s extra on first-chunk model load
-    (observed in prod). Users who explicitly pass medium / small get it
-    respected; only large is automatically downgraded.
+
+def _verifier_model_size(model_size, target_language):
+    """Pick the verifier model size for the given target language.
+
+    Conditionally downgrades large → medium to save ~50% inference time
+    plus the ~1m 46s first-chunk large-model load. Only runs for English
+    and Spanish; Indic / Cyrillic / other non-Latin targets stay on large
+    because medium's accuracy on those languages is not fit for purpose
+    (see block comment on ``_VERIFIER_DOWNGRADE_LANGUAGES``).
     """
-    if str(model_size or "").lower() == "large":
+    if str(model_size or "").lower() != "large":
+        return model_size
+    lang = str(target_language or "").lower()
+    if lang in _VERIFIER_DOWNGRADE_LANGUAGES:
         return "medium"
     return model_size
 
@@ -111,7 +124,7 @@ def _retranscribe_video_in_chunks(video_path, verify_dir, target_language, model
     chunk_dir = os.path.join(verify_dir, "chunks")
     os.makedirs(chunk_dir, exist_ok=True)
 
-    verifier_size = _verifier_model_size(model_size)
+    verifier_size = _verifier_model_size(model_size, target_language)
 
     observed_segments = []
     chunk_index = 0
@@ -234,7 +247,9 @@ def verify_dubbed_output(
 ):
     # Callers pass whatever size the main pipeline is using (typically
     # "large"). _retranscribe_video_in_chunks auto-downgrades large →
-    # medium for the verifier path; see _verifier_model_size() for why.
+    # medium for English / Spanish; keeps large for Indic, Cyrillic, and
+    # other non-Latin targets where medium is not accurate enough. See
+    # _verifier_model_size() for the full rationale.
     verify_dir = os.path.join(output_dir, "dub_verification")
     os.makedirs(verify_dir, exist_ok=True)
 
