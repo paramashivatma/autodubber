@@ -564,9 +564,19 @@ def run_dub_pipeline(
             done_cb=done_cb,
         )
     except Exception as e:
+        # Persist the full traceback to the rotating dubber_YYYYMMDD.log so
+        # silent crashes (e.g. ffmpeg subprocess.TimeoutExpired mid-BUILD)
+        # are actually diagnosable after the fact. Previously this block
+        # only wrote to stderr, which the Tk app doesn't surface into the
+        # log file — so a hung ffmpeg child looked like the pipeline just
+        # vanished between a BUILD line and the cleanup handler.
         import traceback
 
+        tb_text = traceback.format_exc()
         traceback.print_exc()
+        log("PIPELINE", f"❌ Dub pipeline crashed: {type(e).__name__}: {e}")
+        for tb_line in tb_text.rstrip().splitlines():
+            log("PIPELINE", f"  {tb_line}")
         done_cb(success=False, msg=str(e), pub_results={})
 
 
@@ -635,9 +645,15 @@ def run_publish_only(
             done_cb=done_cb,
         )
     except Exception as e:
+        # Mirror the dub pipeline's crash-to-file logging so publish-only
+        # runs don't disappear silently on an uncaught exception either.
         import traceback
 
+        tb_text = traceback.format_exc()
         traceback.print_exc()
+        log("PIPELINE", f"❌ Publish-only pipeline crashed: {type(e).__name__}: {e}")
+        for tb_line in tb_text.rstrip().splitlines():
+            log("PIPELINE", f"  {tb_line}")
         done_cb(success=False, msg=str(e), pub_results={})
 
 

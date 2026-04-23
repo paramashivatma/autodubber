@@ -15,28 +15,42 @@ THOUGHT_PAUSE_KEEP = 0.32
 
 def _cut(src, start, end, dst):
     dur = max(round(end - start, 4), 0.1)
-    r = subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            str(round(start, 4)),
-            "-i",
-            src,
-            "-t",
-            str(dur),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-crf",
-            "18",
-            "-an",
-            dst,
-        ],
-        capture_output=True,
-        timeout=300,
-    )
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        str(round(start, 4)),
+        "-i",
+        src,
+        "-t",
+        str(dur),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-an",
+        dst,
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        # Observed in prod (see dubber_20260423.log seg#3 hang): a single
+        # ffmpeg cut can wedge for the full timeout and previously took the
+        # whole pipeline down with it. Fall back to shutil.copy so BUILD can
+        # keep going — downstream audio overlay math uses the source
+        # duration anyway, so a raw copy is a safe degraded path.
+        log(
+            "CUT",
+            f"  FFmpeg cut TIMED OUT after 300s for {os.path.basename(dst)} "
+            f"(start={start:.2f}s dur={dur:.2f}s) — copying source as fallback",
+        )
+        try:
+            shutil.copy(src, dst)
+        except Exception as copy_err:
+            log("CUT", f"  Fallback copy also failed: {copy_err}")
+        return
     if r.returncode != 0 or not os.path.exists(dst):
         log("CUT", f"  FFmpeg cut failed for {os.path.basename(dst)}, copying source")
         shutil.copy(src, dst)
@@ -44,29 +58,41 @@ def _cut(src, start, end, dst):
 
 def _slow(src, dst, pts_factor, fps=_FPS_FALLBACK):
     pts = min(round(pts_factor, 5), 4.0)
-    r = subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            src,
-            "-filter:v",
-            f"setpts={pts}*PTS",
-            "-an",
-            "-r",
-            str(fps or _FPS_FALLBACK),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "22",
-            dst,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        src,
+        "-filter:v",
+        f"setpts={pts}*PTS",
+        "-an",
+        "-r",
+        str(fps or _FPS_FALLBACK),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "22",
+        dst,
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        # Catch the hung-ffmpeg case (same pattern as _cut). Without this,
+        # TimeoutExpired bubbles all the way up through ThreadPoolExecutor
+        # and crashes the pipeline mid-BUILD with no useful log.
+        log(
+            "SLOW",
+            f"  FFmpeg stretch TIMED OUT after 300s (pts={pts}x) — "
+            f"copying source as fallback (A/V sync will differ)",
+        )
+        try:
+            shutil.copy(src, dst)
+        except Exception as copy_err:
+            log("SLOW", f"  Fallback copy also failed: {copy_err}")
+            return False
+        return False
     if r.returncode != 0:
         log(
             "SLOW", f"  FFmpeg failed, copying source as fallback (A/V sync may differ)"
@@ -279,31 +305,44 @@ def build_dubbed_video(
             elif stretch < 0.95:  # Speed up video (TTS < Original)
                 log("BUILD", f"    → speed up {stretch:.3f}x")
                 # Use ffmpeg to speed up video
-                r = subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-i",
-                        seg_raw,
-                        "-filter:v",
-                        f"setpts={stretch}*PTS",
-                        "-an",
-                        "-r",
-                        str(source_fps or _FPS_FALLBACK),
-                        "-c:v",
-                        "libx264",
-                        "-preset",
-                        "ultrafast",
-                        "-crf",
-                        "22",
-                        seg_out,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-                if r.returncode != 0:
-                    log("BUILD", f"    → WARNING: speed up failed, using original")
+                speedup_cmd = [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    seg_raw,
+                    "-filter:v",
+                    f"setpts={stretch}*PTS",
+                    "-an",
+                    "-r",
+                    str(source_fps or _FPS_FALLBACK),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "22",
+                    seg_out,
+                ]
+                speedup_timed_out = False
+                try:
+                    r = subprocess.run(
+                        speedup_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                    )
+                except subprocess.TimeoutExpired:
+                    # Same rescue as _cut/_slow — don't let a hung ffmpeg
+                    # nuke the whole pipeline; copy raw and continue.
+                    log(
+                        "BUILD",
+                        f"    → WARNING: speed up TIMED OUT after 300s for seg#{seg['id']} "
+                        f"(stretch={stretch:.3f}x), using original",
+                    )
+                    speedup_timed_out = True
+                if speedup_timed_out or r.returncode != 0:
+                    if not speedup_timed_out:
+                        log("BUILD", f"    → WARNING: speed up failed, using original")
                     shutil.copy(seg_raw, seg_out)
                     actual_seg_dur = orig_dur
                 else:
