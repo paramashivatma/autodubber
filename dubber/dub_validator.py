@@ -61,6 +61,40 @@ def _build_expected_text(segments):
     return " ".join(parts).strip()
 
 
+def _diagnose_empty_expected(segments):
+    """Summarize why no expected text could be built.
+
+    Returns a short string suitable for inclusion in a RuntimeError, e.g.
+    "0 segments passed in" or "13 segments passed in; 13 had empty
+    'translated'; 13 had empty 'text'; sample ids: 0, 1, 2".
+    """
+    segments = segments or []
+    total = len(segments)
+    if total == 0:
+        return "0 segments passed to verifier (translation/TTS pipeline produced no segments)."
+
+    missing_translated = 0
+    missing_text = 0
+    sample_ids = []
+    for seg in segments:
+        translated = (seg.get("translated") or "").strip()
+        source_text = (seg.get("text") or "").strip()
+        if not translated:
+            missing_translated += 1
+        if not source_text:
+            missing_text += 1
+        if not translated and not source_text and len(sample_ids) < 5:
+            seg_id = seg.get("id", "?")
+            sample_ids.append(str(seg_id))
+
+    parts = [f"{total} segments passed to verifier"]
+    parts.append(f"{missing_translated} had empty/missing 'translated'")
+    parts.append(f"{missing_text} had empty/missing 'text'")
+    if sample_ids:
+        parts.append(f"sample empty seg ids: {', '.join(sample_ids)}")
+    return "; ".join(parts) + "."
+
+
 def _extract_video_chunk(src_path, start_sec, duration_sec, dst_path):
     r = subprocess.run(
         [
@@ -255,7 +289,12 @@ def verify_dubbed_output(
 
     expected_text = _build_expected_text(segments)
     if not expected_text:
-        raise RuntimeError("Dub verification could not build an expected translated script.")
+        diagnosis = _diagnose_empty_expected(segments)
+        log("VERIFY", f"Expected script empty at verifier entry: {diagnosis}")
+        raise RuntimeError(
+            "Dub verification could not build an expected translated script. "
+            + diagnosis
+        )
 
     log("VERIFY", f"Retranscribing dubbed output for QA: {os.path.basename(video_path)}")
     observed_segments = _retranscribe_video_in_chunks(
