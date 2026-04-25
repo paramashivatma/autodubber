@@ -224,14 +224,9 @@ def _annotate_opening_language_segments(segments):
             preserve_original_audio = bool(
                 normalized_tokens and normalized_tokens.issubset(SCRIPTURE_TRANSLATION_CUES)
             )
-        if (
-            not preserve_original_audio
-            and start <= OPENING_PRESERVE_WINDOW_SEC
-            and normalized_language
-            and normalized_language not in {"en", "english"}
-            and _contains_non_latin_letters(text)
-        ):
-            preserve_original_audio = True
+        # Don't auto-preserve non-English content — only preserve explicitly detected
+        # Sanskrit/scripture. This prevents dubbing from being skipped for foreign-language
+        # videos that aren't sacred intros.
         enriched["preserve_original_audio"] = preserve_original_audio
         annotated.append(enriched)
         previous_preserved = preserve_original_audio
@@ -289,6 +284,7 @@ TRANSCRIPTION_FIXES = {
     # Common words
     "uncertainity": "uncertainty",
     "avyaktha": "avyakta",
+    "shit": "chit",  # Deepgram mishearing
 }
 
 # Known words and their common mishearings for auto-learn pattern matching
@@ -319,6 +315,8 @@ KNOWN_WORDS_MISHEARINGS = {
     "bhagavan": ["bhagwan", "bhagawaan", "bhag van"],
     "paramashivatma": ["parama shivatma", "parama shiva atma"],
     "swayambhaga": ["swayambaha", "svayambaha", "svayambhaga", "swayambaga"],
+    # English words commonly mismisheard
+    "chit": ["shit", "spit"],
 }
 
 # File to store user-approved transcription fixes

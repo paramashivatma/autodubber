@@ -149,6 +149,33 @@ def _pad_audio_with_silence(audio_path, target_dur_ms):
         return None
 
 
+def _generate_blank_video(dst, duration_sec, fps=_FPS_FALLBACK, width=1920, height=1080):
+    """Generate a blank/black video frame for gaps when source extraction fails."""
+    try:
+        dur = max(round(duration_sec, 4), 0.1)
+        dimensions = f"{width}x{height}"
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f", "lavfi",
+            "-i", f"color=c=black:s={dimensions}:d={dur}",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-an",
+            "-r", str(fps or _FPS_FALLBACK),
+            dst,
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 500:
+            return True
+    except subprocess.TimeoutExpired:
+        log("BUILD", f"    -> blank video generation TIMED OUT after 300s")
+    except Exception as e:
+        log("BUILD", f"    -> blank video generation failed: {e}")
+    return False
+
+
 def _extract_audio_clip(src, start, end, dst):
     dur = max(round(end - start, 4), 0.1)
     r = subprocess.run(
@@ -277,6 +304,12 @@ def build_dubbed_video(
                 actual_gap = _actual_duration(gf) or gap
                 parts.append(gf)
                 cursor += actual_gap
+            elif gap > 0.1:
+                if _generate_blank_video(gf, gap, fps=source_fps):
+                    actual_gap = _actual_duration(gf) or gap
+                    parts.append(gf)
+                    cursor += actual_gap
+                    log("BUILD", f"    -> using generated blank video for gap ({gap:.2f}s)")
 
         seg_raw = os.path.join(tmp, f"seg_{i:04d}_raw.mp4")
         seg_out = os.path.join(tmp, f"seg_{i:04d}.mp4")
