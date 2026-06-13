@@ -1,14 +1,8 @@
 import os, json, re, subprocess
-import httpx
-from .config import get_deepgram_api_key
-from .utils import ffprobe_duration as _ffprobe_duration, log, track_api_call, track_api_success
+from .utils import ffprobe_duration as _ffprobe_duration, log
 
-DEEPGRAM_API_URL = "https://api.deepgram.com/v1/listen"
-DEEPGRAM_MODEL = "nova-3"
-# Deepgram accepts uploads up to ~2GB, but we keep a chunking safety net
-# so wav files for very long videos stream in bounded pieces. 100MB per
-# request is well under Deepgram's limit and keeps a single HTTP call
-# from dominating end-to-end latency.
+# Audio chunking safety net so wav files for very long videos stream in
+# bounded pieces — keeps any single ffmpeg/Whisper step from spiking memory.
 MAX_FILE_MB = 100
 
 # Module-level cache for faster-whisper models. Loading Whisper-large from
@@ -24,6 +18,16 @@ PROBE_AUDIO_SAMPLE_RATE = "16000"
 PROBE_AUDIO_CHANNELS = "1"
 OPENING_RECOVERY_WINDOW_SEC = 12.0
 OPENING_PRESERVE_WINDOW_SEC = 18.0
+# Whisper routinely mis-detects accented or fast English speech as a different
+# language and transliterates it into that language's script (e.g. English
+# narration coming back as Telugu/Devanagari). Those false detections carry a
+# low language_probability, whereas a genuine foreign-language opening (a real
+# Sanskrit invocation, etc.) detects with high confidence. The generic
+# non-Latin opening-preserve heuristic must only fire above this confidence
+# floor, otherwise mis-transcribed English gets left undubbed in the source
+# language while the rest of the video is dubbed — producing a jarring
+# language switch a few seconds in.
+OPENING_PRESERVE_MIN_LANG_PROB = 0.85
 SANSKRIT_LANG_CODES = {"sa", "san", "sanskrit"}
 SANSKRIT_TOKEN_MARKERS = {
     "atma",
@@ -52,12 +56,18 @@ SANSKRIT_TOKEN_MARKERS = {
     "yatatmanah",
     "yatendriya",
 }
+# Words that signal a spoken scripture *citation* opening (e.g. "In Bhagavad
+# Gita 5th chapter ... 25th verse"), which we leave in the original voice.
+# Deliberately excludes ordinary content words like "yoga": these channels
+# dub yoga/spirituality talks where "yoga" is said constantly, so including it
+# caused normal English openings (e.g. "Chick Yoga, Cook Yoga") to be
+# mis-flagged as scripture and left undubbed. The remaining markers are
+# specific enough that two hits genuinely indicate a verse citation.
 SCRIPTURE_OPENING_MARKERS = {
     "bhagavad",
     "gita",
     "chapter",
     "verse",
-    "yoga",
     "shloka",
     "sloka",
     "translation",
@@ -224,9 +234,23 @@ def _annotate_opening_language_segments(segments):
             preserve_original_audio = bool(
                 normalized_tokens and normalized_tokens.issubset(SCRIPTURE_TRANSLATION_CUES)
             )
-        # Don't auto-preserve non-English content — only preserve explicitly detected
-        # Sanskrit/scripture. This prevents dubbing from being skipped for foreign-language
-        # videos that aren't sacred intros.
+        detected_language_probability = float(
+            enriched.get("detected_language_probability", 0.0) or 0.0
+        )
+        if (
+            not preserve_original_audio
+            and enriched.get("is_opening_recovery")
+            and start <= OPENING_PRESERVE_WINDOW_SEC
+            and normalized_language
+            and normalized_language not in {"en", "english"}
+            and _contains_non_latin_letters(text)
+            # Only trust a non-English opening detection enough to leave the
+            # audio undubbed when Whisper is genuinely confident about the
+            # language. Low-confidence detections here are almost always
+            # mis-transcribed English (see OPENING_PRESERVE_MIN_LANG_PROB).
+            and detected_language_probability >= OPENING_PRESERVE_MIN_LANG_PROB
+        ):
+            preserve_original_audio = True
         enriched["preserve_original_audio"] = preserve_original_audio
         annotated.append(enriched)
         previous_preserved = preserve_original_audio
@@ -284,7 +308,7 @@ TRANSCRIPTION_FIXES = {
     # Common words
     "uncertainity": "uncertainty",
     "avyaktha": "avyakta",
-    "shit": "chit",  # Deepgram mishearing
+    "shit": "chit",  # common ASR mishearing of "chit"
 }
 
 # Known words and their common mishearings for auto-learn pattern matching
@@ -810,151 +834,6 @@ def _split_audio(wav_path, output_dir, chunk_sec=600):
     return chunks
 
 
-def _deepgram_chunk_transcribe(api_key, audio_path, language=None):
-    """Send a single WAV chunk to Deepgram /v1/listen and return the parsed JSON.
-
-    Deepgram accepts the raw audio bytes as the request body (not multipart),
-    with the model + formatting options passed as query parameters. We use
-    ``utterances=true`` because it emits speaker/phrase-level spans with
-    their own start/end, which maps cleanly onto our segment shape.
-    ``smart_format=true`` normalizes punctuation and casing — closer to a
-    typical Whisper ``verbose_json`` output.
-    """
-    track_api_call("deepgram")
-    headers = {
-        "Authorization": f"Token {api_key}",
-        "Content-Type": "audio/wav",
-    }
-
-    params = {
-        "model": DEEPGRAM_MODEL,
-        "smart_format": "true",
-        "utterances": "true",
-        "punctuate": "true",
-    }
-    # Language handling: Deepgram wants either a specific BCP-47 code or
-    # ``detect_language=true``. If the caller passed "auto" or left it None,
-    # flip on detection; otherwise pin the language so we don't regress
-    # accuracy on short clips by re-detecting.
-    if language and str(language).lower() not in ("auto", "none", ""):
-        params["language"] = str(language)
-    else:
-        params["detect_language"] = "true"
-
-    with open(audio_path, "rb") as f:
-        data = f.read()
-
-    r = httpx.post(
-        DEEPGRAM_API_URL,
-        headers=headers,
-        params=params,
-        content=data,
-        timeout=300,
-    )
-    if r.is_success:
-        track_api_success("deepgram")
-    if not r.is_success:
-        log("TRANSCRIBE", f"Deepgram error body: {r.text[:300]}")
-        r.raise_for_status()
-    return r.json()
-
-
-def _extract_deepgram_language(payload):
-    """Pull the detected language code out of a Deepgram response payload.
-
-    Deepgram's language detection surfaces inside
-    ``results.channels[0].detected_language``. We also fall back to the
-    first alternative's language field for robustness across API versions.
-    """
-    try:
-        channels = (payload.get("results") or {}).get("channels") or []
-        if channels:
-            ch = channels[0] or {}
-            lang = ch.get("detected_language") or ch.get("language")
-            if lang:
-                return str(lang)
-            alternatives = ch.get("alternatives") or []
-            if alternatives:
-                alt_lang = (alternatives[0] or {}).get("language")
-                if alt_lang:
-                    return str(alt_lang)
-    except Exception:
-        pass
-    return None
-
-
-def _deepgram_transcribe(api_key, audio_path, language, output_dir):
-    """Transcribe via Deepgram and return ``(segments, detected_language)``.
-
-    Each Deepgram ``utterance`` becomes one segment with ``start``, ``end``,
-    ``text``, ``detected_language``. The shape is what the rest of the
-    pipeline (coverage audit, opening-language recovery, fix application)
-    expects.
-    """
-    chunks = _split_audio(audio_path, output_dir)
-    if not chunks:
-        raise RuntimeError("Audio chunking produced no chunks for Deepgram transcription.")
-    all_segments = []
-    time_offset = 0.0
-    detected_lang = None
-
-    for chunk_path in chunks:
-        log("TRANSCRIBE", f"Deepgram transcribing: {os.path.basename(chunk_path)} ...")
-        result = _deepgram_chunk_transcribe(api_key, chunk_path, language)
-        chunk_lang = _extract_deepgram_language(result) or language
-        if chunk_lang:
-            detected_lang = chunk_lang
-
-        utterances = ((result.get("results") or {}).get("utterances")) or []
-        if utterances:
-            for utt in utterances:
-                text = (utt.get("transcript") or "").strip()
-                if not text:
-                    continue
-                start = float(utt.get("start", 0.0))
-                end = float(utt.get("end", start))
-                fixed_text = _apply_transcription_fixes(text)
-                all_segments.append(
-                    {
-                        "id": len(all_segments),
-                        "start": round(start + time_offset, 3),
-                        "end": round(end + time_offset, 3),
-                        "text": fixed_text,
-                        "detected_language": detected_lang,
-                    }
-                )
-        else:
-            # Fallback: Deepgram didn't return utterances (can happen on
-            # ultra-short probes) — stitch paragraphs or the single
-            # alternative transcript into one segment so we don't silently
-            # drop speech.
-            alternatives = (
-                (result.get("results") or {}).get("channels") or [{}]
-            )[0].get("alternatives") or []
-            alt = alternatives[0] if alternatives else {}
-            text = (alt.get("transcript") or "").strip()
-            if text:
-                words = alt.get("words") or []
-                start = float(words[0].get("start", 0.0)) if words else 0.0
-                end = float(words[-1].get("end", start)) if words else 0.0
-                fixed_text = _apply_transcription_fixes(text)
-                all_segments.append(
-                    {
-                        "id": len(all_segments),
-                        "start": round(start + time_offset, 3),
-                        "end": round(end + time_offset, 3),
-                        "text": fixed_text,
-                        "detected_language": detected_lang,
-                    }
-                )
-
-        # Advance by actual chunk duration so silent chunk tails do not shift
-        # later timestamps.
-        time_offset += _ffprobe_duration(chunk_path)
-
-    return all_segments, detected_lang
-
-
 def _local_transcribe(
     audio_path, language, model_size, output_dir, vad_filter=True, beam_size=5
 ):
@@ -984,6 +863,7 @@ def _local_transcribe(
             vad_filter=vad_filter,
         )
         detected = getattr(info, "language", language)
+        detected_prob = float(getattr(info, "language_probability", 0.0) or 0.0)
         segments = []
         for i, seg in enumerate(fw_segments):
             text = (getattr(seg, "text", "") or "").strip()
@@ -998,6 +878,7 @@ def _local_transcribe(
                     "end": round(float(seg.end), 3),
                     "text": fixed_text,
                     "detected_language": detected,
+                    "detected_language_probability": detected_prob,
                 }
             )
         log(
@@ -1007,8 +888,8 @@ def _local_transcribe(
         return segments, detected
     except Exception as e:
         raise RuntimeError(
-            "Local transcription failed. Set DEEPGRAM_API_KEY for cloud transcription "
-            "or install faster-whisper (pip install faster-whisper)."
+            "Local transcription failed. Install faster-whisper "
+            "(pip install faster-whisper) and ensure model weights are reachable."
         ) from e
 
 
@@ -1125,7 +1006,6 @@ def _probe_range_for_segments(
     end,
     wav_path,
     output_dir,
-    deepgram_key,
     language,
     model_size,
 ):
@@ -1137,31 +1017,23 @@ def _probe_range_for_segments(
         return []
 
     try:
-        if deepgram_key:
-            raw_segments, _ = _deepgram_transcribe(
-                deepgram_key,
-                probe_audio_path,
-                None if language in ("auto", None) else language,
-                probe_dir,
-            )
-        else:
+        raw_segments, _ = _local_transcribe(
+            probe_audio_path,
+            language,
+            model_size,
+            probe_dir,
+            vad_filter=True,
+            beam_size=5,
+        )
+        if not raw_segments:
             raw_segments, _ = _local_transcribe(
-                probe_audio_path,
-                language,
-                model_size,
-                probe_dir,
-                vad_filter=True,
-                beam_size=5,
-            )
-            if not raw_segments:
-                raw_segments, _ = _local_transcribe(
                 probe_audio_path,
                 language,
                 model_size,
                 probe_dir,
                 vad_filter=False,
                 beam_size=8,
-                )
+            )
     except Exception as e:
         log(
             "TRANSCRIBE",
@@ -1188,6 +1060,10 @@ def _probe_range_for_segments(
                 "end": round(seg_end, 3),
                 "text": text,
                 "is_gap_probe": True,
+                "detected_language": seg.get("detected_language", ""),
+                "detected_language_probability": float(
+                    seg.get("detected_language_probability", 0.0) or 0.0
+                ),
                 "probe_range_start": round(start, 3),
                 "probe_range_end": round(end, 3),
             }
@@ -1211,7 +1087,6 @@ def _audit_speech_coverage(
     total_duration,
     wav_path,
     output_dir,
-    deepgram_key,
     language,
     model_size,
 ):
@@ -1226,7 +1101,6 @@ def _audit_speech_coverage(
                 end,
                 wav_path,
                 output_dir,
-                deepgram_key,
                 language,
                 model_size,
             )
@@ -1245,7 +1119,6 @@ def _recover_opening_mixed_language(
     total_duration,
     wav_path,
     output_dir,
-    deepgram_key,
     language,
     model_size,
     detected_language="",
@@ -1277,7 +1150,6 @@ def _recover_opening_mixed_language(
         probe_end,
         wav_path,
         output_dir,
-        deepgram_key,
         None,
         model_size,
     )
@@ -1285,6 +1157,8 @@ def _recover_opening_mixed_language(
         return _annotate_opening_language_segments(
             _normalize_segments(segments, total_duration)
         )
+    for seg in recovered:
+        seg["is_opening_recovery"] = True
 
     merged = _merge_opening_recovery_segments(segments, recovered, total_duration)
     return _annotate_opening_language_segments(merged)
@@ -1295,56 +1169,31 @@ def transcribe_audio(
     output_dir,
     model_size="large",
     language="auto",
-    deepgram_api_key=None,
     prefer_local=False,
 ):
+    """Transcribe ``video_path`` with local Whisper (faster-whisper).
+
+    ``prefer_local`` is retained as a behavioural flag: when True, skip the
+    gap-coverage audit and opening-language recovery passes. The dub
+    verifier sets it because Whisper's built-in VAD/timestamps are already
+    accurate enough for chunked verification and the extra probes would
+    waste runtime. For the main pipeline pass we want the full audit, so
+    callers there pass ``prefer_local=False``.
+    """
     os.makedirs(output_dir, exist_ok=True)
     wav_path = os.path.join(output_dir, "audio.wav")
     _extract_audio(video_path, wav_path)
 
-    deepgram_key = get_deepgram_api_key(deepgram_api_key)
-
-    # prefer_local is used by the dub verifier: Deepgram nova-3 is
-    # English-primary and cannot properly read Indic scripts
-    # (Gujarati/Hindi/etc.), so verifying a Hindi/Gujarati dub against the
-    # translated transcript needs local Whisper to read Devanagari / Gujarati
-    # correctly. Source-audio transcription (usually English) keeps using
-    # Deepgram where it shines.
-    if deepgram_key and not prefer_local:
-        log("TRANSCRIBE", f"Using Deepgram {DEEPGRAM_MODEL} (lang={language}) ...")
-        try:
-            lang_code = None if language in ("auto", None) else language
-            segments, detected = _deepgram_transcribe(
-                deepgram_key, wav_path, lang_code, output_dir
-            )
-            log("TRANSCRIBE", f"Lang detected: {detected}")
-        except Exception as e:
-            log("TRANSCRIBE", f"Deepgram failed: {e} — falling back to local Whisper ...")
-            segments, detected = _local_transcribe(
-                wav_path, language, model_size, output_dir
-            )
-    else:
-        if prefer_local:
-            log(
-                "TRANSCRIBE",
-                f"prefer_local=True (verifier) — using local Whisper (lang={language}) ...",
-            )
-        else:
-            log("TRANSCRIBE", "No DEEPGRAM_API_KEY — using local Whisper ...")
-        segments, detected = _local_transcribe(
-            wav_path, language, model_size, output_dir
-        )
+    log("TRANSCRIBE", f"Using local Whisper (faster-whisper) (lang={language}) ...")
+    segments, detected = _local_transcribe(
+        wav_path, language, model_size, output_dir
+    )
 
     total_duration = _ffprobe_duration(video_path)
     if prefer_local:
-        # When prefer_local is set, the caller (dub verifier) trusts local
-        # Whisper's output as-is. The audit and opening-recovery helpers
-        # were built to catch gaps in Deepgram's segmentation and run
-        # per-gap probes through Deepgram — on Indic audio those probes
-        # return plausible-looking English garbage that corrupts the
-        # segment list and wastes API calls. Whisper's built-in VAD and
-        # timestamp logic is already good enough for coverage comparison,
-        # so skip both helpers here.
+        # Verifier path: trust local Whisper's segmentation as-is — its VAD
+        # and timestamp logic is already good enough for coverage
+        # comparison and the extra audit/recovery passes are pure overhead.
         segments = _normalize_segments(segments, total_duration)
     else:
         segments = _audit_speech_coverage(
@@ -1352,7 +1201,6 @@ def transcribe_audio(
             total_duration,
             wav_path,
             output_dir,
-            deepgram_key,
             language,
             model_size,
         )
@@ -1361,7 +1209,6 @@ def transcribe_audio(
             total_duration,
             wav_path,
             output_dir,
-            deepgram_key,
             language,
             model_size,
             detected_language=detected,

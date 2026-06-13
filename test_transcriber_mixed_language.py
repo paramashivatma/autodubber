@@ -70,6 +70,8 @@ class TranscriberMixedLanguageTests(unittest.TestCase):
                 "end": 4.8,
                 "text": "లబంతే బ్రమ్హ నిర్వానం",
                 "detected_language": "Telugu",
+                "detected_language_probability": 0.97,
+                "is_opening_recovery": True,
             }
         ]
 
@@ -77,6 +79,47 @@ class TranscriberMixedLanguageTests(unittest.TestCase):
 
         self.assertTrue(_contains_non_latin_letters(segments[0]["text"]))
         self.assertTrue(annotated[0]["preserve_original_audio"])
+
+    def test_yoga_heavy_english_opening_is_not_preserved(self):
+        # Regression: "yoga" is an ordinary content word in these talks, not a
+        # scripture-citation marker. An English opening that merely says "yoga"
+        # repeatedly must still be dubbed, not left in the original voice.
+        segments = [
+            {
+                "id": 0,
+                "start": 0.0,
+                "end": 5.0,
+                "text": "Chick Yoga, Cook Yoga. No! This is going to be my unique contribution",
+                "detected_language": "en",
+                "detected_language_probability": 1.0,
+            }
+        ]
+
+        annotated = _annotate_opening_language_segments(segments)
+
+        self.assertFalse(annotated[0]["preserve_original_audio"])
+
+    def test_low_confidence_non_latin_opening_is_not_preserved(self):
+        # Regression: English narration mis-transcribed by Whisper as Telugu
+        # (transliterated into Telugu script) at low confidence must NOT be
+        # left undubbed — otherwise the output starts in the source language
+        # (English) and abruptly switches to the dub language a few seconds in.
+        segments = [
+            {
+                "id": 0,
+                "start": 0.0,
+                "end": 12.0,
+                "text": "దేర్ అల్లి టూ బియాస్స్ దాట్ రంగ్ యోర్ ర్యాలేట్",
+                "detected_language": "te",
+                "detected_language_probability": 0.67,
+                "is_opening_recovery": True,
+            }
+        ]
+
+        annotated = _annotate_opening_language_segments(segments)
+
+        self.assertTrue(_contains_non_latin_letters(segments[0]["text"]))
+        self.assertFalse(annotated[0]["preserve_original_audio"])
 
     def test_opening_recovery_replaces_forced_english_lead(self):
         existing = [

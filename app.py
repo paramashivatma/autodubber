@@ -342,7 +342,6 @@ def _log_api_summary():
     log("API_USAGE", f"Gemini API calls: {counts.get('gemini', 0)}")
     log("API_USAGE", f"Mistral API calls: {counts.get('mistral', 0)}")
     log("API_USAGE", f"GLM API calls: {counts.get('glm', 0)}")
-    log("API_USAGE", f"Deepgram API calls: {counts.get('deepgram', 0)}")
     log("API_USAGE", f"Total API calls: {counts.get('total', 0)}")
     log("API_USAGE", f"------------------------")
 
@@ -505,13 +504,17 @@ def run_dub_pipeline(
             )
 
         status_cb(_stage_text(7, "Verify dubbed output"))
-        verify_dubbed_output(
+        verification_report = verify_dubbed_output(
             video_path=output_path,
             segments=segs,
             target_language=tgt_lang,
             output_dir=WORKSPACE,
             model_size=model_size,
         )
+        if isinstance(verification_report, dict) and not verification_report.get("passed", False):
+            status_cb(
+                "Dub QA warning: verifier transcript was inconclusive; continuing to caption review."
+            )
         _emit_stage_progress("verify", 1.0)
 
         if dub_only:
@@ -2414,12 +2417,11 @@ class App(tk.Tk):
         mistral = self.mistral_key_var.get().strip()
         zernio = self.zernio_key_var.get().strip()
 
-        # Pre-flight API validation (Deepgram is optional — local Whisper is default)
+        # Pre-flight API validation (transcription runs locally via Whisper)
         validation = validate_all_keys(
             gemini_key=gemini_vision,
             mistral_key=mistral,
             zernio_key=zernio,
-            deepgram_key=None,
             need_captions=not self.dub_only_var.get(),
             need_publish=not self.dub_only_var.get(),
         )
@@ -2433,7 +2435,6 @@ class App(tk.Tk):
                     info["status"], "❓"
                 )
                 label = {
-                    "deepgram": "Deepgram",
                     "gemini": "Gemini",
                     "mistral": "Mistral",
                     "zernio": "Zernio",

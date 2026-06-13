@@ -249,13 +249,6 @@ def get_zernio_api_key(explicit=None) -> str:
     return first_env("ZERNIO_API_KEY")
 
 
-def get_deepgram_api_key(explicit=None) -> str:
-    explicit_value = _clean(explicit)
-    if explicit_value:
-        return explicit_value
-    return first_env("DEEPGRAM_API_KEY")
-
-
 def get_sheet_id(explicit=None) -> str:
     explicit_value = _clean(explicit)
     if explicit_value:

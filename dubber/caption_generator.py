@@ -307,6 +307,76 @@ Values: {{"caption": "...{target_name.lower()}..."}} — youtube also includes: 
 """
 
 
+_URL_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_YT_VIDEO_ID_PATTERN = re.compile(
+    r"(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/|v/))([A-Za-z0-9_-]{11})",
+    re.IGNORECASE,
+)
+
+
+def _strip_urls_for_prompt(text):
+    """Remove http(s)/www URLs from text shown to the LLM in the source-first prompt.
+
+    The dubbed video has its own publishing URL; the source video URL must not
+    leak into generated captions. Surrounding text is preserved.
+    """
+    if not text:
+        return text
+    cleaned = _URL_PATTERN.sub("", text)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r" *\n", "\n", cleaned)
+    return cleaned.strip()
+
+
+def _source_video_url_variants(source_metadata):
+    """Return URL patterns that identify the source video.
+
+    For YouTube sources we match all common URL shapes that carry the same
+    11-character video id (watch, shorts, embed, youtu.be, m.youtube, etc.)
+    so any one of them is stripped. For non-YouTube sources we just match
+    the webpage_url verbatim.
+    """
+    if not source_metadata:
+        return []
+    webpage_url = _extract_str((source_metadata or {}).get("webpage_url", "")).strip()
+    if not webpage_url:
+        return []
+    patterns = [re.escape(webpage_url)]
+    yt_match = _YT_VIDEO_ID_PATTERN.search(webpage_url)
+    if yt_match:
+        vid = yt_match.group(1)
+        patterns.append(
+            r"(?:https?://)?(?:www\.|m\.)?youtube\.com/(?:watch\?(?:[^\s]*&)?v="
+            + re.escape(vid)
+            + r"(?:&[^\s]*)?|shorts/" + re.escape(vid) + r"|embed/" + re.escape(vid)
+            + r"|v/" + re.escape(vid) + r")"
+        )
+        patterns.append(r"(?:https?://)?youtu\.be/" + re.escape(vid) + r"(?:\?[^\s]*)?")
+    return patterns
+
+
+def _strip_source_video_url(caption, source_metadata):
+    """Remove the source video URL from a finished caption.
+
+    Strips the URL itself only — does NOT remove surrounding CTA text. The
+    caller may end up with a dangling trailing colon like "વિડિયો જુઓ: "
+    which is acceptable per product decision; we only collapse whitespace
+    artefacts left behind by URL removal.
+    """
+    if not caption:
+        return caption
+    patterns = _source_video_url_variants(source_metadata)
+    if not patterns:
+        return caption
+    cleaned = caption
+    for pat in patterns:
+        cleaned = re.sub(pat, "", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r" +\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _extract_source_metadata_parts(source_metadata):
     source_metadata = source_metadata or {}
     description = _extract_str(source_metadata.get("description", "")).strip()
@@ -368,11 +438,13 @@ def _build_source_first_prompt(
     )
     source_tags = ", ".join(f"#{tag}" for tag in source_parts["tags"]) or "(none)"
     source_hashtags = source_parts["hashtags"] or "(none)"
-    source_cta = source_parts["cta"] or source_parts["webpage_url"] or "(none)"
+    sanitized_body = _strip_urls_for_prompt(source_parts["body"])
+    sanitized_cta = _strip_urls_for_prompt(source_parts["cta"])
+    source_cta = sanitized_cta or "(none)"
     return f"""SYSTEM: You are adapting an existing social media post into platform-specific captions for a dubbed spiritual video.
 Write every caption in {target_name}. {target_style}
 {script_hint}
-Preserve the original post's intent, CTA, and useful hashtags where natural, but adapt them to sound fluent and devotional in {target_name}.
+Preserve the original post's intent and useful hashtags where natural, but adapt them to sound fluent and devotional in {target_name}.
 Do not invent claims not supported by the source description or transcript.
 Generate captions ONLY for these platforms: {selected_keys}.
 
@@ -381,9 +453,9 @@ Title: {source_parts["title"]}
 Uploader: {source_parts["uploader"]}
 Extractor: {source_parts["extractor"]}
 Original Description Body:
-{source_parts["body"]}
+{sanitized_body}
 
-Original CTA:
+Original CTA (URLs removed):
 {source_cta}
 
 Original Hashtag Block:
@@ -398,38 +470,41 @@ Key Message: {(vision_data.get("core_conflict", "") + " | " + vision_data.get("p
 Theme: {vision_data.get("theme", "teaching")}
 
 {transcript_block}=== ADAPTATION RULES ===
-1. Source-first: use the original description as the primary basis for hooks, body text, CTA, and hashtags.
-2. Translate and adapt; do not mechanically copy English phrases unless they are URLs or required fixed hashtags.
-3. Preserve CTA intent, links, and calls-to-action where present, but shorten or move them to fit each platform naturally.
+1. Source-first: use the original description as the primary basis for hooks, body text, and hashtags.
+2. Translate and adapt; do not mechanically copy English phrases unless they are required fixed hashtags.
+3. NEVER include the original video's URL or any link to the source video. This caption will be published alongside the dubbed video itself, so a link back to the original is not needed.
 4. Preserve relevant source hashtags when useful, aiming for 4 total hashtags including required platform hashtags whenever fit and platform rules allow.
 5. If the source description is too sparse for a platform, fill only from transcript/context; do not fabricate.
 6. Respect current platform tone and character limits exactly.
 
 === PLATFORM BRIEFS ===
 INSTAGRAM / FACEBOOK:
-- Build from the original description and CTA.
+- Build from the original description.
 - Can reuse devotional themes and key phrases, but adapt hooks/body separately per platform.
+- Do NOT add a link to the original/source video.
 
 THREADS / BLUESKY / TWITTER:
 - Shorter adaptations of the same source message.
-- Preserve the CTA only if it fits naturally.
+- Do NOT add a link to the original/source video.
 
 TIKTOK:
-- One punchy source-first devotional sentence, optionally followed by concise CTA if room allows.
+- One punchy source-first devotional sentence.
+- Do NOT add a link to the original/source video.
 
 YOUTUBE:
 - Use source title as inspiration but rewrite a clean target-language title.
-- Caption can be fuller and may preserve more of the original CTA/link context.
+- Caption can be fuller; do NOT include a link to the original/source video.
 
 === CRITICAL RULES ===
 1. Every caption must be a COMPLETE thought.
 2. Instagram and Facebook should not be identical.
 3. Respect minimum and maximum character limits.
-4. Zero English except URLs and fixed hashtags when target language requires non-Latin script.
+4. Zero English except fixed hashtags when target language requires non-Latin script.
 5. Aim for 4 total hashtags including required platform hashtags whenever fit and platform rules allow, but use fewer when necessary.
 6. Required hashtags must still be present:
    - Instagram, Facebook, YouTube, TikTok, Twitter: #KAILASA #Nithyananda
    - Threads, Bluesky: #KAILASA
+7. Never output an http://, https://, or www. URL pointing to the source video.
 
 === OUTPUT ===
 Valid JSON only. Output EXACTLY these keys only: {selected_keys}
@@ -1165,23 +1240,48 @@ def _parse_raw(raw):
     """Parse JSON from LLM response with repair layer and retries."""
     import re
 
+    raw = (raw or "").strip()
+    if not raw:
+        log("CAPTION", "[FAIL] Empty response from LLM — returning empty dict")
+        return {}
+
     def _try_parse(text):
         """Try to parse JSON with various repair strategies."""
-        # Strategy 1: Extract from markdown code fences
+        text = (text or "").strip()
+        if not text:
+            return None
+
+        # Strategy 1: Extract from markdown code fences first
         if "```" in text:
             pattern = r"```(?:json)?\s*(.*?)```"
             matches = re.findall(pattern, text, re.DOTALL)
             if matches:
                 text = matches[-1].strip()
 
-        # Strategy 2: Find JSON object pattern
+        # Strategy 2: Try direct parse first (handles most cases)
         try:
-            json_match = re.search(r"\{.*\}", text, re.DOTALL)
-            if json_match:
-                text = json_match.group(0)
-            return _normalize(json.loads(text.strip()))
+            return _normalize(json.loads(text))
         except json.JSONDecodeError:
-            return None
+            pass
+
+        # Strategy 3: Find JSON object pattern with non-greedy matching
+        # Use nested brace counting to find proper boundaries
+        try:
+            start_idx = text.find('{')
+            if start_idx >= 0:
+                brace_count = 0
+                for i in range(start_idx, len(text)):
+                    if text[i] == '{':
+                        brace_count += 1
+                    elif text[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_text = text[start_idx:i+1]
+                            return _normalize(json.loads(json_text))
+        except (json.JSONDecodeError, IndexError):
+            pass
+
+        return None
 
     # Try parsing original
     result = _try_parse(raw)
@@ -1189,7 +1289,7 @@ def _parse_raw(raw):
         return result
 
     # Try repairing common issues
-    log("CAPTION", "[JSON_REPAIR] Initial parse failed, attempting repair...")
+    log("CAPTION", f"[JSON_REPAIR] Initial parse failed, attempting repair... (response length: {len(raw)})")
 
     # Repair: Fix trailing commas
     repaired = re.sub(r",(\s*[}\]])", r"\1", raw)
@@ -1198,15 +1298,149 @@ def _parse_raw(raw):
         log("CAPTION", "[JSON_REPAIR] Fixed trailing commas")
         return result
 
-    # Repair: Fix unescaped quotes in strings (basic)
-    repaired = re.sub(r'("[^"]*)(?<!\\)"([^"]*")', r'\1\\"\2', raw)
-    result = _try_parse(repaired)
-    if result:
-        log("CAPTION", "[JSON_REPAIR] Fixed unescaped quotes")
-        return result
+    # Repair: Fix unescaped quotes - improved for Unicode/Gujarati text
+    # This handles quotes that appear within content strings better
+    try:
+        # Try to find and fix quotes that break JSON structure
+        # Look for patterns like ": "text"text"" and fix to ": "text\"text\""
+        repaired = re.sub(
+            r'(: +")([^"]*)"([^}]*)',  # After colon-quote, find unescaped quote
+            lambda m: f'{m.group(1)}{m.group(2).replace(chr(34), chr(92)+chr(34))}{m.group(3)}',
+            raw,
+            flags=re.DOTALL | re.MULTILINE
+        )
+        result = _try_parse(repaired)
+        if result:
+            log("CAPTION", "[JSON_REPAIR] Fixed unescaped quotes")
+            return result
+    except Exception as quote_error:
+        log("CAPTION", f"[JSON_REPAIR] Quote repair attempt failed: {quote_error}")
 
-    log("CAPTION", "[FAIL] JSON repair failed — returning empty dict")
+    # Repair: Try removing markdown formatting if present
+    if '**' in raw or '*' in raw or '```' in raw:
+        repaired = re.sub(r'\*{1,2}', '', raw)
+        repaired = re.sub(r'```[^`]*```', '', repaired)
+        result = _try_parse(repaired)
+        if result:
+            log("CAPTION", "[JSON_REPAIR] Removed markdown formatting")
+            return result
+
+    # Repair: Try to extract valid platform keys if JSON is severely broken
+    # Look for patterns like "platform_name": "caption_text" and reconstruct.
+    # Only triggers when the raw text actually looks like a JSON-ish object
+    # (contains braces) so we don't false-match on prose like
+    # "Sure, here is the instagram: 'foo'". This avoids polluting the result
+    # with non-JSON narrative responses.
+    if "{" in raw and "}" in raw:
+        try:
+            platform_pattern = r'["\']?(instagram|facebook|youtube|twitter|threads|tiktok|bluesky)["\']?\s*:\s*["\']([^"\']{10,})["\']'
+            matches = re.findall(platform_pattern, raw, re.IGNORECASE)
+            if matches:
+                reconstructed = {}
+                for plat_name, caption in matches:
+                    plat_name = plat_name.strip().lower()
+                    if plat_name and caption:
+                        reconstructed[plat_name] = {"caption": caption}
+                if reconstructed:
+                    result = _normalize(reconstructed)
+                    if result:
+                        log("CAPTION", f"[JSON_REPAIR] Reconstructed from platform patterns: {list(result.keys())}")
+                        return result
+        except Exception as pattern_error:
+            log("CAPTION", f"[JSON_REPAIR] Pattern reconstruction failed: {pattern_error}")
+
+    # If all repairs failed, log diagnostic info
+    log("CAPTION", f"[FAIL] JSON repair failed for all strategies")
+    log("CAPTION", f"[DEBUG] First 300 chars of response: {raw[:300]}")
+
     return {}
+
+
+def _is_caption_corrupted(caption_text):
+    """
+    Check if a caption is *truly* corrupted/garbage, beyond what hashtag
+    cleanup can fix. Returns True only when the body is essentially gone
+    (so the caller should drop the caption and use a fallback).
+
+    A few short Gujarati hashtags at the end of an otherwise good caption
+    are NOT considered corrupted — call ``_strip_corrupt_hashtags`` to
+    sanitize them while keeping the body.
+    """
+    if not caption_text or len(caption_text.strip()) < 5:
+        return False  # Too short to be corrupted, just empty
+
+    text = caption_text.strip()
+
+    # Use the script-agnostic full-hashtag pattern so Indic hashtags like
+    # #ચિદાકાશ are counted as one tag (the default HASHTAG_PATTERN
+    # splits on combining marks and overcounts).
+    hashtags = _FULL_HASHTAG_PATTERN.findall(text)
+    non_hashtag_text = _FULL_HASHTAG_PATTERN.sub("", text).strip()
+
+    # Only flag as fully corrupted when there is barely any body text left
+    # AND there are hashtags (so it isn't just a short legit caption).
+    # This avoids destroying real Mistral captions that just happen to
+    # have a couple of weird short hashtags appended to a long body.
+    if hashtags and len(non_hashtag_text) < 10:
+        log(
+            "CAPTION",
+            f"[CORRUPT_CHECK] Body text essentially empty ({len(non_hashtag_text)} chars) "
+            f"with {len(hashtags)} hashtags — treating as corrupted",
+        )
+        return True
+
+    return False
+
+
+_FULL_HASHTAG_PATTERN = re.compile(r"#[^\s#]+", re.UNICODE)
+
+
+def _strip_corrupt_hashtags(caption_text):
+    """Remove single/double-character hashtags (like ``#હ`` ``#આધ``) that
+    appear when an LLM truncates a longer Gujarati hashtag.
+
+    Uses a script-agnostic hashtag pattern (``#[^\\s#]+``) so that real
+    Indic hashtags like ``#ચિદાકાશ`` are kept intact — the default
+    ``HASHTAG_PATTERN`` (``#\\w[\\w\\-]*``) splits on combining marks and
+    misidentifies the leading ``#ચ`` as corrupt, which would destroy the
+    rest of the hashtag.
+
+    Preserves the rest of the caption. Returns the cleaned text.
+    """
+    if not caption_text:
+        return caption_text
+
+    def _is_corrupt_tag(tag):
+        body = tag[1:] if tag.startswith("#") else tag
+        # Trim trailing punctuation captured by the broad regex
+        body = body.rstrip(".,!?;:)]}\"'`|/\\")
+        if not body:
+            return True
+        # ASCII tags: keep if length >= 2 (e.g. #AI is fine)
+        if all(ord(ch) < 128 for ch in body):
+            return False
+        # Non-ASCII (Indic etc.): real hashtags are much longer than the
+        # truncation artefacts (#હ #શ #આધ). Count base characters by
+        # stripping combining marks; a "word" of <=2 base characters is
+        # a fragment.
+        import unicodedata
+        nfd = unicodedata.normalize("NFD", body)
+        base_chars = [ch for ch in nfd if not unicodedata.combining(ch)]
+        return len(base_chars) <= 2
+
+    def _replace(match):
+        tag = match.group(0)
+        if _is_corrupt_tag(tag):
+            return ""
+        return tag
+
+    cleaned = _FULL_HASHTAG_PATTERN.sub(_replace, caption_text)
+    # Collapse runs of whitespace left behind by removed tags, but keep
+    # paragraph breaks.
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r" *\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def _strict_validate(captions):
@@ -1268,7 +1502,31 @@ def _build_provider_stats(provider_name):
 
 
 def _normalize_provider_output(captions, target_platforms):
-    return {p: captions.get(p, {}) for p in target_platforms if p in captions}
+    """Normalize provider output and clean up corrupt hashtag artefacts.
+
+    Only fully-corrupted captions (no real body, only hashtags) are
+    dropped so the fallback can replace them. Captions with a real body
+    that happen to contain a few truncated single-char hashtags get the
+    bad tags stripped but keep their text — destroying a good caption
+    over a stray ``#હ`` is far worse than a slightly thinner hashtag tail.
+    """
+    result = {}
+    for p in target_platforms:
+        if p not in captions:
+            continue
+        entry = dict(captions[p])
+        caption_text = entry.get("caption", "") or ""
+        if caption_text:
+            cleaned = _strip_corrupt_hashtags(caption_text)
+            if cleaned != caption_text:
+                log("CAPTION", f"  Stripped corrupt single-char hashtags for {p}")
+                entry["caption"] = cleaned
+                caption_text = cleaned
+        if caption_text and _is_caption_corrupted(caption_text):
+            log("CAPTION", f"  Dropping fully-corrupted caption for {p} (no usable body)")
+            continue
+        result[p] = entry
+    return result
 
 
 def _run_caption_provider(
@@ -1780,11 +2038,13 @@ def generate_all_captions(
         cleaned_caption = _sanitize_caption_text(
             _extract_str(data.get("caption", "")), newline_before_tags=True
         )
+        cleaned_caption = _strip_source_video_url(cleaned_caption, source_metadata)
         data["caption"] = cleaned_caption
         if p == "youtube":
-            data["title"] = _sanitize_caption_text(
+            title = _sanitize_caption_text(
                 _extract_str(data.get("title", "")), newline_before_tags=False
             )
+            data["title"] = _strip_source_video_url(title, source_metadata)
 
     _write_caption_files(output_dir, captions, target_platforms, basename="captions.json")
 

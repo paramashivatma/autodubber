@@ -4,39 +4,6 @@ import concurrent.futures
 from .utils import log
 
 
-def _validate_deepgram(api_key):
-    """Ping Deepgram API to verify the key is valid and active.
-
-    Deepgram's ``/v1/projects`` endpoint is a cheap authenticated GET that
-    returns 200 with a project list for valid keys, 401 for invalid ones,
-    without spending any transcription credits.
-    """
-    if not api_key or not api_key.strip():
-        return {"status": "missing", "message": "No Deepgram API key configured"}
-    key = api_key.strip()
-    try:
-        import requests
-
-        resp = requests.get(
-            "https://api.deepgram.com/v1/projects",
-            headers={"Authorization": f"Token {key}"},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            return {"status": "ok", "message": "Connected successfully"}
-        elif resp.status_code in (401, 403):
-            return {"status": "error", "message": "Invalid or expired API key"}
-        elif resp.status_code == 429:
-            return {"status": "error", "message": "Rate limited / quota exceeded"}
-        else:
-            return {
-                "status": "error",
-                "message": f"HTTP {resp.status_code}: {resp.text[:80]}",
-            }
-    except Exception as e:
-        return {"status": "error", "message": f"Connection failed: {str(e)[:80]}"}
-
-
 def _validate_gemini(api_key):
     """Ping Gemini with a minimal request."""
     if not api_key or not api_key.strip():
@@ -121,7 +88,6 @@ def _validate_zernio(api_key):
 
 
 _VALIDATORS = {
-    "deepgram": _validate_deepgram,
     "gemini": _validate_gemini,
     "mistral": _validate_mistral,
     "zernio": _validate_zernio,
@@ -132,16 +98,14 @@ def validate_all_keys(
     gemini_key=None,
     mistral_key=None,
     zernio_key=None,
-    deepgram_key=None,
     need_captions=False,
     need_publish=False,
 ):
     """
     Validate all configured APIs in parallel.
-    Returns dict: {"deepgram": {...}, "gemini": {...}, "mistral": {...}, "zernio": {...}}
+    Returns dict: {"gemini": {...}, "mistral": {...}, "zernio": {...}}
     """
     key_map = {
-        "deepgram": deepgram_key,
         "gemini": gemini_key,
         "mistral": mistral_key,
         "zernio": zernio_key,
@@ -149,15 +113,10 @@ def validate_all_keys(
 
     # Determine which APIs to validate based on pipeline mode
     required = {"gemini"}  # Always needed (translation)
-    # Deepgram is optional — local Whisper large is the default
     if need_captions:
         required.add("mistral")
     if need_publish:
         required.add("zernio")
-
-    # Only validate Deepgram if a key is explicitly provided (optional speed boost)
-    if deepgram_key and deepgram_key.strip():
-        required.add("deepgram")
 
     results = {}
 
