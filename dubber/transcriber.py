@@ -84,6 +84,15 @@ PROTECTED_PHRASE_PATTERNS = {
 NON_SPEECH_PHRASE_PATTERNS = (
     r"\bsubtitles by the amara\.org community\b",
     r"\bamara\.org\b",
+    # Whisper hallucinates caption/transcription credit lines over trailing
+    # silence or background music (e.g. "© transcript Emily Beynon",
+    # "Subtitles by ...", "Transcribed by ..."). These are never spoken
+    # content; left in, they get translated and dubbed as a stray clip at the
+    # end of the video. Drop any segment that looks like such a credit.
+    r"©",                                  # copyright glyph never occurs in real speech
+    r"\bemily beynon\b",                   # notorious Whisper credit hallucination
+    r"\btranscri\w*\s+by\b",               # "transcript by" / "transcribed by"
+    r"\b(?:sub(?:title)?s?|captions?)\s+by\b",  # "subtitles by" / "captions by"
 )
 
 

@@ -3,6 +3,7 @@ import unittest
 from dubber.transcriber import (
     _annotate_opening_language_segments,
     _contains_non_latin_letters,
+    _looks_like_spoken_text,
     _merge_opening_recovery_segments,
 )
 from dubber.segment_merger import merge_short_segments
@@ -177,6 +178,30 @@ class TranscriberMixedLanguageTests(unittest.TestCase):
         merged = merge_short_segments(segments)
 
         self.assertTrue(all(seg["preserve_original_audio"] for seg in merged))
+
+
+class NonSpeechHallucinationTests(unittest.TestCase):
+    def test_caption_credit_hallucinations_are_dropped(self):
+        # Regression: Whisper hallucinates caption/transcription credits over
+        # trailing silence; these must be treated as non-speech so they are not
+        # translated and dubbed as a stray clip at the end of the video.
+        for phrase in (
+            "© transcript Emily Beynon",
+            "Transcribed by Jane Doe",
+            "Subtitles by SomeOne",
+            "Captions by ACME Media",
+            "Subtitles by the Amara.org community",
+        ):
+            self.assertFalse(_looks_like_spoken_text(phrase), phrase)
+
+    def test_genuine_speech_is_kept(self):
+        for phrase in (
+            "Chitta Suthi breaks that loop permanently.",
+            "You can repair all the damage you lost.",
+            "Let me transcribe my thoughts about this.",
+            "આભાર. આ સૌથી શક્તિશાળી વૃદ્ધત્વ-વિરોધી પદ્ધતિ છે.",
+        ):
+            self.assertTrue(_looks_like_spoken_text(phrase), phrase)
 
 
 if __name__ == "__main__":
