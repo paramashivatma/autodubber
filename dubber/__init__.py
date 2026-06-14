@@ -7,9 +7,18 @@ from .dub_validator     import verify_dubbed_output
 from .vision_extractor  import extract_vision
 from .caption_generator import generate_all_captions
 from .teaser_generator  import generate_teaser, generate_teasers
-from .sdk_publisher    import publish_to_platforms_sdk  # NEW SDK version
+# Publishing SDK (zernio) is optional: generation-only environments (e.g.
+# Colab) don't install it. Keep the package importable without it; the name
+# stays defined (None) and is only used on the publish path.
+try:
+    from .sdk_publisher    import publish_to_platforms_sdk  # NEW SDK version
+except ImportError:
+    publish_to_platforms_sdk = None
 from .publish_guard     import find_ambiguous_repost_blocks, record_ambiguous_publish_results
-from .sheet_logger      import update_video_tracker, quick_update_from_publish_result
+try:
+    from .sheet_logger      import update_video_tracker, quick_update_from_publish_result
+except ImportError:
+    update_video_tracker = quick_update_from_publish_result = None
 from .utils             import log
 
 __version__ = "2.1.6"

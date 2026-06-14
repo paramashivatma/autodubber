@@ -39,7 +39,12 @@ from dubber.utils import (
 )
 from dubber.downloader import is_url, download_video
 from dubber.bgm_separator import separate_background
-from dubber.sdk_publisher import publish_to_platforms_sdk
+try:
+    from dubber.sdk_publisher import publish_to_platforms_sdk
+except ImportError:
+    # zernio (publishing SDK) is optional — not needed for generation-only
+    # runs (e.g. Colab). Publishing code paths guard against this being None.
+    publish_to_platforms_sdk = None
 from dubber.runtime_config import get_pipeline_mode, is_economy_mode, mode_label
 from dubber.config import (
     load_env_into_process,
