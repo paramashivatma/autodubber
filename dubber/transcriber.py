@@ -844,7 +844,7 @@ def _split_audio(wav_path, output_dir, chunk_sec=600):
 
 
 def _local_transcribe(
-    audio_path, language, model_size, output_dir, vad_filter=True, beam_size=5
+    audio_path, language, model_size, output_dir, vad_filter=True, beam_size=2
 ):
     lang_code = language if language and language != "auto" else None
 
@@ -1032,16 +1032,18 @@ def _probe_range_for_segments(
             model_size,
             probe_dir,
             vad_filter=True,
-            beam_size=5,
+            beam_size=1,
         )
         if not raw_segments:
+            # No-VAD retry. Keep beam_size low: a high beam here made Whisper
+            # spend minutes thrashing on intro music/silence for a 12s slice.
             raw_segments, _ = _local_transcribe(
                 probe_audio_path,
                 language,
                 model_size,
                 probe_dir,
                 vad_filter=False,
-                beam_size=8,
+                beam_size=1,
             )
     except Exception as e:
         log(

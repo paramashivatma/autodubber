@@ -51,6 +51,7 @@ from dubber.config import (
     get_mistral_api_key,
     get_zernio_api_key,
     get_missing_platform_account_envs,
+    is_dub_verification_enabled,
 )
 from review_dialog import ReviewDialog
 
@@ -503,18 +504,24 @@ def run_dub_pipeline(
                 )
             )
 
-        status_cb(_stage_text(7, "Verify dubbed output"))
-        verification_report = verify_dubbed_output(
-            video_path=output_path,
-            segments=segs,
-            target_language=tgt_lang,
-            output_dir=WORKSPACE,
-            model_size=model_size,
-        )
-        if isinstance(verification_report, dict) and not verification_report.get("passed", False):
-            status_cb(
-                "Dub QA warning: verifier transcript was inconclusive; continuing to caption review."
+        # Post-build QA re-transcribes the whole dub with large Whisper on CPU
+        # (minutes of runtime) for a non-blocking, usually-inconclusive check.
+        # Skipped unless DUB_VERIFICATION is explicitly enabled.
+        if is_dub_verification_enabled():
+            status_cb(_stage_text(7, "Verify dubbed output"))
+            verification_report = verify_dubbed_output(
+                video_path=output_path,
+                segments=segs,
+                target_language=tgt_lang,
+                output_dir=WORKSPACE,
+                model_size=model_size,
             )
+            if isinstance(verification_report, dict) and not verification_report.get("passed", False):
+                status_cb(
+                    "Dub QA warning: verifier transcript was inconclusive; continuing to caption review."
+                )
+        else:
+            status_cb(_stage_text(7, "Verify dubbed output (skipped — DUB_VERIFICATION off)"))
         _emit_stage_progress("verify", 1.0)
 
         if dub_only:

@@ -242,6 +242,25 @@ def is_glm_caption_eval_enabled(explicit=None) -> bool:
     }
 
 
+def is_dub_verification_enabled(explicit=None) -> bool:
+    """Whether to run the post-build QA re-transcription of the dubbed output.
+
+    Off by default: the verifier re-transcribes the entire dub with the large
+    Whisper model on CPU (minutes of runtime) and only ever produces a
+    non-blocking, frequently-inconclusive warning. Set DUB_VERIFICATION=on to
+    re-enable it when you specifically want the sanity check.
+    """
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value.lower() in {"1", "true", "yes", "on"}
+    return first_env("DUB_VERIFICATION", default="").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def get_zernio_api_key(explicit=None) -> str:
     explicit_value = _clean(explicit)
     if explicit_value:
