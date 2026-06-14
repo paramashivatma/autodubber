@@ -851,14 +851,25 @@ def _local_transcribe(
     try:
         from faster_whisper import WhisperModel
 
-        cache_key = (model_size, "cpu", "int8")
+        # Device is env-configurable so the same code runs CPU on the desktop
+        # (default) and GPU on a CUDA host (e.g. Colab). Set WHISPER_DEVICE=cuda
+        # to enable the GPU; compute_type defaults sensibly per device but can
+        # be overridden with WHISPER_COMPUTE_TYPE.
+        device = (os.getenv("WHISPER_DEVICE", "cpu").strip().lower() or "cpu")
+        default_compute = "float16" if device == "cuda" else "int8"
+        compute_type = (
+            os.getenv("WHISPER_COMPUTE_TYPE", default_compute).strip().lower()
+            or default_compute
+        )
+        cache_key = (model_size, device, compute_type)
         model = _WHISPER_MODEL_CACHE.get(cache_key)
         if model is None:
             log(
                 "TRANSCRIBE",
-                f"Local Whisper (faster-whisper): {model_size} (loading model)",
+                f"Local Whisper (faster-whisper): {model_size} "
+                f"on {device}/{compute_type} (loading model)",
             )
-            model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            model = WhisperModel(model_size, device=device, compute_type=compute_type)
             _WHISPER_MODEL_CACHE[cache_key] = model
         else:
             log(

@@ -29,7 +29,14 @@ def separate_background(video_path, output_dir="workspace"):
         import torch
         from demucs.apply      import apply_model
         from demucs.pretrained import get_model
-        log("BGM_SEP", "Loading demucs htdemucs model ...")
+        # Env-configurable device: CPU by default (desktop), CUDA on a GPU host
+        # (e.g. Colab) via DEMUCS_DEVICE=cuda. Fall back to CPU if CUDA is asked
+        # for but unavailable.
+        demucs_device = (os.getenv("DEMUCS_DEVICE", "cpu").strip().lower() or "cpu")
+        if demucs_device == "cuda" and not torch.cuda.is_available():
+            log("BGM_SEP", "DEMUCS_DEVICE=cuda but no CUDA available — using cpu")
+            demucs_device = "cpu"
+        log("BGM_SEP", f"Loading demucs htdemucs model (device={demucs_device}) ...")
         model = get_model("htdemucs"); model.eval()
         wav, sr = _load_wav(full_audio)
         if sr != model.samplerate:
@@ -40,7 +47,7 @@ def separate_background(video_path, output_dir="workspace"):
         elif wav.shape[0]>2: wav=wav[:2]
         ref=wav.mean(0); wav=(wav-ref.mean())/(ref.std()+1e-8)
         with torch.no_grad():
-            sources=apply_model(model,wav.unsqueeze(0),device="cpu",progress=True)[0]
+            sources=apply_model(model,wav.unsqueeze(0),device=demucs_device,progress=True)[0]
         vocal_idx=model.sources.index("vocals")
         bg=torch.stack([sources[i] for i in range(len(model.sources)) if i!=vocal_idx]).sum(0)
         bg=bg*(ref.std()+1e-8)+ref.mean()
