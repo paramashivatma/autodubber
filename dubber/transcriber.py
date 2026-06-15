@@ -219,7 +219,15 @@ def _contains_non_latin_letters(text):
     return False
 
 
-def _annotate_opening_language_segments(segments):
+def _annotate_opening_language_segments(segments, source_language=""):
+    # When the user has pinned a concrete source language (not "auto"), we trust
+    # it: a divergent language guess on the isolated opening slice is almost
+    # always a mis-transcription (e.g. English health-talk audio over music
+    # mis-detected as Tamil/Telugu at high confidence), not a genuine foreign
+    # intro. In that case the broad "non-Latin opening" preservation branch is
+    # disabled — genuine Sanskrit/scripture intros are still caught by the
+    # content-marker branches, which don't rely on Whisper's language guess.
+    source_is_pinned = _normalize_language_code(source_language) not in ("", "auto")
     annotated = []
     previous_preserved = False
     for seg in segments:
@@ -248,6 +256,7 @@ def _annotate_opening_language_segments(segments):
         )
         if (
             not preserve_original_audio
+            and not source_is_pinned
             and enriched.get("is_opening_recovery")
             and start <= OPENING_PRESERVE_WINDOW_SEC
             and normalized_language
@@ -266,10 +275,10 @@ def _annotate_opening_language_segments(segments):
     return annotated
 
 
-def _merge_opening_recovery_segments(existing_segments, recovered_segments, total_duration):
+def _merge_opening_recovery_segments(existing_segments, recovered_segments, total_duration, source_language=""):
     existing = _normalize_segments(existing_segments, total_duration)
     recovered = _normalize_segments(recovered_segments, total_duration)
-    recovered = _annotate_opening_language_segments(recovered)
+    recovered = _annotate_opening_language_segments(recovered, source_language)
     preserved_recovered = [
         seg for seg in recovered if seg.get("preserve_original_audio")
     ]
@@ -1155,13 +1164,13 @@ def _recover_opening_mixed_language(
         normalized_language = _normalize_language_code(detected_language)
     if not normalized_language or normalized_language == "auto":
         return _annotate_opening_language_segments(
-            _normalize_segments(segments, total_duration)
+            _normalize_segments(segments, total_duration), language
         )
 
     probe_end = min(total_duration, OPENING_RECOVERY_WINDOW_SEC)
     if probe_end <= 0.5:
         return _annotate_opening_language_segments(
-            _normalize_segments(segments, total_duration)
+            _normalize_segments(segments, total_duration), language
         )
 
     # The re-probe itself is still language-free (None): we want Whisper to
@@ -1177,13 +1186,13 @@ def _recover_opening_mixed_language(
     )
     if not recovered:
         return _annotate_opening_language_segments(
-            _normalize_segments(segments, total_duration)
+            _normalize_segments(segments, total_duration), language
         )
     for seg in recovered:
         seg["is_opening_recovery"] = True
 
-    merged = _merge_opening_recovery_segments(segments, recovered, total_duration)
-    return _annotate_opening_language_segments(merged)
+    merged = _merge_opening_recovery_segments(segments, recovered, total_duration, language)
+    return _annotate_opening_language_segments(merged, language)
 
 
 def transcribe_audio(

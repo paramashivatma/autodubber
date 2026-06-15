@@ -100,6 +100,30 @@ class TranscriberMixedLanguageTests(unittest.TestCase):
 
         self.assertFalse(annotated[0]["preserve_original_audio"])
 
+    def test_pinned_source_disables_high_conf_foreign_opening(self):
+        # Regression: English health-talk opening mis-transcribed as Tamil at
+        # HIGH confidence (p=0.89, clears the prob gate). With the source pinned
+        # to English, it must be dubbed — not left in the original voice.
+        segments = [
+            {
+                "id": 0,
+                "start": 0.0,
+                "end": 11.66,
+                "text": "கள்ளி ஆகாதர்களை புரிந்து எப்படி உங்களுக்கு விடுவதற்கு",
+                "detected_language": "ta",
+                "detected_language_probability": 0.89,
+                "is_opening_recovery": True,
+            }
+        ]
+
+        pinned = _annotate_opening_language_segments(segments, source_language="en")
+        self.assertFalse(pinned[0]["preserve_original_audio"])
+
+        # In auto mode (language unknown) the capability is retained: a genuine
+        # high-confidence non-Latin opening is still preserved.
+        auto = _annotate_opening_language_segments(segments, source_language="auto")
+        self.assertTrue(auto[0]["preserve_original_audio"])
+
     def test_low_confidence_non_latin_opening_is_not_preserved(self):
         # Regression: English narration mis-transcribed by Whisper as Telugu
         # (transliterated into Telugu script) at low confidence must NOT be
