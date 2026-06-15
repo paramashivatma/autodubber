@@ -21,7 +21,7 @@ except ImportError:
     update_video_tracker = quick_update_from_publish_result = None
 from .utils             import log
 
-__version__ = "2.1.6"
+__version__ = "2.2.0"
 
 __all__ = [
     "transcribe_audio","merge_short_segments","translate_segments",
