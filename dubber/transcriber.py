@@ -28,6 +28,12 @@ OPENING_PRESERVE_WINDOW_SEC = 18.0
 # language while the rest of the video is dubbed — producing a jarring
 # language switch a few seconds in.
 OPENING_PRESERVE_MIN_LANG_PROB = 0.85
+# Auto-detect source language, but only trust a *non-English* detection when
+# Whisper is this confident. Otherwise fall back to English. Whisper mis-detects
+# accented / music-backed English as Telugu/Tamil at low confidence (e.g. 0.50),
+# which collapses the transcription; a genuine non-English video detects well
+# above this floor (~0.9+), so it is still transcribed in its own language.
+AUTO_DETECT_MIN_CONFIDENCE = 0.80
 SANSKRIT_LANG_CODES = {"sa", "san", "sanskrit"}
 SANSKRIT_TOKEN_MARKERS = {
     "atma",
@@ -175,6 +181,22 @@ def _normalize_language_code(language):
     return value
 
 
+def _should_fallback_to_english(requested_language, detected_language, detected_probability):
+    """Decide whether an auto-detected transcription should be redone as English.
+
+    Only relevant when the caller asked for auto-detect. We keep the detected
+    language when it is English (any confidence) or a *confidently* detected
+    non-English language; we fall back to English when a non-English detection
+    is below AUTO_DETECT_MIN_CONFIDENCE (the mis-detection case).
+    """
+    if _normalize_language_code(requested_language) not in ("", "auto"):
+        return False
+    detected = _normalize_language_code(detected_language)
+    if detected in ("", "en", "english"):
+        return False
+    return float(detected_probability or 0.0) < AUTO_DETECT_MIN_CONFIDENCE
+
+
 def _tokenize_text(text):
     return re.findall(r"[^\W_]+(?:['’-][^\W_]+)?|\d+", str(text or "").lower(), flags=re.UNICODE)
 
@@ -219,15 +241,13 @@ def _contains_non_latin_letters(text):
     return False
 
 
-def _annotate_opening_language_segments(segments, source_language=""):
-    # When the user has pinned a concrete source language (not "auto"), we trust
-    # it: a divergent language guess on the isolated opening slice is almost
-    # always a mis-transcription (e.g. English health-talk audio over music
-    # mis-detected as Tamil/Telugu at high confidence), not a genuine foreign
-    # intro. In that case the broad "non-Latin opening" preservation branch is
-    # disabled — genuine Sanskrit/scripture intros are still caught by the
-    # content-marker branches, which don't rely on Whisper's language guess.
-    source_is_pinned = _normalize_language_code(source_language) not in ("", "auto")
+def _annotate_opening_language_segments(segments):
+    # Opening-specific preservation: a Sanskrit invocation or a spoken scripture
+    # citation ("In Bhagavad Gita 5th chapter ... 25th verse") at the very start.
+    # This relies on recognizable *content* (Sanskrit words / citation markers),
+    # never on Whisper's per-clip language guess — so mis-transcribed English
+    # (e.g. heard as Tamil/Telugu) is not preserved. Sanskrit elsewhere in the
+    # video is handled separately by _mark_sanskrit_segments.
     annotated = []
     previous_preserved = False
     for seg in segments:
@@ -235,7 +255,6 @@ def _annotate_opening_language_segments(segments, source_language=""):
         start = float(enriched.get("start", 0.0))
         text = enriched.get("text", "")
         detected_language = enriched.get("detected_language", "")
-        normalized_language = _normalize_language_code(detected_language)
         normalized_tokens = set(_tokenize_text(text))
         preserve_original_audio = (
             start <= OPENING_PRESERVE_WINDOW_SEC
@@ -251,34 +270,34 @@ def _annotate_opening_language_segments(segments, source_language=""):
             preserve_original_audio = bool(
                 normalized_tokens and normalized_tokens.issubset(SCRIPTURE_TRANSLATION_CUES)
             )
-        detected_language_probability = float(
-            enriched.get("detected_language_probability", 0.0) or 0.0
-        )
-        if (
-            not preserve_original_audio
-            and not source_is_pinned
-            and enriched.get("is_opening_recovery")
-            and start <= OPENING_PRESERVE_WINDOW_SEC
-            and normalized_language
-            and normalized_language not in {"en", "english"}
-            and _contains_non_latin_letters(text)
-            # Only trust a non-English opening detection enough to leave the
-            # audio undubbed when Whisper is genuinely confident about the
-            # language. Low-confidence detections here are almost always
-            # mis-transcribed English (see OPENING_PRESERVE_MIN_LANG_PROB).
-            and detected_language_probability >= OPENING_PRESERVE_MIN_LANG_PROB
-        ):
-            preserve_original_audio = True
         enriched["preserve_original_audio"] = preserve_original_audio
         annotated.append(enriched)
         previous_preserved = preserve_original_audio
     return annotated
 
 
-def _merge_opening_recovery_segments(existing_segments, recovered_segments, total_duration, source_language=""):
+def _mark_sanskrit_segments(segments):
+    """Preserve original audio for any segment whose text reads as Sanskrit
+    (a shloka/mantra), anywhere in the video — start, middle or end.
+
+    Content-based (transliterated Sanskrit markers/endings, or a Sanskrit
+    language tag), so it ignores Whisper's possibly-wrong per-clip language
+    guess. Mis-transcribed English never matches these markers and stays dubbed.
+    """
+    for seg in segments:
+        if seg.get("preserve_original_audio"):
+            continue
+        if _looks_like_sanskrit_recitation(
+            seg.get("text", ""), seg.get("detected_language", "")
+        ):
+            seg["preserve_original_audio"] = True
+    return segments
+
+
+def _merge_opening_recovery_segments(existing_segments, recovered_segments, total_duration):
     existing = _normalize_segments(existing_segments, total_duration)
     recovered = _normalize_segments(recovered_segments, total_duration)
-    recovered = _annotate_opening_language_segments(recovered, source_language)
+    recovered = _annotate_opening_language_segments(recovered)
     preserved_recovered = [
         seg for seg in recovered if seg.get("preserve_original_audio")
     ]
@@ -1164,13 +1183,13 @@ def _recover_opening_mixed_language(
         normalized_language = _normalize_language_code(detected_language)
     if not normalized_language or normalized_language == "auto":
         return _annotate_opening_language_segments(
-            _normalize_segments(segments, total_duration), language
+            _normalize_segments(segments, total_duration)
         )
 
     probe_end = min(total_duration, OPENING_RECOVERY_WINDOW_SEC)
     if probe_end <= 0.5:
         return _annotate_opening_language_segments(
-            _normalize_segments(segments, total_duration), language
+            _normalize_segments(segments, total_duration)
         )
 
     # The re-probe itself is still language-free (None): we want Whisper to
@@ -1186,13 +1205,13 @@ def _recover_opening_mixed_language(
     )
     if not recovered:
         return _annotate_opening_language_segments(
-            _normalize_segments(segments, total_duration), language
+            _normalize_segments(segments, total_duration)
         )
     for seg in recovered:
         seg["is_opening_recovery"] = True
 
-    merged = _merge_opening_recovery_segments(segments, recovered, total_duration, language)
-    return _annotate_opening_language_segments(merged, language)
+    merged = _merge_opening_recovery_segments(segments, recovered, total_duration)
+    return _annotate_opening_language_segments(merged)
 
 
 def transcribe_audio(
@@ -1220,6 +1239,23 @@ def transcribe_audio(
         wav_path, language, model_size, output_dir
     )
 
+    # Confidence-gated auto-detect: if the caller asked for auto and Whisper
+    # picked a non-English language without enough confidence, it almost
+    # certainly mis-heard English (over music/accent) — redo as English so the
+    # transcription doesn't collapse. A genuinely non-English video detects with
+    # high confidence and is kept in its own language.
+    detected_probability = max(
+        (float(s.get("detected_language_probability", 0.0) or 0.0) for s in segments),
+        default=0.0,
+    )
+    if _should_fallback_to_english(language, detected, detected_probability):
+        log(
+            "TRANSCRIBE",
+            f"Auto-detected '{detected}' p={detected_probability:.2f} below "
+            f"{AUTO_DETECT_MIN_CONFIDENCE:.2f} — re-transcribing as English",
+        )
+        segments, detected = _local_transcribe(wav_path, "en", model_size, output_dir)
+
     total_duration = _ffprobe_duration(video_path)
     if prefer_local:
         # Verifier path: trust local Whisper's segmentation as-is — its VAD
@@ -1244,6 +1280,10 @@ def transcribe_audio(
             model_size,
             detected_language=detected,
         )
+        # Preserve Sanskrit passages anywhere in the video (not just the
+        # opening): keep shlokas/mantras in the original voice while the rest
+        # is dubbed.
+        segments = _mark_sanskrit_segments(segments)
 
     # Auto-learn potential transcription errors
     log("TRANSCRIBE", "Running auto-learn for transcription fixes...")

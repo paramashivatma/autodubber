@@ -1210,13 +1210,17 @@ class App(tk.Tk):
         tk.Label(self.t_dub, text="Source lang:", font=("Segoe UI", 10)).grid(
             row=next_row + 2, column=0, sticky="w", **pad
         )
-        self.src_lang_var = tk.StringVar(value=default_src_lang)
-        ttk.Combobox(
+        # Source language is no longer user-selectable: it is auto-detected,
+        # with a safe English fallback when Whisper isn't confident (guards
+        # against mis-detecting English as Tamil/Telugu and wrecking the dub).
+        # Sanskrit passages are kept in the original voice via content
+        # detection. src_lang_var stays "Auto" so downstream resolves to "auto".
+        self.src_lang_var = tk.StringVar(value="Auto")
+        tk.Label(
             self.t_dub,
-            textvariable=self.src_lang_var,
-            values=list(LANGUAGES.keys()),
-            width=16,
-            state="readonly",
+            text="Auto-detect (English fallback · Sanskrit kept in original voice)",
+            font=("Segoe UI", 10),
+            fg="#555555",
         ).grid(row=next_row + 2, column=1, sticky="w", **pad)
 
         tk.Label(self.t_dub, text="Target lang:", font=("Segoe UI", 10)).grid(
@@ -2942,7 +2946,10 @@ def run_cli():
             voice = VOICES.get(fallback_label, VOICES["English - Ryan (M)"])
 
     model_size = "large"
-    src_lang = LANGUAGES.get(args.source_lang, "auto")
+    # Source language is auto-detected (--source-lang is ignored), with a safe
+    # English fallback handled inside transcribe_audio. Sanskrit is preserved
+    # by content.
+    src_lang = "auto"
     tgt_lang = TARGET_LANGUAGES.get(args.target_lang, "en")
 
     print(f"[CLI] Voice: {voice}, Source: {src_lang}, Target: {tgt_lang}")

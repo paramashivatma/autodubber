@@ -4,7 +4,9 @@ from dubber.transcriber import (
     _annotate_opening_language_segments,
     _contains_non_latin_letters,
     _looks_like_spoken_text,
+    _mark_sanskrit_segments,
     _merge_opening_recovery_segments,
+    _should_fallback_to_english,
 )
 from dubber.segment_merger import merge_short_segments
 
@@ -63,7 +65,12 @@ class TranscriberMixedLanguageTests(unittest.TestCase):
         self.assertTrue(annotated[0]["preserve_original_audio"])
         self.assertTrue(annotated[1]["preserve_original_audio"])
 
-    def test_non_latin_opening_segment_is_preserved_in_original_voice(self):
+    def test_generic_non_latin_opening_is_not_preserved(self):
+        # New policy: a non-Latin opening is NOT preserved just because Whisper
+        # guessed a foreign language. Only recognizable Sanskrit *content* is
+        # preserved. This removes the English-intro bug (English mis-detected as
+        # Tamil/Telugu and left undubbed), at the cost of not auto-preserving
+        # Sanskrit rendered in a native (non-Latin) script.
         segments = [
             {
                 "id": 0,
@@ -76,10 +83,12 @@ class TranscriberMixedLanguageTests(unittest.TestCase):
             }
         ]
 
-        annotated = _annotate_opening_language_segments(segments)
+        annotated = _mark_sanskrit_segments(
+            _annotate_opening_language_segments(segments)
+        )
 
         self.assertTrue(_contains_non_latin_letters(segments[0]["text"]))
-        self.assertTrue(annotated[0]["preserve_original_audio"])
+        self.assertFalse(annotated[0]["preserve_original_audio"])
 
     def test_yoga_heavy_english_opening_is_not_preserved(self):
         # Regression: "yoga" is an ordinary content word in these talks, not a
@@ -100,10 +109,10 @@ class TranscriberMixedLanguageTests(unittest.TestCase):
 
         self.assertFalse(annotated[0]["preserve_original_audio"])
 
-    def test_pinned_source_disables_high_conf_foreign_opening(self):
-        # Regression: English health-talk opening mis-transcribed as Tamil at
-        # HIGH confidence (p=0.89, clears the prob gate). With the source pinned
-        # to English, it must be dubbed — not left in the original voice.
+    def test_mis_detected_english_opening_is_not_preserved(self):
+        # The recurring bug: English speech mis-transcribed as HIGH-confidence
+        # Tamil (p=0.89). Source is auto now, but it must still be dubbed because
+        # it is not recognizable Sanskrit content.
         segments = [
             {
                 "id": 0,
@@ -116,13 +125,40 @@ class TranscriberMixedLanguageTests(unittest.TestCase):
             }
         ]
 
-        pinned = _annotate_opening_language_segments(segments, source_language="en")
-        self.assertFalse(pinned[0]["preserve_original_audio"])
+        annotated = _mark_sanskrit_segments(
+            _annotate_opening_language_segments(segments)
+        )
+        self.assertFalse(annotated[0]["preserve_original_audio"])
 
-        # In auto mode (language unknown) the capability is retained: a genuine
-        # high-confidence non-Latin opening is still preserved.
-        auto = _annotate_opening_language_segments(segments, source_language="auto")
-        self.assertTrue(auto[0]["preserve_original_audio"])
+    def test_sanskrit_preserved_anywhere_in_video(self):
+        # A Sanskrit shloka mid-video (not the opening) is kept in the original
+        # voice; the surrounding English is dubbed.
+        segments = [
+            {"id": 0, "start": 0.0, "end": 5.0,
+             "text": "Welcome everyone, let us begin today's session."},
+            {"id": 1, "start": 120.0, "end": 126.0,
+             "text": "kshina kalmashah chinna dvaidha yatatmanah"},
+            {"id": 2, "start": 126.0, "end": 130.0,
+             "text": "This verse means the sins are destroyed."},
+        ]
+
+        marked = _mark_sanskrit_segments(
+            _annotate_opening_language_segments(segments)
+        )
+        self.assertFalse(marked[0]["preserve_original_audio"])
+        self.assertTrue(marked[1]["preserve_original_audio"])
+        self.assertFalse(marked[2]["preserve_original_audio"])
+
+    def test_sanskrit_language_tag_preserved_anywhere(self):
+        # A segment whose detected language is Sanskrit is preserved wherever
+        # it appears.
+        segments = [
+            {"id": 0, "start": 200.0, "end": 205.0,
+             "text": "om namah shivaya", "detected_language": "sa"},
+        ]
+
+        marked = _mark_sanskrit_segments(segments)
+        self.assertTrue(marked[0]["preserve_original_audio"])
 
     def test_low_confidence_non_latin_opening_is_not_preserved(self):
         # Regression: English narration mis-transcribed by Whisper as Telugu
@@ -226,6 +262,28 @@ class NonSpeechHallucinationTests(unittest.TestCase):
             "આભાર. આ સૌથી શક્તિશાળી વૃદ્ધત્વ-વિરોધી પદ્ધતિ છે.",
         ):
             self.assertTrue(_looks_like_spoken_text(phrase), phrase)
+
+
+class AutoDetectFallbackTests(unittest.TestCase):
+    def test_low_confidence_non_english_falls_back(self):
+        # The regression: English mis-detected as Telugu at p=0.50 → redo as English.
+        self.assertTrue(_should_fallback_to_english("auto", "te", 0.50))
+        self.assertTrue(_should_fallback_to_english("auto", "ta", 0.42))
+
+    def test_confident_non_english_is_kept(self):
+        # A genuine Tamil/Hindi video detects with high confidence → keep it.
+        self.assertFalse(_should_fallback_to_english("auto", "ta", 0.95))
+        self.assertFalse(_should_fallback_to_english("auto", "hi", 0.88))
+
+    def test_english_detection_never_falls_back(self):
+        # English at any confidence stays English (no pointless re-transcribe).
+        self.assertFalse(_should_fallback_to_english("auto", "en", 1.0))
+        self.assertFalse(_should_fallback_to_english("auto", "en", 0.44))
+
+    def test_explicit_language_is_honored(self):
+        # If a concrete language was requested, never override it.
+        self.assertFalse(_should_fallback_to_english("hi", "ta", 0.10))
+        self.assertFalse(_should_fallback_to_english("en", "te", 0.20))
 
 
 if __name__ == "__main__":
