@@ -1,4 +1,10 @@
-import os, subprocess, json
+import os
+import subprocess
+import json
+import sys
+
+_YTDLP_CMD = [sys.executable, "-m", "yt_dlp"]
+
 from .utils import log
 
 # Hardened network flags for yt-dlp.
@@ -33,7 +39,7 @@ def is_url(s):
 def _fetch_source_metadata(url):
     r = subprocess.run(
         [
-            "yt-dlp",
+            *_YTDLP_CMD,
             "--dump-single-json",
             "--no-playlist",
             "--no-warnings",
@@ -83,8 +89,8 @@ def download_video(url, output_dir="workspace"):
     try:
         r = subprocess.run(
             [
-                "yt-dlp",
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                *_YTDLP_CMD,
+                "-f", "bestvideo*+bestaudio/best",
                 "--merge-output-format", "mp4",
                 "-o", out_path,
                 "--no-playlist",

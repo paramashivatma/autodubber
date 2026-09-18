@@ -57,6 +57,7 @@ from dubber.config import (
     get_zernio_api_key,
     get_missing_platform_account_envs,
     is_dub_verification_enabled,
+    get_transcribe_model,
 )
 from review_dialog import ReviewDialog
 
@@ -519,7 +520,10 @@ def run_dub_pipeline(
                 segments=segs,
                 target_language=tgt_lang,
                 output_dir=WORKSPACE,
-                model_size=model_size,
+                # QA transcribes the target-language dub, so it must use a
+                # multilingual model even when the main pass uses English-only
+                # distil-large-v3.
+                model_size="large-v3",
             )
             if isinstance(verification_report, dict) and not verification_report.get("passed", False):
                 status_cb(
@@ -2229,6 +2233,22 @@ class App(tk.Tk):
 
     def _manual_cleanup(self):
         """Manual workspace cleanup"""
+        # Guard: a full cleanup deletes source.mp4 and the in-progress working
+        # files. If a dub is running, that crashes the build mid-flight
+        # (ffprobe fails on the now-missing source). The Run button is disabled
+        # while a run is active, so use that as the "busy" signal and refuse.
+        try:
+            run_busy = str(self.run_btn["state"]) == "disabled"
+        except Exception:
+            run_busy = False
+        if run_busy:
+            messagebox.showwarning(
+                "Run in progress",
+                "A dub is currently running. Cleaning the workspace now would "
+                "delete the files it needs and crash the run. Please wait until "
+                "it finishes, then clean up.",
+            )
+            return
         try:
             from dubber.workspace_cleaner import full_cleanup
 
@@ -2450,6 +2470,8 @@ class App(tk.Tk):
                 icon = {"ok": "✅", "error": "❌", "missing": "⏭️"}.get(
                     info["status"], "❓"
                 )
+                if info["status"] == "warning":
+                    icon = "⚠️"
                 label = {
                     "gemini": "Gemini",
                     "mistral": "Mistral",
@@ -2505,7 +2527,7 @@ class App(tk.Tk):
             args=(
                 video,
                 VOICES[self.voice_var.get()],
-                "large",  # Always use whisper-large-v3 for best quality
+                get_transcribe_model(),  # default large-v3-turbo (multilingual, fast); WHISPER_MODEL to override
                 LANGUAGES.get(self.src_lang_var.get(), "auto"),
                 TARGET_LANGUAGES.get(self.tgt_lang_var.get(), "en"),
                 self.bgm_var.get(),
@@ -2945,7 +2967,7 @@ def run_cli():
             )
             voice = VOICES.get(fallback_label, VOICES["English - Ryan (M)"])
 
-    model_size = "large"
+    model_size = get_transcribe_model()  # default large-v3-turbo; WHISPER_MODEL to override
     # Source language is auto-detected (--source-lang is ignored), with a safe
     # English fallback handled inside transcribe_audio. Sanskrit is preserved
     # by content.
@@ -3003,11 +3025,10 @@ def run_cli():
             status_cb=status_cb,
             caption_ready_cb=caption_ready_cb,
             done_cb=done_cb,
-            dub_only=True,  # 🔥 IMPORTANT: skip captions/publishing
+            dub_only=True,  # skip captions/publishing
             progress_cb=lambda p: print(f"[PROGRESS] {p}%"),
             output_path=args.output,
         )
-
     except Exception as e:
         print(f"[ERROR] {e}")
         sys.exit(1)

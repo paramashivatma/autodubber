@@ -897,7 +897,25 @@ def _local_transcribe(
                 f"Local Whisper (faster-whisper): {model_size} "
                 f"on {device}/{compute_type} (loading model)",
             )
-            model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            try:
+                model = WhisperModel(model_size, device=device, compute_type=compute_type)
+            except Exception as model_err:
+                # An older faster-whisper may not recognize newer model names
+                # (e.g. large-v3-turbo). Fall back to large-v3 so transcription
+                # still runs rather than crashing the whole pipeline.
+                if model_size not in ("large-v3", "large"):
+                    log(
+                        "TRANSCRIBE",
+                        f"Model '{model_size}' unavailable ({model_err}); "
+                        f"falling back to large-v3",
+                    )
+                    model_size = "large-v3"
+                    cache_key = (model_size, device, compute_type)
+                    model = _WHISPER_MODEL_CACHE.get(cache_key) or WhisperModel(
+                        model_size, device=device, compute_type=compute_type
+                    )
+                else:
+                    raise
             _WHISPER_MODEL_CACHE[cache_key] = model
         else:
             log(

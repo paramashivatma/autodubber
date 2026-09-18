@@ -149,6 +149,56 @@ def _pad_audio_with_silence(audio_path, target_dur_ms):
         return None
 
 
+# Max amount we will freeze-frame to fit a slightly-longer dub clip. This is
+# only meant to absorb ffmpeg stretch quantization residue (a fraction of a
+# second). A larger shortfall means the segment is anomalous — e.g. a broken
+# transcription where a tiny source span carries a huge blob of text, so the
+# video stretch hit its cap and the audio is many seconds longer. Freezing that
+# much produces long frozen frames and an over-long video, so we DON'T pad
+# those; the caller falls back to trimming the (usually garbage) audio tail.
+MAX_TAIL_PAD_SEC = 1.0
+
+
+def _pad_video_tail(path, target_dur, fps):
+    """Freeze the last frame to extend a video segment to ``target_dur``.
+
+    Used when a stretched/copied segment renders slightly shorter than its dub
+    audio (ffmpeg frame quantization undershoots the stretch target). Padding
+    the video lets the FULL dub clip play instead of being trimmed to the video
+    length, which was clipping the final word of sentences. Returns True on
+    success; on any failure (or an anomalously large gap) the caller keeps the
+    original (graceful fallback to trimming).
+    """
+    try:
+        current = _actual_duration(path) or 0.0
+        pad = round(float(target_dur) - current, 3)
+        if pad <= 0.02:
+            return False
+        if pad > MAX_TAIL_PAD_SEC:
+            log(
+                "BUILD",
+                f"    → audio {pad:.1f}s longer than video (likely a bad segment) "
+                f"— not freeze-padding; trimming tail instead",
+            )
+            return False
+        tmp_out = path + ".pad.mp4"
+        cmd = [
+            "ffmpeg", "-y", "-i", path,
+            "-vf", f"tpad=stop_mode=clone:stop_duration={pad}",
+            "-an", "-r", str(fps or _FPS_FALLBACK),
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
+            tmp_out,
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if r.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 500:
+            shutil.move(tmp_out, path)
+            return True
+        return False
+    except Exception as e:
+        log("BUILD", f"    → WARNING: video tail pad failed: {e}")
+        return False
+
+
 def _generate_blank_video(dst, duration_sec, fps=_FPS_FALLBACK, width=1920, height=1080):
     """Generate a blank/black video frame for gaps when source extraction fails."""
     try:
@@ -210,12 +260,20 @@ def _segment_audio_strategy(seg, orig_dur, tts_dur):
     return {"mode": "tts", "target_dur": tts_dur}
 
 
-def _concat(parts, dst):
+def _concat(parts, dst, total_duration=None):
     list_file = dst + "_list.txt"
     with open(list_file, "w", encoding="utf-8") as f:
         for p in parts:
             safe = os.path.abspath(p).replace("\\", "/").replace("'", "'\\''")
             f.write(f"file '{safe}'\n")
+    # Re-encoding the joined video (libx264, preset fast, crf 18) does not run
+    # at a fixed speed relative to real time — a flat 600s cap works for short
+    # clips but kills the process partway through long-form videos (e.g. an
+    # ~82 min video previously timed out here even though every prior stage
+    # succeeded). Scale the budget with the source duration instead.
+    timeout_sec = 600
+    if total_duration:
+        timeout_sec = max(600, int(total_duration * 1.5) + 300)
     r = subprocess.run(
         [
             "ffmpeg",
@@ -237,7 +295,7 @@ def _concat(parts, dst):
         ],
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=timeout_sec,
     )
     try:
         os.remove(list_file)
@@ -384,6 +442,17 @@ def build_dubbed_video(
                 shutil.copy(seg_raw, seg_out)
                 actual_seg_dur = _actual_duration(seg_out) or orig_dur
 
+            # If the rendered video came out shorter than the dub audio, freeze
+            # the last frame to fit the FULL audio — otherwise the overlay below
+            # trims the dub and clips the final word of the sentence.
+            if (
+                audio_path
+                and os.path.exists(audio_path)
+                and tts_dur > actual_seg_dur + 0.02
+                and _pad_video_tail(seg_out, tts_dur, source_fps)
+            ):
+                actual_seg_dur = _actual_duration(seg_out) or tts_dur
+
         audio_start = cursor
         parts.append(seg_out)
         cursor += actual_seg_dur
@@ -428,7 +497,7 @@ def build_dubbed_video(
 
     joined = os.path.join(output_dir, "_joined.mp4")
     log("BUILD", f"Concatenating {len(parts)} parts ...")
-    if not _concat(parts, joined):
+    if not _concat(parts, joined, total_duration=cursor):
         shutil.rmtree(tmp, ignore_errors=True)
         raise RuntimeError("Concat failed.")
 

@@ -33,3 +33,10 @@ debugging_package/
 # VS Code / Windsurf
 .vscode/
 .windsurf/
+
+# Local agent/worktree artifacts
+.claude/
+
+# Root-level interrupted/downloaded media artifacts
+/*.part
+/*.webm

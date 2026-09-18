@@ -1,7 +1,12 @@
 """Pre-flight API validation — checks all configured APIs before pipeline starts."""
 
 import concurrent.futures
+import os
 from .utils import log
+
+
+def _env_enabled(name):
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _validate_gemini(api_key):
@@ -34,6 +39,13 @@ def _validate_mistral(api_key):
     """Ping Mistral with a minimal HTTP request (matches caption_generator.py approach)."""
     if not api_key or not api_key.strip():
         return {"status": "missing", "message": "No Mistral API key configured"}
+
+    if not _env_enabled("MISTRAL_VALIDATE_LIVE"):
+        return {
+            "status": "ok",
+            "message": "Configured; live check skipped to avoid rate limits",
+        }
+
     try:
         import requests
 
@@ -58,7 +70,10 @@ def _validate_mistral(api_key):
         elif resp.status_code == 401:
             return {"status": "error", "message": "Invalid API key"}
         elif resp.status_code == 429:
-            return {"status": "error", "message": "Rate limited"}
+            return {
+                "status": "warning",
+                "message": "Rate limited; fallback captions will be used if needed",
+            }
         else:
             return {
                 "status": "error",
@@ -68,6 +83,11 @@ def _validate_mistral(api_key):
         err = str(e)
         if "401" in err or "unauthorized" in err.lower():
             return {"status": "error", "message": "Invalid API key"}
+        if "429" in err or "rate limit" in err.lower():
+            return {
+                "status": "warning",
+                "message": "Rate limited; fallback captions will be used if needed",
+            }
         return {"status": "error", "message": f"Connection failed: {err[:80]}"}
 
 

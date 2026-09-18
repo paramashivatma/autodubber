@@ -261,6 +261,22 @@ def is_dub_verification_enabled(explicit=None) -> bool:
     }
 
 
+def get_transcribe_model(explicit=None) -> str:
+    """Whisper model used for the main transcription pass.
+
+    Default ``large-v3-turbo``: multilingual (Tamil/Hindi/etc. still work) and
+    noticeably faster than ``large-v3`` on CPU. Override with WHISPER_MODEL —
+    e.g. ``medium`` (multilingual, universally supported, lower accuracy),
+    ``large-v3`` (most accurate, slowest), or ``distil-large-v3`` (fastest but
+    ENGLISH-ONLY). If the installed faster-whisper is too old to know
+    ``large-v3-turbo``, transcription falls back to ``large-v3`` automatically.
+    """
+    explicit_value = _clean(explicit)
+    if explicit_value:
+        return explicit_value
+    return first_env("WHISPER_MODEL", default="large-v3-turbo")
+
+
 def get_zernio_api_key(explicit=None) -> str:
     explicit_value = _clean(explicit)
     if explicit_value:
